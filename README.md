@@ -23,6 +23,14 @@
 | Батарея/питание | ✅ `mcu getvolt`/`getsys` + ubus-события; **значок АКБ в LuCI** (`luci-app-perenio`) ([docs](docs/STM32_BATTERY_SOUND.md)) |
 | Звук (siren) | ⚠️ событие `mcud.mcu.siren` пробрасывается; ручной запуск — эксперимент ([docs](docs/STM32_BATTERY_SOUND.md)) |
 
+## Скачать готовые образы
+
+[Релиз v25.12.6-pejir01.1](https://github.com/sergej19882906/openwrt-pejir01/releases/latest) — прошивка, sysupgrade, initramfs (TFTP) + apk-пакеты:
+
+- [`openwrt-...-squashfs-factory.bin`](https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/openwrt-ramips-mt7621-perenio_pejir01-34-BA-squashfs-factory.bin) — прошивка со стока (U-Boot)
+- [`openwrt-...-squashfs-sysupgrade.bin`](https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/openwrt-ramips-mt7621-perenio_pejir01-34-BA-squashfs-sysupgrade.bin) — обновление с OpenWrt
+- [`openwrt-...-initramfs-kernel.bin`](https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/openwrt-ramips-mt7621-perenio_pejir01-34-BA-initramfs-kernel.bin) — тест по TFTP без записи NAND
+
 ## Как собрать
 
 ```sh
