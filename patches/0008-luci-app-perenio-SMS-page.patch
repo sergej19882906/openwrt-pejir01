@@ -1,4 +1,4 @@
-From e64c41f5bb537fad407a18bb1015b092a363b50b Mon Sep 17 00:00:00 2001
+From 3bd346387d3eec729724b69c0e0890b9cf5d3026 Mon Sep 17 00:00:00 2001
 From: sergej19882906 <sergej19882906@users.noreply.github.com>
 Date: Sat, 31 Oct 2026 06:49:50 +0300
 Subject: [PATCH 08/10] luci-app-perenio: SMS page
@@ -7,15 +7,119 @@ Reads /var/spool/sms/incoming (smstools3 files) in LuCI: time, sender,
 text; polling 20s. Menu shown only when the spool directory exists.
 ACL extended with fs list/read for the status pages.
 ---
- package/luci-app-perenio/Makefile             |  6 +-
- .../luci-static/resources/view/perenio/sms.js | 70 +++++++++++++++++++
- .../share/luci/menu.d/luci-app-perenio.json   | 11 +--
- .../share/rpcd/acl.d/luci-app-perenio.json    |  4 +-
- package/pejir-sms/Makefile                    |  6 +-
- package/pejir-sms/root/etc/smsd.conf          | 22 ------
- .../root/etc/uci-defaults/41-pejir-sms        | 30 +++++++-
- 7 files changed, 112 insertions(+), 37 deletions(-)
+ package/luci-app-perenio/Makefile             |   6 +-
+ .../luci-static/resources/view/perenio/sms.js |  70 +++++++
+ .../share/luci/menu.d/luci-app-perenio.json   |  11 +-
+ .../share/rpcd/acl.d/luci-app-perenio.json    |   4 +-
+ package/modeminfo/Makefile                    |  97 ++++++++++
+ package/modeminfo/root/etc/config/modeminfo   |   2 +
+ package/modeminfo/root/usr/bin/modeminfo      |   6 +
+ .../usr/lib/telegrambot/plugins/modeminfo.sh  |  58 ++++++
+ .../root/usr/share/modeminfo/modem.list       |  77 ++++++++
+ .../root/usr/share/modeminfo/modeminfo        | 120 ++++++++++++
+ .../root/usr/share/modeminfo/scripts/DELL     |  62 ++++++
+ .../root/usr/share/modeminfo/scripts/DELL.at  |  12 ++
+ .../share/modeminfo/scripts/DIS_SIMCOM_A7XXX  |  73 ++++++++
+ .../modeminfo/scripts/DIS_SIMCOM_A7XXX.at     |  10 +
+ .../root/usr/share/modeminfo/scripts/FIBOCOM  |  93 +++++++++
+ .../usr/share/modeminfo/scripts/FIBOCOM.at    |  16 ++
+ .../root/usr/share/modeminfo/scripts/GENERIC  |   5 +
+ .../usr/share/modeminfo/scripts/GENERIC.at    |   6 +
+ .../root/usr/share/modeminfo/scripts/GOSUN    |  53 ++++++
+ .../root/usr/share/modeminfo/scripts/GOSUN.at |   5 +
+ .../root/usr/share/modeminfo/scripts/HUAWEI   |  68 +++++++
+ .../usr/share/modeminfo/scripts/HUAWEI.at     |  13 ++
+ .../root/usr/share/modeminfo/scripts/INTEL    | 133 +++++++++++++
+ .../root/usr/share/modeminfo/scripts/INTEL.at |   9 +
+ .../usr/share/modeminfo/scripts/INTEL_FM350   | 106 +++++++++++
+ .../share/modeminfo/scripts/INTEL_FM350.at    |   7 +
+ .../root/usr/share/modeminfo/scripts/MEIGLINK |  70 +++++++
+ .../usr/share/modeminfo/scripts/MEIGLINK.at   |   6 +
+ .../root/usr/share/modeminfo/scripts/MIKROTIK |  99 ++++++++++
+ .../usr/share/modeminfo/scripts/MIKROTIK.at   |  10 +
+ .../root/usr/share/modeminfo/scripts/QUALCOMM |  52 ++++++
+ .../usr/share/modeminfo/scripts/QUALCOMM.at   |  10 +
+ .../share/modeminfo/scripts/QUALCOMM_LM960    |  73 ++++++++
+ .../share/modeminfo/scripts/QUALCOMM_LM960.at |  10 +
+ .../root/usr/share/modeminfo/scripts/QUECTEL  |  78 ++++++++
+ .../usr/share/modeminfo/scripts/QUECTEL.at    |   9 +
+ .../root/usr/share/modeminfo/scripts/SIERRA   |  65 +++++++
+ .../usr/share/modeminfo/scripts/SIERRA.at     |  11 ++
+ .../root/usr/share/modeminfo/scripts/SIMCOM   |  75 ++++++++
+ .../usr/share/modeminfo/scripts/SIMCOM.at     |   8 +
+ .../root/usr/share/modeminfo/scripts/SKELETON |  50 +++++
+ .../usr/share/modeminfo/scripts/SKELETON.at   |   9 +
+ .../root/usr/share/modeminfo/scripts/STYX     |  60 ++++++
+ .../root/usr/share/modeminfo/scripts/STYX.at  |   4 +
+ .../root/usr/share/modeminfo/scripts/THALES   |  64 +++++++
+ .../usr/share/modeminfo/scripts/THALES.at     |  12 ++
+ .../usr/share/modeminfo/scripts/THINKWILL     |  58 ++++++
+ .../usr/share/modeminfo/scripts/THINKWILL.at  |  20 ++
+ .../root/usr/share/modeminfo/scripts/YUGE     |  54 ++++++
+ .../root/usr/share/modeminfo/scripts/YUGE.at  |   5 +
+ .../root/usr/share/modeminfo/scripts/ZTE      |  56 ++++++
+ .../root/usr/share/modeminfo/scripts/ZTE.at   |   7 +
+ .../usr/share/modeminfo/scripts/ch_to_band    | 109 +++++++++++
+ .../usr/share/modeminfo/scripts/modeminfo     | 176 ++++++++++++++++++
+ .../share/modeminfo/scripts/probeport.gcom    |  14 ++
+ package/modeminfo/root/usr/share/snmpmodem.sh |  22 +++
+ package/pejir-sms/Makefile                    |   6 +-
+ package/pejir-sms/root/etc/smsd.conf          |  22 ---
+ .../root/etc/uci-defaults/41-pejir-sms        |  30 ++-
+ 59 files changed, 2439 insertions(+), 37 deletions(-)
  create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+ create mode 100644 package/modeminfo/Makefile
+ create mode 100644 package/modeminfo/root/etc/config/modeminfo
+ create mode 100755 package/modeminfo/root/usr/bin/modeminfo
+ create mode 100755 package/modeminfo/root/usr/lib/telegrambot/plugins/modeminfo.sh
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/modem.list
+ create mode 100755 package/modeminfo/root/usr/share/modeminfo/modeminfo
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/DELL
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/DELL.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/DIS_SIMCOM_A7XXX
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/DIS_SIMCOM_A7XXX.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/FIBOCOM
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/FIBOCOM.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/GENERIC
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/GENERIC.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/HUAWEI
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/HUAWEI.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/INTEL
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/INTEL.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/INTEL_FM350
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/INTEL_FM350.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/MEIGLINK
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/MEIGLINK.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/MIKROTIK
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/MIKROTIK.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM_LM960
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM_LM960.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/QUECTEL
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/QUECTEL.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/SIERRA
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/SIERRA.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/SIMCOM
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/SIMCOM.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/SKELETON
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/SKELETON.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/STYX
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/STYX.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/THALES
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/THALES.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/THINKWILL
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/THINKWILL.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/YUGE
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/YUGE.at
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/ZTE
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/ZTE.at
+ create mode 100755 package/modeminfo/root/usr/share/modeminfo/scripts/ch_to_band
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
+ create mode 100644 package/modeminfo/root/usr/share/modeminfo/scripts/probeport.gcom
+ create mode 100755 package/modeminfo/root/usr/share/snmpmodem.sh
  delete mode 100644 package/pejir-sms/root/etc/smsd.conf
  mode change 100644 => 100755 package/pejir-sms/root/etc/uci-defaults/41-pejir-sms
 
@@ -157,6 +261,2645 @@ index eee2065..ad35be6 100644
  			}
  		}
  	}
+diff --git a/package/modeminfo/Makefile b/package/modeminfo/Makefile
+new file mode 100644
+index 0000000..728a8b8
+--- /dev/null
++++ b/package/modeminfo/Makefile
+@@ -0,0 +1,97 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=modeminfo
++PKG_VERSION:=0.4.8
++PKG_RELEASE:=2
++PKG_MAINTAINER:=Konstantine Shevlakov <shevlakov@132lan.ru>
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/$(PKG_NAME)/Default
++  PKGARCH:=all
++  SECTION:=net
++  CATEGORY:=Network
++  SUBMENU:=Telephony
++endef
++
++define Package/$(PKG_NAME)
++  $(call Package/$(PKG_NAME)/Default)
++  DEPENDS:=+comgt
++  TITLE:=Signal information for 3G/LTE dongle
++endef
++
++define Package/$(PKG_NAME)-telegram
++  $(call Package/$(PKG_NAME)/Default)
++  DEPENDS:=+modeminfo +telegrambot
++  TITLE:= Plugin for telegrambot
++endef
++
++define Package/$(PKG_NAME)/description
++	Signal information for 3G/LTE dongle
++endef
++
++define Package/$(PKG_NAME)/conffiles
++/etc/config/modeminfo
++endef
++
++define SerialPlugin
++  define Package/$(PKG_NAME)-serial-$(1)
++    $$(call Package/$(PKG_NAME)/Default)
++    DEPENDS:= +modeminfo $(2) +atinout
++    TITLE:=$(3) serial addon for modeminfo
++  endef
++  define Package/$(PKG_NAME)-serial-$(1)/install
++	$(INSTALL_DIR) $$(1)/usr/share/$(PKG_NAME)/scripts
++	$(CP) ./root/usr/share/$(PKG_NAME)/scripts/$(4)* $$(1)/usr/share/$(PKG_NAME)/scripts
++  endef
++  $$(eval $$(call BuildPackage,$(PKG_NAME)-serial-$(1)))
++endef
++
++define Build/Prepare
++endef
++
++define Build/Configure
++endef
++
++define Build/Compile
++endef
++
++
++define Package/$(PKG_NAME)/install
++	$(INSTALL_DIR) $(1)/usr/bin
++	$(INSTALL_DIR) $(1)/usr/share/modeminfo
++	$(INSTALL_DIR) $(1)/usr/share/modeminfo/scripts
++	$(INSTALL_DIR) $(1)/etc/config
++	$(CP) ./root/usr/bin/* $(1)/usr/bin
++	$(CP) ./root/usr/share/modeminfo/modeminfo $(1)/usr/share/modeminfo/
++	$(CP) ./root/usr/share/modeminfo/scripts/*.gcom  $(1)/usr/share/modeminfo/scripts/
++	$(CP) ./root/usr/share/modeminfo/scripts/ch_to_band  $(1)/usr/share/modeminfo/scripts/
++	$(CP) ./root/usr/share/modeminfo/modem.list  $(1)/usr/share/modeminfo/
++	$(CP) ./root/usr/share/modeminfo/scripts/modeminfo  $(1)/usr/share/modeminfo/scripts/
++	$(CP) ./root/usr/share/modeminfo/scripts/GENERIC* $(1)/usr/share/modeminfo/scripts/
++	$(CP) ./root/etc/config/* $(1)/etc/config
++endef
++
++define Package/$(PKG_NAME)-telegram/install
++	$(INSTALL_DIR) $(1)/usr/lib/telegrambot/plugins
++	$(CP) ./root/usr/lib/telegrambot/plugins/* $(1)/usr/lib/telegrambot/plugins
++endef
++
++$(eval $(call BuildPackage,$(PKG_NAME)))
++$(eval $(call SerialPlugin,simcom,+kmod-usb-serial-option +kmod-usb-acm,SIMCOM SIM7600/SIM7906/SIM7912/A7600/A7906,SIMCOM))
++$(eval $(call SerialPlugin,huawei,+kmod-usb-serial-option,HUAWEI,HUAWEI))
++$(eval $(call SerialPlugin,quectel,+kmod-usb-serial-option,QUECTEL,QUECTEL))
++$(eval $(call SerialPlugin,fibocom,+kmod-usb-serial-option,FIBOCOM NL668/678/FM150/FM190,FIBOCOM))
++$(eval $(call SerialPlugin,telit,+kmod-usb-serial-option,TELIT LN940/T77W678/HP4220,QUALCOMM))
++$(eval $(call SerialPlugin,xmm,+kmod-usb-serial-option +kmod-usb-acm,FIBOCOM L850/L860/FM350 Intel XMM chips,INTEL))
++#$(eval $(call SerialPlugin,mikrotik,+kmod-usb-acm,MikroTik R11e-LTE/R11e-LTE6,MIKROTIK))
++$(eval $(call SerialPlugin,meig,+kmod-usb-serial-option,MEIGLink SLM750-R2/SLM820/SLM828,MEIGLINK))
++$(eval $(call SerialPlugin,sierra,+kmod-usb-serial-qualcomm,Sierra Wireless EM7455,SIERRA))
++#$(eval $(call SerialPlugin,styx,+kmod-usb-serial-option,STYX MG8224,STYX))
++$(eval $(call SerialPlugin,dell,+kmod-usb-serial-option,Dell DW5821e,DELL))
++#$(eval $(call SerialPlugin,gosun,+kmod-usb-serial-option,Gosuncnwelink GM510,GOSUN))
++#$(eval $(call SerialPlugin,tw,+kmod-usb-serial-option,ThinkWill ML7820+,THINKWILL))
++#$(eval $(call SerialPlugin,yuge,+kmod-usb-serial-option,Yuge CLM920,YUGE))
++#$(eval $(call SerialPlugin,zte,+kmod-usb-serial-option,ZTE MF823/MF823D,ZTE))
++$(eval $(call SerialPlugin,thales,+kmod-usb-serial-option,Thales MV31-W T99W175,THALES))
++$(eval $(call BuildPackage,$(PKG_NAME)-telegram))
+diff --git a/package/modeminfo/root/etc/config/modeminfo b/package/modeminfo/root/etc/config/modeminfo
+new file mode 100644
+index 0000000..be8656f
+--- /dev/null
++++ b/package/modeminfo/root/etc/config/modeminfo
+@@ -0,0 +1,2 @@
++
++config general
+diff --git a/package/modeminfo/root/usr/bin/modeminfo b/package/modeminfo/root/usr/bin/modeminfo
+new file mode 100755
+index 0000000..cbc063b
+--- /dev/null
++++ b/package/modeminfo/root/usr/bin/modeminfo
+@@ -0,0 +1,6 @@
++#!/bin/sh
++
++. /usr/share/libubox/jshn.sh
++
++json_load "$(/usr/share/modeminfo/modeminfo)"
++json_dump
+diff --git a/package/modeminfo/root/usr/lib/telegrambot/plugins/modeminfo.sh b/package/modeminfo/root/usr/lib/telegrambot/plugins/modeminfo.sh
+new file mode 100755
+index 0000000..55a5c8f
+--- /dev/null
++++ b/package/modeminfo/root/usr/lib/telegrambot/plugins/modeminfo.sh
+@@ -0,0 +1,58 @@
++#!/bin/sh
++DATA=$(/usr/share/modeminfo/modeminfo)
++SECTIONS=$(echo $(uci show modeminfo | awk -F [\]\[\@=] '/=modeminfo/{print $3}'))
++
++# load channel to band converter
++. /usr/share/modeminfo/scripts/ch_to_band
++
++get_data(){
++	jsonfilter -s "$DATA" -e "MODE=$['modem'][$s]['mode']" \
++		-e "DEVICE=$['modem'][$s]['device']" \
++		-e "CH=$['modem'][$s]['arfcn']" \
++		-e "COPS=$['modem'][$s]['cops']" \
++		-e "PERS=$['modem'][$s]['csq_per']" \
++		-e "CA=$['modem'][$s]['lteca']" \
++		-e "RSSI=$['modem'][$s]['rssi']" \
++		-e "RSRP=$['modem'][$s]['rsrp']" \
++		-e "RSRQ=$['modem'][$s]['rsrq']" \
++		-e "SINR=$['modem'][$s]['sinr']" \
++		-e "ENBID=$['modem'][$s]['enbid']" \
++		-e "PCI=$['modem'][$s]['pci']" \
++		-e "CELL=$['modem'][$s]['cell']" \
++		-e "DIST=$['modem'][$s]['distance']" \
++		-e "SB=$['modem'][$s]['scc']"
++}
++
++for s in ${SECTIONS}; do
++	eval $(echo "$(get_data)" | sed -e 's/export//g')
++	ch_to_band $CH
++	echo -ne "*Modem $(($s+1))*\n"
++	echo -ne "*Device:* $DEVICE\n*Operator:* $COPS 📶${PERS}% $MODE\n"
++	case $MODE in
++		LTE)
++			if [ $CA -ge 1 ]; then
++				CA="$(($CA+1))xCA"
++				BAND="${SC}${SB}"
++				echo -ne "*CA:* $CA BAND ($BAND)\n"
++			else
++				echo -ne "*BAND:* $SC\n"
++			fi
++			echo -ne "*RSSI/RSRP:* ${RSSI}dBm/${RSRP}dBm\n*RSRQ/SINR:* ${RSRQ}dB/${SINR}dB\n*eNBID-Cell/PCI:* ${ENBID}-${CELL}/${PCI}"
++			if [ "$DIST" ] && [ "$DIST" != "0.00" ]; then
++				echo -ne " ~${DIST}km\n"
++			else
++				echo -ne "\n"
++			fi
++		;;
++		UMT*|WCD*|*HSP*|*HUS*)
++			echo -ne "*BAND:* $SC\n"
++			echo -ne "*RSSI/ECIO:* ${RSSI}dBm/${SINR}dB\n*LAC/CID:* ${LAC}/${CID}"
++		;;
++		*)
++			echo -ne "*BAND:* $SC\n"
++			echo -ne "*RSSI:*  ${RSSI}dBm\n*LAC/CID:* ${LAC}/${CID}"
++		;;
++	esac
++			
++	echo -e "\n"
++done
+diff --git a/package/modeminfo/root/usr/share/modeminfo/modem.list b/package/modeminfo/root/usr/share/modeminfo/modem.list
+new file mode 100644
+index 0000000..9c0a0ab
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/modem.list
+@@ -0,0 +1,77 @@
++# Modem support list
++# Format: VIDPID;FAMILY
++# Intel XMM modems
++2cb70007;INTEL
++8087095a;INTEL
++# Fibocom modems
++2cb70104;FIBOCOM
++2cb70105;FIBOCOM
++2cb70109;FIBOCOM
++2cb7010a;FIBOCOM
++# Huawei modems
++12d11c25;HUAWEI
++12d115c1;HUAWEI
++12d11506;HUAWEI
++# DELL modems
++413c81d7;DELL
++413c81e4;DELL
++1bc71910;DELL
++1bc71911;DELL
++# Quectel modems
++05c69215;QUECTEL
++2c7c0125;QUECTEL
++2c7c0121;QUECTEL
++2c7c6026;QUECTEL
++2c7c0620;QUECTEL
++2c7c6000;QUECTEL
++2c7c0901;QUECTEL
++2c7c0306;QUECTEL
++2c7c0512;QUECTEL
++# SimCOM modems
++1e0e9001;SIMCOM
++1e0e9002;SIMCOM
++1e0e9003;SIMCOM
++1e0e9004;SIMCOM
++1e0e9005;SIMCOM
++1e0e9006;SIMCOM
++1e0e9007;SIMCOM
++1e0e9011;SIMCOM
++1e0e9016;SIMCOM
++1e0e9018;SIMCOM
++1e0e9019;SIMCOM
++# Telit LN940 LT4220
++1bc71900;QUALCOMM
++1bc71901;QUALCOMM
++# Telit LM960
++1bc71040;QUALCOMM_LM960
++1bc71041;QUALCOMM_LM960
++# Yuge CLM920
++12864e3c;YUGE
++# ThinkWill ML7820
++19d20532;THINKWILL
++# MEIG SLM820
++2dee4d22;MEIGLINK
++2dee4d07;MEIGLINK
++2dee4d02;MEIGLINK
++# GOCUNCN Welink GM510
++305a1415;GOSUN
++# Sierra EM7455
++11999078;SIERRA
++11999079;SIERRA
++11999071;SIERRA
++119990e2;SIERRA
++119990e3;SIERRA
++# Fibocom FM350
++0e8d7126;INTEL_FM350
++0e8d7127;INTEL_FM350
++# Mikrotik modems
++2cd20001;MIKROTIK
++2cd20004;MIKROTIK
++# ZTE modems
++19d21404;ZTE
++19d21424;ZTE
++# Thales T99W175
++05c69025;THALES
++05c690d5;THALES
++1e2d00b7;THALES
++1e2d00b3;THALES
+diff --git a/package/modeminfo/root/usr/share/modeminfo/modeminfo b/package/modeminfo/root/usr/share/modeminfo/modeminfo
+new file mode 100755
+index 0000000..332aff7
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/modeminfo
+@@ -0,0 +1,120 @@
++#!/bin/sh
++
++trap 'cleanup >/dev/null 2>&1; exit 0' INT TERM
++SECTIONS=$(echo $(uci show modeminfo | awk -F [\]\[\@=] '/=modeminfo/{print $3}'))
++
++get_vars(){
++	for v in device device_qmi qmi_trap decimail qmi_mode;  do
++		eval $v=$(uci -q get modeminfo.@modeminfo[${s}].${v} 2>/dev/null)
++	done
++}
++
++
++cleanup(){
++	CURRENT_PID=$$
++	ps ww | grep "/bin/sh.*modeminfo" | grep -v grep | awk '{print $1}' | grep -v "^$CURRENT_PID\$" | xargs -r kill -9 >/dev/null 2>&1
++	ps ww | grep "atinout" | grep -v grep | awk '{print $1}' | xargs -r kill -9 >/dev/null 2>&1
++}
++
++
++function json_status() {
++	cat << EOF
++	{
++		"device": "$DEVICE",
++		"cops": "$COPS",
++		"mode": "$MODE",
++		"csq_per": "$CSQ_PER",
++		"lac": "$LAC",
++		"cid": "$CID",
++		"rssi": "$CSQ_RSSI",
++		"sinr": "$SINR",
++		"rsrp": "$RSRP",
++		"rsrq": "$RSRQ",
++		"imei": "$IMEI",
++		"reg": "$REGST",
++		"csq_col": "$CSQ_COL",
++		"arfcn": "$EARFCN",
++		"chiptemp": "$CHIPTEMP",
++		"firmware": "$FW",
++		"bwdl": "$BWDL",
++		"lteca": "$LTE_CA",
++		"enbid": "$ENBID",
++		"distance": "$DISTANCE",
++		"cell": "$CELL",
++		"scc": "$SCC",
++		"bwca": "$BWCA",
++		"iccid": "$ICCID",
++		"imsi": "$IMSI",
++		"pci": "$PCI"
++EOF
++}
++
++
++
++function if_null() {
++        for var in DEVICE COPS MODE CSQ_PER LAC CSQ_RSSI SINR RSRP \
++                        RSRQ IMEI REGST EARFCN CHIPTEMP FW BWDL ICCID IMSI; do
++                if [ "x$(eval echo \${$var})" = "x" ]; then
++                        eval $var='--'
++                fi
++        done
++}
++
++
++qmi_device(){
++	[ "$qmi_mode" = "1" ] || SCRIPT=/usr/share/modeminfo/scripts/modeminfo
++	[ -r $SCRIPT ] && {
++		. $SCRIPT
++	} || {
++		exit 0
++	}
++}
++
++
++args(){
++    echo "$#"
++}
++
++ARGSLEN=$(args $SECTIONS)
++
++echo "{ \"modem\" : ["
++
++for s in $SECTIONS; do
++	m=$((${s} + 1))
++	get_vars
++	if [ $qmi_mode ]; then
++		if [ "$s" ]; then
++			/usr/bin/qminfo $device_qmi --json --${qmi_trap} 
++		fi
++		if [ "$ARGSLEN" != "${m}" ]; then
++			echo ","
++		fi
++	else
++		if [ "$s" ]; then
++			qmi_device
++			get_device_info
++			get_data_in >/dev/null 2>&1
++			if_null
++			json_status
++		fi
++		if [ "$ARGSLEN" = "${m}" ]; then
++			echo "	}"
++		else
++			echo "	},"
++		fi
++		# flush modem variables
++		unset BWCA SCC SC BWDx BWPx BWCx BWDL LTE_CA \
++        	        DEVICE COPS MODE CSQ_PER LAC CSQ_RSSI \
++                	SINR RSRP IMEI REGST EARFCN CHIPTEMP FW \
++	                ICCID IMSI RSRQ DISTANCE
++	fi
++done
++
++echo "]}"
++
++DELAY=$(uci get modeminfo.@general[0].delay >/dev/null 2>&1)
++
++kill -9 $(pgrep atinout) >/dev/null 2>&1
++[ $DELAY ] || DELAY=0 && sleep $DELAY
++
++exit 0
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/DELL b/package/modeminfo/root/usr/share/modeminfo/scripts/DELL
+new file mode 100644
+index 0000000..516ccc5
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/DELL
+@@ -0,0 +1,62 @@
++modem_data(){
++        # hwinfo
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk '
++		BEGIN{IGNORECASE=1} $0 ~ /DELL|Telit/ {manufacturer=$1; getline model; getline fw}
++		/^ICCID:/{iccid=$2; getline imei; getline imsi}
++		/^PA:|^xo_therm_buf:/ {sub(/C/, "", $2); split($0,arr,":"); if (arr[2] !="") temp = arr[2]; else temp=$2 }
++		END {print manufacturer "|" model "|" fw "|" iccid "|" imei "|" imsi "|" temp }')
++	DEVICE="${1} ${2}"; MANUF=${1}; MODEL=${2}; FW=${3}; ICCID=${4}; IMEI=${5}; IMSI=${6}; CHIPTEMP=${7}
++	IFS="$OIFS"; unset OIFS
++	generic_data
++	# get signal info
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk -v mode="$MODE" '
++		BEGIN {
++			lac=""; cid=""; earfcn=""; pci=""; bw=""; bwc=""; rsrp=""; rssi=""; rsrq=""; sinr=""; rscp=""; csq=""; lte_ca=0
++			map[3]=1; map[5]=2; map[10]=3; map[15]=4; map[20]=5
++		}
++		# LTE Carrier Aggregation
++		/SCC[0-9]+ info:/ {lte_ca++}
++    		# LTE 
++		mode == "LTE" {
++			if (/\+CEREG/) { gsub(/"/, ""); split($0, arr, ","); lac = arr[3]; cid = arr[5]}
++			if (/EARFCN\(DL\/UL\):/ && earfcn == "") {split($0, arr, /[ \/]/); earfcn = arr[3]}
++			if (/PCI\)/ && pci == "") {gsub("\)","",$0); gsub("\("," ",$0); pci=$NF}
++			if (/^RSRP:/ && rsrp == "") {sub(/dBm/, "", $2); rsrp = sprintf("%.0f", $2)}
++			if (/^RSSI:/ && rssi == "") {sub(/dBm/, "", $2); rssi = sprintf("%.0f", $2)}
++			if (/^RSRQ:/ && rsrq == "") {sub(/dB/, "", $2); rsrq = sprintf("%.0f", $2)}
++			if (/^RS-SINR:/ && sinr == "") {sub(/dB/, "", $2); sinr = sprintf("%.0f", $2)}
++			if (/^RS-SNR:/ && sinr == "") {sub(/dB/, "", $2);sinr = sprintf("%.0f", $2)}
++			if (/PCC info/ && bwc == "") { bwc = sprintf("%.0f", $8); bw=map[bwc] }
++			cell = sprintf("%d", "0x" substr(cid, length(cid) - 1, 2)) 
++			enbid = sprintf("%d", "0x" substr(cid, 1, length(cid) - 2))
++		}
++    
++		# Other mode (3G)
++		mode != "LTE" {
++			if (/\+CREG/) {gsub(/"/, "");split($0, arr, ",");lac = arr[3]; cid = arr[4]}
++			if (/Active channel/ && earfcn == "") {split($0, arr, /:/); gsub(/ /, "", arr[2]); earfcn = arr[2]}
++			if (/QCSQ/ && csq == "") { split($0, arr, /[:,]/); rscp = arr[2]; sinr = arr[3]; rssi = arr[6] }
++		
++		}
++    
++		END {print lac "|" cid "|" earfcn "|" rssi "|" sinr "|" pci "|" bw "|" bwc "|" rsrp "|" rsrq "|" rscp "|" csq "|" lte_ca "|" cell "|" enbid}')
++	LAC=${1}; CID=${2}; EARFCN=${3}; CSQ_RSSI=${4}; SINR=${5}; PCI=${6}; BWDL=${7}; BWDx=${8}; RSRP=${9}; RSRQ=${10}; LTE_CA=${13}
++	CELL=${14}; ENBID=${15}
++	IFS="$OIFS"; unset OIFS
++	if [ $LTE_CA -ge 1 ]; then
++		OIFS="$IFS"; IFS="|"
++		set -- $(echo "$O" | awk -v bwc=${BWDx:-0} '
++			/^SCC\d info:/ {for(i=1; i<=NF; i++) { if($i ~ /LTE_B/) { gsub(/[^0-9]/, "", $i); scc = scc "+" $i}} bwca_raw += sprintf("%.0f", $8)
++			bwca=bwca_raw+bwc}
++			END { print scc "|" bwca }')
++		IFS="$OIFS"; unset BWDx OIFS
++		SCC=${1}; BWCA=${2}
++	fi
++
++        if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++                LAC=$(printf %d 0x$LAC)
++                CID=$(printf %d 0x$CID)
++        fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/DELL.at b/package/modeminfo/root/usr/share/modeminfo/scripts/DELL.at
+new file mode 100644
+index 0000000..1294500
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/DELL.at
+@@ -0,0 +1,12 @@
++ATE0
++AT+CSQ
++AT+COPS=3,0; +COPS?
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CEREG=2; +CEREG?
++AT$QCSQ
++AT^DEBUG?
++AT^CA_INFO?
++AT+TEMP?
++AT^TEMP?
++AT+CGMI; +CGMM; +CGMR; +ICCID; +CGSN; +CIMI
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/DIS_SIMCOM_A7XXX b/package/modeminfo/root/usr/share/modeminfo/scripts/DIS_SIMCOM_A7XXX
+new file mode 100644
+index 0000000..1bebb4c
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/DIS_SIMCOM_A7XXX
+@@ -0,0 +1,73 @@
++function modem_data(){
++	generic_data
++	DATA=$(echo "$O" | grep -Ev '^$|^OK|^AT' | sort)
++	MANUF=$(echo "$DATA" | awk 'c&&! --c;/ZRSSI/{c=4}')
++	MODEL=$(echo "$DATA" | awk 'c&&! --c;/ZRSSI/{c=3}')
++	FW=$(echo "$DATA" | awk '/CGMR/{print $2}')
++	DEVICE="$MODEL"
++	TECH=$(echo "$DATA" | awk -F [,] '/\+COPS/{print $NF}')
++	ICCID=$(echo "$DATA" | awk '/ICCID:/{print $2}')
++	IMSI=$(echo "$DATA" | awk 'c&&! --c;/ZRSSI/{c=1}')
++	IMEI=$(echo "$DATA" | awk 'c&&! --c;/ZRSSI/{c=2}')
++	REGST=$(echo "$DATA" | awk -F[,] '/\'$CREG'/ {print $2}')
++	CHIPTEMP=$(echo "$DATA" | awk '/\+CPMUTEMP/{printf "%.0f\n", ($2/1000)}')
++	EARFCN=$(echo "$DATA" | awk -F[,\ ] '/^\+CPSI/ {print $9}')
++
++	case $TECH in
++		0|1) MODE=GSM ;;
++		2) MODE=WCDMA ;;
++		3) MODE=EDGE ;;
++		4) MODE=HSDPA ;;
++		5) MODE=HSUPA ;;
++		6) MODE=HSDPA,HSUPA ;;
++		7|9) MODE=LTE ;;
++		8) MODE=HSPA+ ;;
++	esac
++	
++	case $TECH in
++		7|9)
++			PCI=$(echo "$DATA" | awk -F[,\ ] '/^\+CPSI/ {print $7}')
++			BWDL=$(echo "$DATA" |awk -F[,\ ] '/^\+CPSI/ {print $10}')
++			LAC=$(echo "$DATA" | awk -F [:,] '/\+CEREG/{gsub("\"","");print $4}')
++			CID=$(echo "$DATA" | awk -F [:,] '/\+CEREG/{gsub("\"","");print $5}')
++			ENBx=$(echo $CID | sed -e 's/..$//')
++			ENBID=$(printf %d 0x$ENBx)
++			CELL=$(printf %d 0x${CID: -2})
++			CSQ_RSSI=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{print $4}')
++			RSRQ=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{printf "%.0f\n", $3}')
++			RSRP=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{printf "%.0f\n", $2}')
++			SINR=$(echo "$DATA" | awk -F[,\ ] '/^\+CPSI/ {printf "%.0f\n", $15}')
++			# Carrier Aggregation
++			SCx1=$(echo "$DATA" | awk -F [\:\;] '/ZCAINFO/{print $3}')
++			SCx2=$(echo "$DATA" | awk -F [\:\;] '/ZCAINFO/{print $4}')
++			SCC1=$(echo $SCx1 | awk -F [,] '{print $2}')
++			case $BWDL in
++				1) BWCx=3 ;;
++				2) BWCx=5 ;;
++				3) BWCx=10 ;;
++				4) BWCx=15 ;;
++				5) BWCx=20 ;;
++			esac
++			if [ $SCC1 -ne 0 ]; then
++				LTE_CA=1
++				for a in "$SCx1 $SCx2"; do
++					SCH=$(echo $a | awk -F[,] '{print $3}')
++					SCC="$SCC+$SCH"
++					SBW=$(echo $a | awk -F[,] '{print $5}')
++					BWCx=$(($BWCx+$SBW))
++				done
++				BWCA=$((BWCx+BWCA))
++			fi
++		;;
++		2|4|6|8)
++			LAC=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $4}')
++			CID=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $5}')
++			CSQ_RSSI=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{print $2}')
++			SINR=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{printf "%.0f\n", $3}')
++		;;
++	esac
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++                LAC=$(printf %d 0x$LAC)
++                CID=$(printf %d 0x$CID)
++        fi	
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/DIS_SIMCOM_A7XXX.at b/package/modeminfo/root/usr/share/modeminfo/scripts/DIS_SIMCOM_A7XXX.at
+new file mode 100644
+index 0000000..0728b30
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/DIS_SIMCOM_A7XXX.at
+@@ -0,0 +1,10 @@
++ATE0
++AT+COPS=3,0; +COPS?
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CEREG=2; +CEREG?; +CSQ
++AT+CPSI?
++AT+ZRSSI
++AT+CGMI; +CGMM; +CGMR; +CIMI; +CGSN; +CICCID
++AT+CPMUTEMP
++AT+ZCAINFO?
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/FIBOCOM b/package/modeminfo/root/usr/share/modeminfo/scripts/FIBOCOM
+new file mode 100644
+index 0000000..c7a60ce
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/FIBOCOM
+@@ -0,0 +1,93 @@
++# Fibocom modems NL668/NL678/NL952/FM150/FM190
++
++function modem_data(){
++	generic_data
++	OIFS="$IFS"; IFS="|" # Get hw and sim info
++	# FIX regstate
++	REGST=$(echo "$O" | awk -F',' '/(\+CREG|\+CGREG|\+CEREG)/ {if (NF >= 5 && $NF ~ /^[0-9]$|^1[0-3]$/) {print $2; exit}}')
++	set -- $(echo "$O" | awk -F'[:,]' '
++		/\+CGMI/ {gsub("\"",""); manuf=$2}
++		/\+CGMM/ {gsub("\"",""); model=$2}
++		/\+CGMR/ {gsub("\"",""); fw=$2}
++		/\+CIMI/ {gsub("\"",""); imsi=$2}
++		/\+CGSN/ {gsub("\"",""); imei=$2}
++		/ICCID:/ {gsub("\r",""); iccid=$2}
++		/\+MTSM/ {temp = sprintf("%0.f\n", $2)}
++		END { print manuf "|" model "|" fw "|" imsi "|" imei "|" iccid "|" temp }')
++	DEVICE="${1} ${2}"; MANUF="${1}"; MODEL="${2}"; FW="${3}"; IMSI="${4}"; IMEI="${5}"; ICCID="${6}" CHIPTEMP=${7}
++	IFS="$OIFS"; unset OIFS
++	OIFS="$IFS"; IFS="|" # Get Signal info
++	set -- $(echo "$O" | awk -v model=$MODEL -v mode=$MODE '
++		BEGIN { map[15]=1; map[25]=2; map[50]=3; map[75]=4; map[100]=5 }
++		mode ~ /LTE/ { # LTE mode
++			if (/^\PCC:/ && model~/952|FM/) {split($0, ca, ","); pch = ca[3]; pcica = ca[2] }
++                        if (/^\SCC\d/ && model~/952|FM/) {lte_ca++}
++			if (/^\+GTCAINFO: 1/) { lte_ca++; split($0, ca, ","); pch = ca[5]; pcica = ca[4] }
++			if (/\+GTCCINFO:/) { getline; getline; split($0, f, ",")
++				lac = (model~/952|FM/) ? sprintf("%d","0x"f[5]) : f[5]
++				cid = (model~/952|FM/) ? sprintf("%d","0x"f[6]) : f[6]
++				earfcn = (model~/952|FM/) ? sprintf("%d","0x"f[7]) : f[7]
++				pci = (model~/952|FM/) ? sprintf("%d","0x"f[8]) : f[8]
++				rsrq = sprintf("%.0f", -20 + (f[14]/2)); rsrp = sprintf("%.0f", f[13] - 140)
++				sinr = sprintf("%.0f", f[11]/4 + 5); bwc = f[10]; bw=map[bwc]}
++		}
++		mode !~ /LTE/ { # 3G mode
++			if (/CNTI/) { split($0, f, ",")
++				tech = f[2] }
++			if (/\+GTCCINFO:/) { getline; getline; split($0, f, ",")
++				lac = (model~/952|FM/) ? sprintf("%d","0x"f[5]) : f[5]
++				cid = (model~/952|FM/) ? sprintf("%d","0x"f[6]) : f[6]
++				earfcn = (model~/952|FM/) ? sprintf("%d","0x"f[7]) : f[7]
++				sinr = (model~/952|FM/) ? sprintf("%.0f", -24+(f[12]*24/255)) : sprintf("%.0f", -24+(f[14]*24/255))}
++		}
++
++		END { print  earfcn "|" lac "|" cid "|" tech "|" rsrq "|" rsrp "|" sinr "|" pci "|" bwc "|" bw "|" lte_ca "|" pcica "|" pch }
++		
++	')
++	# Define variables
++	EARFCN=${1}; LAC=${2}; CID=${3}; SINR=${7}
++	IFS="$OIFS"; unset OIFS
++
++	if [ "$MODE" = "LTE" ]; then
++		RSRQ=${5}; RSRP=${6}; PCI=${8}; BWDx=${9}; BWDL=${10}; PCICA=${12}; PCH=${13}; LTE_CA=${11}
++		ENBx=$(echo $CID | sed -e 's/..$//')
++		CELL=$(printf %d 0x${CID: -2})
++		ENBID=$(printf %d 0x$ENBx)
++
++		if [ "$EARFCN" = "$PCH" ] && [ "$PCI" = "$PCICA" ]; then
++			OIFS="$IFS"; IFS="|" # Get LTE-A bandwith and CA bands
++			set -- $(echo "$O" | awk -F'[,]' -v model="$MODEL" -v mode="$MODE" -v bwp="${BWDx:-0}" '
++				BEGIN { scc = ""; sum = 0; bwp_num = (bwp == 15 ? 1.3 : bwp/5) }
++				function earfcn_to_band(channel) {
++					if (channel <= 1) return ""
++						cmd = "/usr/share/modeminfo/scripts/ch_to_band " mode " " channel
++						cmd | getline band
++						close(cmd)
++						return band
++					}
++				{
++				if (model ~ /FM|952/ && /^SCC[0-9]+:/) {
++					chan_field = 5; bw_field = 6
++				} else if (/\+GTCAINFO: 2/) {
++					chan_field = 4; bw_field = NF
++				} else {
++					next
++				}
++			        if ($chan_field > 1) {
++					band = earfcn_to_band($chan_field)
++					if (band != "") scc = scc "+" band
++					sum += $bw_field/5; bwca = sum + bwp_num
++				}
++				} END { print scc "|" bwca }
++			')
++			SCC=${1}; BWCA=${2}
++			IFS="$OIFS"; unset OIFS
++		fi
++	else
++		TECH=${4}
++		[ "x$TECH" != "x" ] && MODE="$TECH"
++	fi
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++		LAC=$(printf %d 0x$LAC); CID=$(printf %d 0x$CID)
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/FIBOCOM.at b/package/modeminfo/root/usr/share/modeminfo/scripts/FIBOCOM.at
+new file mode 100644
+index 0000000..8591501
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/FIBOCOM.at
+@@ -0,0 +1,16 @@
++ATE0
++AT+COPS=3,0; +COPS?; +CREG?
++AT+CEREG=2
++AT+CEREG?
++AT+CGREG=2
++AT+CGREG?
++AT+CSQ
++AT+GTCCINFO?; +GTCAINFO?
++AT*CNTI=0
++AT+MTSM=1
++AT+CGMI?
++AT+CGMM?
++AT+CGMR?
++AT+CIMI?
++AT+ICCID
++AT+CGSN?
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/GENERIC b/package/modeminfo/root/usr/share/modeminfo/scripts/GENERIC
+new file mode 100644
+index 0000000..788f4e8
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/GENERIC
+@@ -0,0 +1,5 @@
++# Generic modem data
++modem_data(){
++	REGST=$(echo "$O" | awk -F[,] '/\+CREG/ {print $2}')
++	generic_data
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/GENERIC.at b/package/modeminfo/root/usr/share/modeminfo/scripts/GENERIC.at
+new file mode 100644
+index 0000000..3b7edf7
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/GENERIC.at
+@@ -0,0 +1,6 @@
++ATE0
++AT+CSQ
++AT+COPS=3,0; +COPS?
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CGMI; +CGMM; +CGMR; +ICCID; +CGSN; +CIMI
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN b/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN
+new file mode 100644
+index 0000000..114dc14
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN
+@@ -0,0 +1,53 @@
++function modem_data(){
++	DATA=$(echo "$O" | grep -Ev '^OK')
++	MANUF=$(echo "$DATA" | awk 'c&&! --c;/ZCHIPTEMP/{c=1}')
++	MODEL=$(echo "$DATA" | awk 'c&&! --c;/ZCHIPTEMP/{c=2}')
++	FW=$(echo "$DATA" | awk 'c&&! --c;/ZCHIPTEMP/{c=3}')
++	DEVICE="$MANUF $MODEL"
++	TECH=$(echo "$DATA" | awk -F [,] '/\+COPS/{print $NF}')
++	ICCID=$(echo "$DATA" | awk '/ZGETICCID/{print $2}')
++	IMSI=$(echo "$DATA" | awk 'c&&! --c;/ZGETICCID/{c=1}')
++	IMEI=$(echo "$DATA" | awk 'c&&! --c;/ZGETICCID/{c=2}')
++	CHIPTEMP=$(echo "$DATA" | awk '/\+ZCHIPTEMP/{print $2}')
++
++	case $TECH in
++		0|1) MODE=GSM ;;
++		2) MODE=WCDMA ;;
++		3) MODE=EDGE ;;
++		4) MODE=HSDPA ;;
++		5) MODE=HSUPA ;;
++		6) MODE=HSDPA,HSUPA ;;
++		7) MODE=LTE ;;
++		8) MODE=DC-HSPA+ ;;
++	esac
++
++	case $TECH in
++		7)
++			PCI=$(echo "$DATA" | awk -F [:,] '/\+ZCDS/{print $10}')
++			EEMGINFO=$(echo "$O" | awk -F[':'] '/^\+EEMLTESVC:/ {print $2}')
++			EARFCN=$(echo $EEMGINFO | awk -F [,] '{print $6}')
++			LAC=$(echo $EEMGINFO | awk -F [,] '{printf "%x\n", toupper($4)}')
++			CID=$(echo $EEMGINFO | awk -F [,] '{printf "%x\n", toupper($21)}')
++			ENBx=$(echo $CID | sed -e 's/..$//')
++			ENBID=$(printf %d 0x$ENBx)
++			CELL=$(printf %d 0x${CID: -2})
++			PCI=$(echo $EEMGINFO | awk -F [,] '{print $5}')
++			RSRQ=$(echo $EEMGINFO | awk -F[,] '{printf "%.0f\n", -19.5+$11/2}')
++			RSRP=$(echo $EEMGINFO | awk -F[,] '{print -140+$10'})
++			SINR=$(echo $EEMGINFO | awk -F[','] '{printf "%.0f\n", $12/4+5}')
++			BWDL=$(echo $EEMGINFO | awk -F[','] '{print $9}')
++		;;
++		2|4|5|6|8)
++			EEMGINFO=$(echo "$O" | awk -F[':'] '/^\+EEMUMTSSVC/ {print $2}')
++			EARFCN=$(echo $EEMGINFO | awk -F [,] '{print $20}')
++			SINR=$(echo $EEMGINFO | awk -F [,] '{printf "%.0f\n", -24+$6/2}')
++			LAC=$(echo $EEMGINFO | awk -F [,] '{printf "%x\n", toupper($16)}')
++			CID=$(echo $EEMGINFO | awk -F [,] '{printf "%x\n", toupper($17)}')
++			
++		;;
++	esac
++	if [ $(uci -q get modeminfo.@generic[0].decimail) -eq 1 ]; then
++                LAC=$(printf %d 0x$LAC)
++                CID=$(printf %d 0x$CID)
++        fi	
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN.at b/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN.at
+new file mode 100644
+index 0000000..be44f49
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN.at
+@@ -0,0 +1,5 @@
++ATE0
++AT+COPS=3,0; +COPS?; +CREG?; +CGREG?; +CGREG?; +CEREG?; +CSQ
++AT+EEMGINFO?
++AT+ZCHIPTEMP?
++AT+CGMI; +CGMM; +CGMR; +ZGETICCID; +CIMI ;+CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/HUAWEI b/package/modeminfo/root/usr/share/modeminfo/scripts/HUAWEI
+new file mode 100644
+index 0000000..cad10fa
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/HUAWEI
+@@ -0,0 +1,68 @@
++# Huawei modems
++function modem_data(){
++	# Get hw and sim info
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk -F [:] -v fam=$FAMILY '
++		BEGIN { IGNORECASE=1 }
++		$0 ~ fam { gsub(",", "")
++			manuf = $1 $2
++			if ((getline line) > 0) model = line
++			if ((getline line) > 0) fw = line
++		}
++		/ICCID/ { split($0, parts, /:[[:space:]]*/)
++			iccid = parts[2]
++			if ((getline line) > 0) imsi = line
++			if ((getline line) > 0) imei = line
++		}
++		/^\^CHIPTEMP/ {n=split($0, t, ",")
++			temp=sprintf("%.0f", t[n]/10)
++		}
++		END { print model "|" fw "|" iccid "|" imsi "|" imei "|" temp "|" manuf}
++	')
++	
++	MANUF=${7}; MODEL=${1}; FW=${2}; ICCID=${3}; IMSI=${4}; IMEI=${5}; CHIPTEMP=${6}
++	IFS="$OIFS"; unset OIFS
++	DEVICE="$MANUF $MODEL"
++
++	# get signal info
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk -v mode="$MODE" '
++		BEGIN {
++			tmap[1]="GSM"; tmap[2]="GPRS"; tmap[3]="EDGE"; tmap[4]="UMTS"; tmap[5]="HSDPA"; tmap[6]="HSUPA"
++			tmap[7]="HSPA"; tmap[9]=tmap[17]=tmap[18]="HSPA+"
++			bmap[1400]=0; bmap[3000]=1; bmap[5000]=2; bmap[10000]=3; bmap[15000]=4; bmap[20000]=5
++		}
++		/^\^SYSINFOEX/{ gsub("\"",""); n=split($0, m, ",")
++			mode=m[n]; tech=m[6]
++			if (length(mode) == 0) mode=tmap[tech]
++		}
++		/^\+CGREG/ {gsub("\"","");split($0, r, ","); gsub("\"","")
++			lac=r[3]; cid=r[4]
++			cell = sprintf("%d", "0x" substr(cid, length(cid) - 1, 2))
++			enbid = sprintf("%d", "0x" substr(cid, 1, length(cid) - 2))
++		}
++		/^\^HFREQINFO/{split($0, r, ",")
++			earfcn=r[4]
++		}
++		/^\^MONSC/{ split($0, r, ",")
++			pci=r[6]
++			if (earfcn !~ "") earfcn=r[5]
++		}
++		/^\^HCSQ:/{split($0, r, ",")
++			rssi=-121+r[2]
++			if (mode ~ /LTE/)sinr=sprintf("%.0f", -20+r[4]/5); rsrp=-141+r[2]; rsrq=-20+r[5]/2
++			if (mode ~ /WCDMA|UMTS|3G|HS/) sinr=sprintf("%.0f",-32+a[4]); rscp=-121+a[3]
++		}
++		/^\^HFREQINFO/ { split($0, r, ",")
++			bwc=r[6]/1000; bw=bmap[r[6]]
++		}
++		END {print mode "|" lac "|" cid "|" earfcn "|" rssi "|" sinr "|" rsrp "|" rsrq "|" pci "|" cell "|" enbid "|" bw }
++	')
++	MODE=${1}; LAC=${2}; CID=${3}; EARFCN=${4}; CSQ_RSSI=${5}; SINR=${6}; RSRP=${7}; RSRQ=${8}; PCI=${9}; CELL=${10}; ENBID=${11} BWDL=${12}
++	IFS="$OIFS"; unset OIFS
++
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++                LAC=$(printf %d 0x$LAC)
++                CID=$(printf %d 0x$CID)
++        fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/HUAWEI.at b/package/modeminfo/root/usr/share/modeminfo/scripts/HUAWEI.at
+new file mode 100644
+index 0000000..85c01cb
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/HUAWEI.at
+@@ -0,0 +1,13 @@
++ATE0
++AT+COPS=3,0 
++AT+COPS?; +CREG?; +CSQ
++AT+CGREG=2
++AT+CGREG?; ^MONSC
++AT^HFREQINFO?
++AT^SYSINFOEX
++AT^LTERSRP?
++AT^CSNR?
++AT^HCSQ?
++AT^CHIPTEMP?
++AT^SYSCFGEX?
++AT+CGMI; +CGMM; +CGMR; ^ICCID?; +CIMI; +CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL b/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL
+new file mode 100644
+index 0000000..a66eb0f
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL
+@@ -0,0 +1,133 @@
++# Parser DATA form XMM and T7xx modems
++# copyright by Konstantine Shevlakov (koshev-msk) 2026
++
++function modem_data(){
++	generic_data
++	# hwdata
++	OIFS="$IFS";IFS="|"
++	set -- $(echo "$O" | awk '
++		/\+GTPKGVER:/{gsub("\"","");fw=$2}
++		/CGMI:/ {gsub("\"|\r","",$0); split($0,a,":"); manuf=a[2]}
++		/GMM:|FMM:/ {gsub("\"|\r","",$0); split($0,a,/[:,]/);  model=a[2]}
++		/CCID:/ {iccid=$2; getline imsi; getline imei}
++		/\+CIMI:/ {imsi=$2}
++		/\+CGSN:/ {imei=$2}
++		/\+MTSM:/ {split($0,a,":"); temp=a[2]}
++		END { print manuf "|" model "|" fw "|" iccid "|" imsi "|" imei "|" temp }
++	')
++	DEVICE="$(echo ${1} ${2})"; FW=${3}; ICCID=${4}; IMSI=${5}; IMEI=${6}; CHIPTEMP=${7}
++	IFS="$OIFS"; unset OIFS
++	# signal data
++	OIFS="$IFS";IFS="|"
++	set -- $(echo "$O" | awk -v mode="$MODE" '
++		# define maps and variables
++		BEGIN {
++			map[1]=15; map[2]=25; map[3]=50; map[4]=75; map[5]=100
++			csq_range["black"] = "0:0"; csq_range["red"] = "1:10"
++			csq_range["orange"] = "11:20"; csq_range["green"] = "21:50"
++			rsrp = rsrq = bwc = csq = rssi = csq_per = ""; csq_col = "black";
++		}
++		# text color percentage
++		function get_csq_color(csq_raw_val) {
++			if (csq_raw_val == "") return "black"
++			csq_num = csq_raw_val + 0
++			for (color in csq_range) {
++				split(csq_range[color], limits, ":")
++				min = limits[1] + 0; max = limits[2] + 0
++				if (csq_num >= min && csq_num <= max) {return color}
++			} return "black"
++		}
++		# lte mode
++		mode ~ /LTE/ {
++			if (/\+CEREG/){gsub("\"","");split($0,a,",");reg=a[2];lac=a[3]; cid=a[4]}
++			if (/\+XLEC:/){gsub("\r","");split($0,a,/[:,]/);lte_ca=a[3]-1;bw=a[4];bwc=(bw in map)?map[bw]:""}
++			if (/\+RSRP:/){split($0,a,/[:,]/);pci=a[2];earfcn=a[3];rsrp=sprintf("%.0f",a[4])}
++			if (/\+RSRQ:/){split($0,a,/[:,]/);rsrq=sprintf("%.0f",a[4])}
++			if (/\+XMCI: 4/){gsub(/"/,"");gsub("\r","");split($0,a,/[:,]/)
++				pci=sprintf("%d", a[7])
++				if (a[8] != "") earfcn=sprintf("%d", a[8])
++				if (a[11] != "" && (rsrp == "" || rsrp !~ /^-?[0-9]+$/ || rsrp < -141 || rsrp > -41))
++					rsrp=sprintf("%.0f", a[11] - 141)
++				if (a[12] != "" && (rsrq == "" || rsrq !~ /^-?[0-9]+$/ || rsrq < -40 || rsrq > -3))
++					rsrq=sprintf("%.0f", a[12] / 2 - 20)
++				if (a[13] != "") sinr=sprintf("%.0f", a[13] / 4 + 5)
++				if (a[14] != "") distance=sprintf("%.2f", (a[14] * 78.125 / 1000))
++			}
++			# RSSI not correct sending via modem. Calc manually.
++			if (rsrp != "" && bwc != "" && bwc > 0) {
++				csq_raw=sprintf("%.0f", ((rsrp+10*log(12*bwc)/log(10))+113)/2)
++				csq = (csq_raw > 50) ? 50 : csq_raw
++				csq_col = get_csq_color(csq)
++				csq_per = (csq > 30) ? 100 : sprintf("%.0f", csq*100/31); rssi=(2*csq-113)
++			}
++		}
++		# 3g mode
++		mode !~ /LTE/{
++			if (/\+CREG/){gsub("\"","");split($0,a,",");reg=a[2];lac=a[3];cid=a[4]}
++			if (/\+RSCP:/){split($0,a,",");earfcn=a[2]}
++			if (/\+XMCI: 2/) {n=split($0,a,",");sinr_raw=a[n-1]; rssi_raw=a[n-2]; sinr = sprintf("%.0f", (sinr_raw*24)/24-50); rssi = (rssi_raw*64/64-110)
++				csq=rssi_raw/2; csq_col = get_csq_color(csq); csq_per = (csq > 30) ? 100 : sprintf("%.0f", csq*100/31)}
++			rsrp=""
++		}
++		END {print reg "|" earfcn "|" lac "|" cid "|" rssi "|" sinr "|" rsrp "|" rsrq "|" bw "|" bwc "|" pci "|" lte_ca "|" csq_col "|" csq_per "|" distance}
++	')
++	REGST=${1}; EARFCN=${2}; LAC=${3}; CID=${4}; CSQ_RSSI=${5}; SINR=${6}; RSRP=${7}; RSRQ=${8}; BWDL=${9}; BWCx=${10}
++	PCI=${11}; LTE_CA=${12}; CSQ_COL=${13}; CSQ_PER=${14}; DISTANCE=${15}
++	IFS="$OIFS"; unset OIFS
++	if [ "$MODE" = LTE ]; then
++		ENBx=$(echo "$CID" | sed -e 's/..$//')
++		CELLx=$(echo "$CID" | sed -e 's/^.*\(..\)$/\1/')
++		CELL=$(printf %d 0x$CELLx)
++		ENBID=$(printf %d 0x$ENBx)
++		OIFS="$IFS";IFS="|"
++		set -- $(echo "$O"| awk -F '[:,]' -v lte_ca="${LTE_CA:-0}" -v mode="$MODE" '
++			# define maps and variables
++			BEGIN { map[1]=3; map[2]=5; map[3]=10; map[4]=15; map[5]=20; scc = "" }
++			function earfcn_to_band(channel, cmd, band) {
++				if (channel == "" || channel == "0") return "N/A"
++				cmd = "/usr/share/modeminfo/scripts/ch_to_band " mode " " channel
++				cmd | getline band
++				close(cmd)
++				return (band != "" ? band : "")
++			}
++			# find secondary CA bands
++			/\+RSRP:/ {
++				for (i = 1; i <= lte_ca; i++) {
++					field_num = 6 + 3 * (i - 1)
++					if (field_num <= NF) {
++						earfcn = $field_num; band = earfcn_to_band(earfcn)
++						if (band != "") {
++							scc = (scc == "") ? "+" band : scc "+" band
++				                }
++					}
++				}
++			}
++			# bandwith summ CA
++			/\+XLEC/ {
++				gsub("\r", "", $0); bwca = 0
++			        if (lte_ca >= 1 && NF >= 5) {
++					val1 = $4 + 0; val2 = $5 + 0
++					if (val1 in map) bwca += map[val1]
++					if (val2 in map) bwca += map[val2]
++				}
++				for (i = 2; i <= lte_ca; i++) {
++					field_num = 4 + i  # 6, 7, 8, ...
++					if (field_num <= NF) {
++						val = $(field_num) + 0
++						if (val in map) {
++							bwca += map[val]
++						}
++					}
++				}
++			}
++			END { print scc "|" bwca }
++		')
++		SCC=${1}; BWCA=${2}
++		IFS="$OIFS"; unset OIFS
++	fi
++
++	if [ "$(uci -q get modeminfo.@general[0].decimail)" = "1" ]; then
++		LAC=$(printf %d 0x$LAC)
++		CID=$(printf %d 0x$CID)
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL.at b/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL.at
+new file mode 100644
+index 0000000..9b35cfa
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL.at
+@@ -0,0 +1,9 @@
++ATE0
++AT+COPS=3,0; +COPS?
++AT+CEREG=2; +CEREG?
++AT+CREG=2; +CREG?; +CSQ?
++AT+XCESQ?; +RSRP?; +RSRQ?; +RSCP?
++AT+XLEC?
++AT+MTSM=1
++AT+XMCI=1
++AT+GTPKGVER?; +CGMI; +GMM?; +CCID; +CIMI; +CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL_FM350 b/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL_FM350
+new file mode 100644
+index 0000000..1900319
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL_FM350
+@@ -0,0 +1,106 @@
++# Fibocom FM350 parse data
++#
++
++function ch_to_band(){
++	/usr/share/modeminfo/scripts/ch_to_band $1 $2
++}
++
++function modem_data(){
++	generic_data
++
++	# get hw and sim data
++	IFS="$IFS";IFS="|"
++	set -- $(echo "$O" | awk -F [:] '
++		{ gsub(/"/, ""); sub(/^[[:space:]]+/, "", $2);sub(/[[:space:]]+$/, "", $2)
++			if (/GTPKGVER/) { fw = $2 }
++			if (/CGMI/) { manuf = $2 }
++			if (/CGMM/) { model = $2 }
++			if (/CGMR/) { version = $2 }
++			if (/CIMI/) { imsi = $2 }
++			if (/ICCID/) { iccid = $2 }
++			if (/CGSN/) { imei = $2 }
++			if (/GTSENRDTEMP/) {n=split($0,t,","); temp=sprintf("%.0f", t[n]/1000)}
++		}
++		END { print manuf "|" model "|" fw "|" iccid "|" imsi "|" imei "|" temp }
++	')
++
++	MANUF=${1}; MODEL=${2}; FW=${3}; ICCID=${4}; IMSI=${5}; IMEI=${6}; CHIPTEMP=${7}
++	IFS="$OIFS"; unset OIFS
++	DEVICE="$MANUF $MODEL"
++
++	# Get signal info
++	IFS="$IFS";IFS="|"
++	set -- $(echo "$O" | awk -v mode="$MODE" -F [,] '
++		BEGIN {
++			bmap[15]=1; bmap[25]=2; bmap[50]=3; bmap[75]=4; bmap[100]=5
++			nmap[15]=3; nmap[25]=5; nmap[50]=10; nmap[75]=15; nmap[100]=20
++			csq_range["black"] = "0:0"; csq_range["red"] = "1:10"
++			csq_range["orange"] = "11:20"; csq_range["green"] = "21:50"
++		}
++
++		# text color percentage
++		function get_csq_color(csq_raw_val) {
++			if (csq_raw_val == "") return "black"
++			csq_num = csq_raw_val + 0
++			for (color in csq_range) {
++				split(csq_range[color], limits, ":")
++				min = limits[1] + 0; max = limits[2] + 0
++				if (csq_num >= min && csq_num <= max) {return color}
++			} return "black"
++		}
++
++		mode ~ /LTE/ { gsub("\"",""); gsub(/[[:space:]]+/, "")
++			if (/\+CEREG/){ gsub("\"","")
++				reg=$2; lac=$3; cid=$4
++			}
++			if (/^\+CESQ/){split ($1, r, ":")
++				rssi=r[2]-110; csq_raw = sprintf("%.0f", (rssi + 113)/2); csq=(csq_raw>30) ? 30 : csq_raw
++				csq_col=get_csq_color(csq); csq_per=sprintf("%.0f", csq*100/31)
++			}
++			if(/\+GTCCINFO:/){ getline; earfcn=$7; rsrq=sprintf("%.0f", -20+($14/2)); rsrp=sprintf("%.0f", $13-140)
++				sinr=sprintf("%.0f",($11/4)+5); pci=$8; bw=bmap[$10]; bwc=nmap[$10]
++			}
++			if (/SCC/){lte_ca++}
++			cell = sprintf("%d", "0x" substr(cid, length(cid) - 1, 2))
++			enbid = sprintf("%d", "0x" substr(cid, 1, length(cid) - 2))
++		}
++		mode !~ /LTE/{
++			if (/\+CGREG/){ gsub("\"","")
++				reg=$2; lac=$3; cid=$4
++			}
++			if (/^\+CESQ/){
++				rssi=sprintf("%.0f",((95*$3)/96-120)); csq_raw = sprintf("%.0f", (rssi + 113)/2); csq=(csq_raw>30) ? 30 : csq_raw
++				csq_col=get_csq_color(csq); csq_per=sprintf("%.0f", csq*100/31); sinr=sprintf("%.0f",(24*$4)/49-24)
++			}
++			if(/\+GTCCINFO:/){ getline; earfcn=$7 }
++		}
++		END { print reg "|" lac "|" cid "|" earfcn "|" rssi "|" sinr "|" rsrp "|" rsrq "|" pci "|" bw "|" bwc "|" lte_ca "|" csq_col "|"  csq_per "|" enbid "|" cell }
++	')
++
++	REGST=${1}; LAC=${2}; CID=${3}; EARFCN=${4}; CSQ_RSSI=${5}; SINR=${6}; RSRP=${7}; RSRQ=${8}; PCI=${9}; BWDL=${10}; BWDx=${11}
++	LTE_CA=${12}; CSQ_COL=${13}; CSQ_PER=${14}; ENBID=${15}; CELL=${16}
++	IFS="$OIFS"; unset OIFS
++	# Calc LTE CA
++	if [ "$LTE_CA" -ge "1" ]; then
++		IFS="$IFS";IFS="|"
++		set -- $(echo "$O" | awk -v mode=$MODE -v bwcx=$BWDx -F [,] '
++			BEGIN { sum = 0 }
++			function earfcn_to_band(channel, cmd, band) {
++				if (channel == "" || channel == "0") return "N/A"
++				cmd = "/usr/share/modeminfo/scripts/ch_to_band " mode " " channel
++				cmd | getline band
++				close(cmd)
++				return (band != "" ? band : "")
++			}
++			/SCC/{ scc = scc "+" earfcn_to_band($5); scc_ca += $6/5; bwca=bwcx+scc_ca }
++			END { print scc "|" bwca }
++		')
++		SCC=${1}; BWCA=${2}
++		IFS="$OIFS"; unset OIFS
++	fi
++
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++		LAC=$(printf %d 0x$LAC)
++		CID=$(printf %d 0x$CID)
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL_FM350.at b/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL_FM350.at
+new file mode 100644
+index 0000000..c448009
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/INTEL_FM350.at
+@@ -0,0 +1,7 @@
++ATE0
++AT+COPS=3,0; +COPS?
++AT+CEREG=2; +CEREG?
++AT+CGREG=2; +CGREG?; +CESQ
++AT+GTCCINFO?; +GTCAINFO?
++AT+GTSENRDTEMP=1
++AT+GTPKGVER?; +CGMI?; +CGMM?; +CGMR?; +CIMI?; +ICCID; +CGSN?
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/MEIGLINK b/package/modeminfo/root/usr/share/modeminfo/scripts/MEIGLINK
+new file mode 100644
+index 0000000..3b4a9f6
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/MEIGLINK
+@@ -0,0 +1,70 @@
++# Meiglink modems
++
++function modem_data(){
++	generic_data
++	# hwinfo
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk '
++	/^\+CGMI:/ {manuf = $2" "$3}; /^\+CGMM:/ {model = $2}; /^\+CGMR:/ {fw = $2}; /^\+TEMP:.*cpuss-usr/ {gsub("\"",""); split($2,t,","); temp = t[2]}
++        /^[0-9]{15}$/ {
++            if (!imsi) imsi = $0; else if (!imei) imei = $0
++        } /^ICCID:/ { iccid = $2; sub(/\r$/, "", iccid)
++        } END { print manuf "|" model "|" fw "|" imsi "|" imei "|" iccid "|" temp } ')
++	DEVICE="${1} ${2}"; FW=${3}; IMSI=${4}; IMEI=${5}; ICCID=${6}; CHIPTEMP=${7}
++	IFS="$OIFS"; unset OIFS
++
++	# signal info
++	OIFS="$IFS"; IFS="|"
++	 
++	set -- $(echo "$O" | awk -F'[\,]' '
++		/^\$QCSQ/ {split(substr($0, index($0,":")+1), a, ","); qcsq = a[1]; ecio = $2}
++		/^\+CSQ:/ {split($1,b,":\ "); csq = b[2]}
++		/^\^CELLINFO:/ {
++			split($1, p, ":"); mode = p[2]
++			if (mode == "LTE") {
++				lte_ca++
++				lac_h = sprintf("%X", $9); cid_h = sprintf("%X", $5); sinr = sprintf("%.0f", $17/5 - 20)
++				rfcn = $12; rssi = $14; rsrp = $15; rsrq = $16; pci = $6; bw = ($11==15 ? 3 : $11/5)
++				bwc_map[20] = 5; bwc_map[15] = 4; bwc_map[10] = 3; bwc_map[5] = 2; bwc_map[1.3] = 1
++				bwc = bwc_map[bw]
++				print mode "|" rfcn "|" lac_h "|" cid_h "|" rssi "|" sinr "|" rsrp "|" rsrq "|" \
++					pci "|" bw "|" bwc "|" qcsq "|" csq "|" lte_ca
++			} else if (mode ~ /WCDMA|UMTS/) {
++				lac_h = sprintf("%X", $6); cid_h = sprintf("%X", $7)
++				rfcn = $9; rssi = qcsq; sinr = ecio
++				print mode "|" rfcn "|" lac_h "|" cid_h "|" rssi "|" sinr
++			} else {
++				lac_h = sprintf("%X", $6); cid_h = sprintf("%X", $7)
++				rfcn = $9; rssi = qcsq
++				print mode "|" rfcn "|" lac_h "|" cid_h "|" rssi
++			}
++			exit
++		} END {if (!mode) print "NO_CARRIER"}') 
++	
++	MODE="${1}" EARFCN=${2}; LAC=${3}; CID=${4}; CSQ_RSSI=${5}
++	IFS="$OIFS"; unset OIFS
++	case $MODE in
++		*LTE*)
++			SINR=${6}; RSRP=${7}; RSRQ=${8}; PCI=${9}; BWC=${10}; BWDL=${11}; LTE_CA=${14}
++			CELL=$(printf %d 0x${CID: -2})
++			ENBx=$(echo $CID | awk '{print $1}' | sed -e 's/..$//' )
++			ENBID=$(printf %d 0x$ENBx)
++			LTE_CA=$(echo "$O" | awk '/\^CELLINFO: / {print $0}' | wc -l)
++			if [ $LTE_CA -gt 0 ]; then
++				LTE_CA=1; OIFS="$IFS"; IFS="|"
++				set -- $(echo "$O" | awk -v bwdl=${BWC:-0} -F [,] '
++					/CELLINFO: "SCC"/{bands = bands "+" $7; sum+=$6/5; bwca=sum+bwdl}
++					END{print bands "|" bwca}
++				')
++				BWCA=${2}; SCC=${1}
++				IFS="$OIFS"; unset OIFS BWC
++			fi
++		;;
++		WCDMA|UMTS) SINR=${6} ;;
++	esac
++	unset OIFS
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ] ; then
++		LAC=$(printf "%d" 0x${LAC})
++		CID=$(printf "%d" 0x${CID})
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/MEIGLINK.at b/package/modeminfo/root/usr/share/modeminfo/scripts/MEIGLINK.at
+new file mode 100644
+index 0000000..85fb399
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/MEIGLINK.at
+@@ -0,0 +1,6 @@
++ATE0
++AT+COPS=3,0; +COPS?; +CREG?; +CGREG=2; +CGREG?; +CEREG?; +CSQ
++AT$QCSQ
++AT^CELLINFO=1; ^CELLINFO=3
++AT+TEMP
++AT+CGMI; +CGMM; +CGMR; +CIMI; +ICCID; +CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/MIKROTIK b/package/modeminfo/root/usr/share/modeminfo/scripts/MIKROTIK
+new file mode 100644
+index 0000000..60f8b78
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/MIKROTIK
+@@ -0,0 +1,99 @@
++# MikroTik R11e-LTE, R11e-LTE6 modem (plat.ver."OpenWrt-18.06.7" router: MikroTik RBM33")
++# NEED REWRITE FUNCTION for atinout compatible!!!
++function modem_data() {
++	O=$(echo "$O" | grep -Ev '^$|^OK|^AT' | sort)	
++	TECH=$(echo "$O" | awk -F[,] '/^\+COPS/ {print $4}')
++	FW=$(echo "$O" | awk '/^\+CGMR/{gsub("\"|\r","",$0); print $2}')
++	REGST=$(echo "$O" | awk -F[,] '/\+CREG/{print $2}')
++	EEMGSTATE=-1
++	case "$TECH" in
++		0*|1*) # GSM, GSM Compact
++			MODE="GSM"
++			EEMGSTATE=0
++		;;   
++		2*) # UTRAN
++			MODE="UMTS" 
++			EEMGSTATE=0
++		;;    
++		3*) # GSM w/EGPRS
++			MODE="EDGE"
++			EEMGSTATE=0
++		;;    
++		4*|5*) # UTRAN w/HSDPA, UTRAN w/HSUPA
++			MODE="HSDPA"
++			EEMGSTATE=1
++		;;
++		6*) # UTRAN w/HSDPA and HSUPA
++			MODE="HSUPA"
++			EEMGSTATE=1
++		;;    
++		7*) # E-UTRAN
++			MODE="LTE"
++			EEMGSTATE=2
++		;;      
++		8*) # UTRAN HSPA+
++			MODE="HSPA"
++			EEMGSTATE=2
++		;;    
++		 *) 
++			MODE="--"
++		;;
++	esac
++	DEVx="$(echo "$O" | awk -F [:,] '/CGMI:|GMM:/{gsub("\"|\r","",$0);print substr($2,2);}')"
++	DEVICE=$(echo $DEVx)
++	IMEI=$(echo "$O" | awk -F [:,] '/\+CGSN:/{gsub(" ","", $2); print $2}')
++	# Need Chenges
++	IMSI=$(echo "$O" | awk -F [:,] '/\+CIMI/{gsub(" ","", $2); print $2}')
++	ICCID=$(echo "$O" | awk -F [:,] '/\+ICCID/{gsub(" ","", $2); print $2}')
++	CSQ_RSSI=$(echo "$O" | awk -F[':,'] '/^\+CESQ:/ {print $2}')
++	ECIO=$(echo "$O" | awk -F[':,'] '/^\+CESQ:/ {print $5}')
++	# If less than 11 -> error
++	if [ "x$CSQ_RSSI" != "x" ]; then
++		CSQ_RSSI=$(echo $CSQ_RSSI | awk '{if((110 - $1) > 11) print 110 - $1; else print "";}')
++	fi
++	if [ "x$ECIO" != "x" ]; then
++		ECIO=$(echo $ECIO | awk '($1 < 255) {print 25 - $1 * 0.5}')
++	fi
++	# LTE Engineering Mode
++	if [ $EEMGSTATE -eq 2 ]; then
++		EEMGINFO=$(echo "$O" | awk -F[':'] '/^\+EEMLTESVC:/ {print $2}')
++		if [ "x$EEMGINFO" != "x" ]; then
++			BW=$(echo $EEMGINFO | awk -F[','] '{print $8}')
++			BWDL=$(echo $EEMGINFO | awk -F[','] '{print $9}')
++			PCI=$(echo $EEMGINFO | awk -F [,] '{print $5}')
++			RSRP=$(echo $EEMGINFO | awk -F[','] '{print -140+$11}')
++			RSRQ=$(echo $EEMGINFO | awk -F[','] '{printf "%.0f\n", -19.5+$11/2}')
++			SINR=$(echo $EEMGINFO | awk -F[','] '{printf "%.0f\n", ($13/4+5)}')
++			COPS_MCC=$(echo $EEMGINFO | awk -F[','] '{print $1}')
++			COPS_MNC=$(echo $EEMGINFO | awk -F[','] '{print $3}')
++			LAC=$(echo "$O" | awk -F [,] '/^\+CREG/{print toupper($3)}')
++			CID=$(echo "$O" | awk -F [,] '/^\+CREG/{print toupper($4)}')
++			ENBx=$(echo $CID | sed -e 's/..$//')
++			ENBID=$(printf %d 0x$ENBx)
++			CELL=$(printf %d 0x${CID: -2})
++			EARFCN=$(echo $EEMGINFO | awk -F[','] '{print $6}')
++		fi
++	# UMTS Engineering Mode
++	elif [ $EEMGSTATE -eq 1 ]; then
++		COPS_NUM=$(echo "$O" | awk -F[":"] '/^\+EEMUMTSSV:/ {print $2}')
++		if [ "x$EEMGINFO" != "x" ]; then
++			COPS_MCC=$(echo $EEMGINFO | awk -F[','] '{print $11}')
++			COPS_MNC=$(echo $EEMGINFO | awk -F[','] '{print $12}')
++		fi
++	# GSM Engineering Mode
++	elif [ $EEMGSTATE -eq 0 ]; then
++		COPS_NUM=$(echo "$O" | awk -F[":"] '/^\+EEMGINFOSVC:/ {print $2}')
++		if [ "x$EEMGINFO" != "x" ]; then
++			COPS_MCC=$(echo $EEMGINFO | awk -F[','] '{print $1}')
++			COPS_MNC=$(echo $EEMGINFO | awk -F[','] '{print $2}')
++		fi
++	fi
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++                LAC=$(printf %d 0x$LAC)
++                CID=$(printf %d 0x$CID)
++        fi
++	COPS=$(awk -F[\;] '/'$COPS_NUM'/ {print $2}' $RES/mccmnc.dat)
++	if [ "x$COPS" = "x" ]; then
++		COPS="$COPS_MCC $COPS_MNC"
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/MIKROTIK.at b/package/modeminfo/root/usr/share/modeminfo/scripts/MIKROTIK.at
+new file mode 100644
+index 0000000..c813c47
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/MIKROTIK.at
+@@ -0,0 +1,10 @@
++ATE0
++AT+COPS=3,0; +COPS?
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CEREG=2; +CEREG?
++AT+CESQ
++AT+EEMOPT=1
++AT+EEMGINFO?
++AT+CGMI; +CGMM; +CGMR; +CGSN; +CIMI
++AT+ICCID
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM b/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM
+new file mode 100644
+index 0000000..da2ac3b
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM
+@@ -0,0 +1,52 @@
++# Qualcomm Modems (FoxConn T77W678, Telit LN940, HP LT4220)
++function modem_data(){
++        generic_data
++	# hwinfo and siminfo
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk -v fam="$FAMILY" '
++		($0 ~ fam){manuf =$0; getline model; getline fw}
++		/ICCID:/{split($0,i,":");gsub("\r",""); iccid=i[2]; getline imsi; getline imei}
++		/tsens_tz_sensor0:/{split($0,i,":");temp=i[2]}	
++		END{print manuf "|" model "|" fw "|" iccid "|" imsi "|" imei "|" temp}
++	')
++	MANUF=${1}; MODEL=${2}; FW=${3}; ICCID=${4}; IMSI=${5} IMEI=${6}; CHIPTEMP=${7}
++	IFS="$OIFS"; unset OIFS
++        DEVICE="$MANUF $MODEL"
++	OIFS="$IFS"; IFS="|"
++	# signal
++	set -- $(echo "$O" | awk -v mode="$MODE" '
++		BEGIN { map[3]=1; map[5]=2; map[10]=3; map[15]=4; map[20]=5 }
++		mode ~ /LTE/ { # LTE mode
++			if (/\+CEREG/){gsub("\"",""); split($0,i,","); reg=i[2]; lac=i[3]; cid=i[5]}
++			if (/RFSTS:/){ getline; split($0,i,","); earfcn=i[2]; rssi=sprintf("%.0f",i[4]); rsrp=sprintf("%.0f",i[3])
++				sinr=sprintf("%.0f",i[16]/4+5); rsrq=sprintf("%.0f",i[5]); pci=i[11]
++			}
++			if (/SCC/){lte_ca++}
++			if (/PCC info/){bwc=sprintf("%.0f",$(NF-1)); bw=map[bwc]}
++			cell = sprintf("%d", "0x" substr(cid, length(cid) - 1, 2))
++			enbid = sprintf("%d", "0x" substr(cid, 1, length(cid) - 2))
++		}
++		mode !~ /LTE/ { # 3G mode
++			if (/\+CREG/){gsub("\"",""); split($0,i,","); reg=i[2]; lac=i[3]; cid=i[4]}
++			if (/RFSTS:/){ getline; split($0,i,","); earfcn=i[2]; rssi=sprintf("%.0f",i[6]); sinr=sprintf("%.0f",i[4])}
++		}
++		END { print reg "|" earfcn "|" lac "|" cid "|" rssi "|" sinr "|" rsrp "|" rsrq "|" pci "|" bw "|" bwc "|" lte_ca "|" enbid "|" cell}
++	')
++	EARFCN=${2}; LAC=${3}; CID=${4}; CSQ_RSSI=${5}; SINR=${6}; RSRP=${7}; RSRQ=${8}; PCI=${9}; BWDL=${10}; BWDx=${11}; LTE_CA=${12}; ENBID=${13}; CELL=${14}
++	IFS="$OIFS"; unset OIFS
++	# LTE CA calc
++	if [ $LTE_CA -ge 1 ]; then
++		OIFS="$IFS"; IFS="|"
++		set -- $(echo "$O" | awk -v bwc=${BWDx:-0} '
++			/^SCC\d info:/ {for(i=1; i<=NF; i++) { if($i ~ /LTE_B/) { gsub(/[^0-9]/, "", $i); scc = scc "+" $i}}
++				bwca_raw += sprintf("%.0f", $8); bwca=bwca_raw+bwc }
++			END { print scc "|" bwca }')
++			SCC=${1}; BWCA=${2}
++			IFS="$OIFS"; unset OIFS BWDx
++        fi
++
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++		LAC=$(printf %d 0x$LAC)
++		CID=$(printf %d 0x$CID)
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM.at b/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM.at
+new file mode 100644
+index 0000000..9e55906
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM.at
+@@ -0,0 +1,10 @@
++ATE0
++AT+COPS=3,0; +COPS?
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CEREG=2; +CEREG?
++AT+CSQ
++AT^RFSTS?
++AT^CA_INFO?
++AT+CGMI; +CGMM; +CGMR; +ICCID; +CIMI; +CGSN
++AT+TEMP
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM_LM960 b/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM_LM960
+new file mode 100644
+index 0000000..609c4f8
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM_LM960
+@@ -0,0 +1,73 @@
++# Qualcomm Modems (FoxConn T77W678, Telit LN940, HP LT4220)
++function modem_data(){
++        generic_data
++	# hwinfo and siminfo
++	FAMILY_EX="Telit"
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk -v fam="$FAMILY_EX" '
++		($0 ~ fam){manuf =$0; getline model; getline fw}
++		/ICCID:/{split($0,i,":");gsub("\r",""); iccid=i[2]; getline imsi; getline imei}
++		/TSENS2/{split($0,i,",");temp=i[2]}	
++		END{print manuf "|" model "|" fw "|" iccid "|" imsi "|" imei "|" temp}
++	')
++	MANUF=${1}; MODEL=${2}; FW=${3}; ICCID=${4}; IMSI=${5} IMEI=${6}; CHIPTEMP=${7}
++	IFS="$OIFS"; unset OIFS
++        DEVICE="$MANUF $MODEL"
++	OIFS="$IFS"; IFS="|"
++	# signal
++	set -- $(echo "$O" | awk -v mode="$MODE" '
++		BEGIN { map[1]=3; map[2]=5; map[3]=10; map[4]=15; map[5]=20 }
++		mode ~ /LTE/ { # LTE mode
++			if (/\+CEREG/){gsub("\"",""); split($0,i,","); reg=i[2]; lac=i[3]; cid=i[4]}
++			if (/CAINFO:/){ split($0,i,","); earfcn=i[2]; rssi=sprintf("%.0f",i[6]); rsrp=sprintf("%.0f",i[5]);
++				sinr=sprintf("%.0f",i[8]/5-20); rsrq=sprintf("%.0f",i[7]); pci=i[4]; bw=sprintf("%.0f",i[3]);
++				lte_ca=i[15]; bwc=map[bw]
++			}
++			if (/PCC info/){bwc=sprintf("%.0f",$(NF-1)); bw=map[bwc]}
++			cell = sprintf("%d", "0x" substr(cid, length(cid) - 1, 2))
++			enbid = sprintf("%d", "0x" substr(cid, 1, length(cid) - 2))
++		}
++		mode !~ /LTE/ { # 3G mode
++			if (/\+CREG/){gsub("\"",""); split($0,i,","); reg=i[2]; lac=i[3]; cid=i[4]}
++			if (/RFSTS:/){ split($0,i,","); earfcn=i[2]; rssi=sprintf("%.0f",i[6]); sinr=sprintf("%.0f",i[4])}
++		}
++		END { print reg "|" earfcn "|" lac "|" cid "|" rssi "|" sinr "|" rsrp "|" rsrq "|" pci "|" bw "|" bwc "|" lte_ca "|" enbid "|" cell}
++	')
++	EARFCN=${2}; LAC=${3}; CID=${4}; CSQ_RSSI=${5}; SINR=${6}; RSRP=${7}; RSRQ=${8}; PCI=${9}; BWDL=${10}; BWDx=${11}; LTE_CA=${12}; ENBID=${13}; CELL=${14}
++	IFS="$OIFS"; unset OIFS
++	# LTE CA calc
++	if [ $LTE_CA -ne 0 ]; then
++		OIFS="$IFS"; IFS="|"
++		set -- $(echo "$O" | awk -F"," -v bwc=${BWDx:=0}  -v mode=$MODE '
++			BEGIN { map[1]=3; map[2]=5; map[3]=10; map[4]=15; map[5]=20 }
++				function earfcn_to_band(channel) {
++					if (channel <= 1) return ""
++						cmd = "/usr/share/modeminfo/scripts/ch_to_band " mode " " channel
++						cmd | getline band
++						close(cmd)
++						return band
++				}
++			/CAINFO:/{
++				ch[1]=14; ch[2]=25; ch[3]=36; ch[4]=47
++				bw[1]=15; bw[2]=26; bw[3]=37; bw[4]=48
++				scc = ""; bwcx = 0
++					for(i=1;i<=4;i++) {
++						if($ch[i]!=0) {
++						scc=scc"+"earfcn_to_band($ch[i])
++						bwcx=map[$bw[i]]
++						bwca+=bwcx
++					}
++				}
++				bwca=bwca+bwc
++				print scc"|"bwca
++			}
++		')
++		SCC=${1}; BWCA=${2}
++		IFS="$OIFS"; unset OIFS BWDx
++        fi
++
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++		LAC=$(printf %d 0x$LAC)
++		CID=$(printf %d 0x$CID)
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM_LM960.at b/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM_LM960.at
+new file mode 100644
+index 0000000..2cd9f35
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/QUALCOMM_LM960.at
+@@ -0,0 +1,10 @@
++ATE0
++AT+COPS=3,0; +COPS?
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CEREG=2; +CEREG?
++AT+CSQ
++AT#RFSTS
++AT#CAINFO?
++AT+CGMI; +CGMM; +CGMR; +ICCID; +CIMI; +CGSN
++AT#TEMPSENS=2
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/QUECTEL b/package/modeminfo/root/usr/share/modeminfo/scripts/QUECTEL
+new file mode 100644
+index 0000000..8f4ba9f
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/QUECTEL
+@@ -0,0 +1,78 @@
++# Quectel modems
++function modem_data(){
++	generic_data
++	O=$(echo "$O" | grep -Ev '^$|OK')
++	# hwinfo
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk -v fam="$FAMILY" '
++		BEGIN { IGNORECASE=1; temp_found = 0 }
++		!temp_found && /\+QTEMP:/ {
++		    sub(/.*\+QTEMP:[^0-9]*/, "")
++		    temp = $0+0
++		    temp_found = 1
++		}
++		/ICCID:/ {
++			gsub(/"/, "", $0)
++			split($0, parts, /:[[:space:]]*/)
++			if (parts[2] != "") {
++				iccid = parts[2]
++			}
++		}
++		$0 ~ fam && manuf == "" {
++		    manuf = $1
++			if ((getline line) > 0) {
++			        model = line
++		
++			if ((getline line) > 0) fw = line
++			if ((getline line) > 0) imsi = line
++			if ((getline line) > 0) imei = line
++		}
++	}
++	END {
++	if (!temp_found) temp = "N/A"
++		print manuf "|" model "|" fw "|" iccid "|" imsi "|" imei "|" temp
++	}')
++	MANUF=${1}; MDL=${2}; FW=${3} ICCID=${4}; IMSI=${5}; IMEI=${6} CHIPTEMP=${7}
++	IFS="$OIFS"; unset OIFS
++	DEVICE="$MANUF $MDL"
++	# signal info
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk -v mode="$MODE" -v model="$MDL" -F "," '
++		$0 ~ /^\+QENG/ {
++			if (mode == "") { mode = gsub("\"",""); mode=$3 }
++			if (mode ~ /LTE/) {
++				lac=$13; cid=$7; earfcn=$9; sinr=$(NF-1); rsrp=$(NF-4); rsrq=$(NF-3)
++				bw=$11; bwc=bw*5-5; pci=$8
++				if (model !~/EC200/){ # EC200 send incorrect RSSI value, use value from AT+CSQ
++					rssi=$(NF-2)
++				}
++				cell = sprintf("%d", "0x" substr(cid, length(cid) - 1, 2)) 
++				enbid = sprintf("%d", "0x" substr(cid, 1, length(cid) - 2))
++			}
++			else {
++				lac=$6; cid=$7; earfcn=$8; sinr=$13
++				if (model !~/EC200/){ # EC200 send incorrect RSSI value, use value from AT+CSQ
++					rssi=$11; sinr=$12
++				}
++			}
++		}
++		/^\+QCAINFO/{lte_ca++}
++		END { print lac "|" cid "|" earfcn "|" rssi "|" sinr "|" rsrp "|" rsrq "|" bw "|" bwc "|" pci "|" lte_ca "|" enbid "|" cell}
++	')
++	LAC=${1}; CID=${2}; EARFCN=${3}; [ "${4}" != "" ] && CSQ_RSSI=${4}; SINR=${5}; RSRP=${6} RSRQ=${7}
++	BWDL=${8}; BWDx=${9}; PCI=${10}; LTE_CA=${11}; ENBID=${12}; CELL=${13}
++	IFS="$OIFS"; unset OIFS
++	if [ $LTE_CA -ge 2 ]; then
++		OIFS="$IFS"; IFS="|"
++		set -- $(echo "$O" | awk -v bwdl=$BWDL -F [,] '/^\+QCAINFO.*"scc"/{for(i=1;i<=NF;i++) if($i~/BAND/){gsub(/[^0-9]/,"",$i); scc = scc"+"$i}
++			{bwcx+=$3/5; bwca=bwcx + (bwdl==1 ? 3 : bwdl*5 - 5)}
++		} END{print scc "|" bwca }')
++		SCC=${1}; BWCA=${2}
++		IFS="$OIFS"; unset OIFS
++	fi
++
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++		LAC=$(printf %d 0x$LAC)
++		CID=$(printf %d 0x$CID)
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/QUECTEL.at b/package/modeminfo/root/usr/share/modeminfo/scripts/QUECTEL.at
+new file mode 100644
+index 0000000..c2760c2
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/QUECTEL.at
+@@ -0,0 +1,9 @@
++ATE0
++AT+COPS=3,0; +COPS?; +CREG?; +CGREG?; +CEREG?; +CSQ
++AT+QENG="servingcell"
++AT+QCAINFO
++AT+QTEMP
++AT+ICCID
++AT+CGMI; +CGMM; +CGMR
++AT+CIMI
++AT+CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/SIERRA b/package/modeminfo/root/usr/share/modeminfo/scripts/SIERRA
+new file mode 100644
+index 0000000..f7d30b7
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/SIERRA
+@@ -0,0 +1,65 @@
++modem_data(){
++	# hwdata
++	OIFS="$IFS"
++	IFS="|"
++	set -- $(echo "$O" | awk -v family=$FAMILY '
++		BEGIN{IGNORECASE=1} $0 ~ family {manuf=$0; getline model; getline fw}
++		/^ICCID:/{iccid=$2; getline imsi; getline imei}
++		/Temperature:/{temp=$5}
++		END { print manuf "|" model "|" fw "|" iccid "|" imsi "|" imei "|" temp}')
++
++	MANUF=${1}; MODEL=${2}; FW=${3}; ICCID=${4}; IMSI=${5}; IMEI=${6}; CHIPTEMP=${7}
++	IFS="$OIFS"
++	unset OIFS
++        DEVICE="$MANUF $MODEL"
++	# Sierra cell data
++	TECH=$(echo "$O" | awk -F[,\ ] '/^\*CNTI/ {print $3}' | sed 's|/|,|g')
++	OIFS="$IFS"
++	IFS="|"
++	set -- $(echo "$O" | awk -v tech=$TECH -v model=$MODEL '
++		BEGIN { map[3]=1; map[5]=2; map[10]=3; map[15]=4; map[20]=5 }
++		tech ~ "LTE" {
++			if (/^\+CEREG/ && model ~ /73|74/) {gsub("\"","");split($0,a,","); lac=a[3]; cid=a[5]}
++			if (/^\+CEREG/ && model !~ /73|74/) {gsub("\"","");split($0,a,","); lac=a[3]; cid=a[4]}
++			if (/LTE bw/) {bwc = $6; bw = map[bwc]}
++			if (/LTE Rx chan:/) { earfcn=$4 }
++			if (/LTE CA state:/) { ca = $4; lte_ca = (ca ~ /INACTIVE|NOT/) ? 0 : 1 }
++			if (/PCC RxM RSSI:/){rssi=$4; rsrp=$7}
++			if (/RSRQ/) {rsrq = sprintf("%.0f",$3); getline; sinr = sprintf("%.0f",$3);exit}
++		}
++		tech !~ "LTE" {
++			if (/^\+CGREG/) {gsub("\"","");split($0,a,","); lac=a[3]; cid=a[4]}
++			if (/channel:/) {earfcn=$3}
++			if (/QCSQ/) {split($0,a,",|:"); rssi=a[2]; sinr=a[3]}
++		}
++		END { print earfcn "|" lac "|" cid "|" rssi "|" sinr "|" rsrp "|" rsrq "|" bwc "|" bw "|" lte_ca}')
++
++	EARFCN=${1}; LAC=${2}; CID=${3}; CSQ_RSSI=${4}; SINR=${5}; RSRP=${6}; RSRQ=${7}; BWDx=${8}; BWDL=${9}; LTE_CA=${10}
++	unset OIFS
++	if [ "x$TECH" != "x" ]; then
++		MODE="$TECH"
++		case $MODE in
++			NONE) MODE=LTE ;;
++		esac
++	fi
++
++	if [ $MODE = "LTE" ]; then
++		ENBx=$(echo $CID | sed -e 's/..$//')
++		CELL=$(printf %d 0x${CID: -2})
++		ENBID=$(printf %d 0x$ENBx)
++		PCI=$(echo "$O" | awk -F [:,] '/QCRSRQ:/{print $2}')
++		if [ $LTE_CA -ge 1 ]; then
++			SCC=$(echo "$O" | awk -F [:] '/LTE Scell band/{gsub("B","");printf "%s", "+"$NF} END{print ""}')
++			[ $SCC ] || SCC=$(echo "$O" | awk '/LTE SCC[1-5] band:/{gsub("B", ""); printf "%s", "+"$NF} END{print ""}')
++			case $MODEL in
++				*73*|*74*) BWCA=$(echo "$O" | awk  -v bwdx=$BWDx -F [:] '/LTE Scell bw:/{sum += $2} END{print sum + bwdx}') ;;
++				*) BWCA=$(echo "$O" | awk -v bwdx=$BWDx '/LTE SCC[1-9] bw/{sum += $5} END{print sum + bwdx}') ;;
++			esac
++		fi
++	fi
++
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++		LAC=$(printf %d 0x$LAC)
++		CID=$(printf %d 0x$CID)
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/SIERRA.at b/package/modeminfo/root/usr/share/modeminfo/scripts/SIERRA.at
+new file mode 100644
+index 0000000..6d12e14
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/SIERRA.at
+@@ -0,0 +1,11 @@
++ATE0
++AT+COPS=3,0;+COPS?
++AT+CREG=2;+CREG?
++AT+CGREG=2;+CGREG?
++AT+CEREG=2;+CEREG?
++AT+CSQ
++AT*CNTI=0
++AT!GSTATUS?
++AT$QCRSRQ?
++AT$QCSQ
++AT+CGMI; +CGMM; +CGMR; +ICCID; +CIMI; +CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/SIMCOM b/package/modeminfo/root/usr/share/modeminfo/scripts/SIMCOM
+new file mode 100644
+index 0000000..05fee5d
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/SIMCOM
+@@ -0,0 +1,75 @@
++# SimCom SIM7600E-H
++modem_data(){
++	# get hardware info
++
++	set -- $(echo "$O" | awk -v fam="$FAMILY" '
++		BEGIN {cnt=0; OFS="\n"}
++		$0 ~ fam {cnt++; if(cnt==1) manuf=$0; if(cnt==2) model=$0}
++		/^\+CGMR:/ {split($0,a,":"); fw=a[2]; getline; if($0~/^[0-9]{15}$/) imsi=$0}
++		/^\+ICCID:/ {split($0,a,":"); iccid=a[2]; getline; if($0~/^[0-9]{15}$/) imei=$0}
++		/^\+CPMUTEMP/ {split($0,a," "); temp=a[2]}
++		/^\+CNSMOD/ {split($0, a, "[, ]"); tech = a[3]
++		modes[1] = "GSM"; modes[2] = "GPRS"; modes[3] = "EDGE";	modes[4] = "UMTS"; modes[5] = "HSDPA"
++		modes[6] = "HSUPA"; modes[7] = "HSPA"; modes[8] = "LTE"
++		tech_first = substr(tech, 1, 1)
++		mode = (tech_first in modes) ? modes[tech_first] : "--" }
++		END {print manuf, model, fw, iccid, imsi, imei, temp, tech, mode}')
++
++	DEVICE="${1} ${2} ${3}"; FW="${4}"; ICCID="${5}"; IMSI="${6}"; IMEI="${7}"; CHIPTEMP=${8}; TECH=${9}; MODE="${10}"
++
++	# get signal info
++	set -- $(echo "$O" | awk -F[,\ ] -v tech="$TECH" '
++		/^\+CPSI:/ && tech ~ /^8/ { # LTE Mode
++		earfcn = $9; csq_rssi = sprintf("%.0f", $14/10)
++		rsrp = sprintf("%.0f", $13/10)
++		rsrq = sprintf("%.0f", $12/10)
++		sinr = sprintf("%.0f", ($15*2)-20)
++		pci = $7; bwdl = $10; bwul = $11
++		} /^\+CPSI:/ && tech ~ /^[4-7]/ { # 3G Mode
++		earfcn = $8; sinr = sprintf("%.0f", (-$10 < -24) ? -24 : (-$10 > 0) ? 0 : -$10)
++		} /^\+CPSI:/ && tech ~ /^[1-3]/ { # 2G Mode
++		earfcn = $7
++		} /^\+CEREG:/ && tech ~ /^[4-8]/ { # LTE/3G Mode
++		lac = $4; cid = $5
++		} /^\+CREG:/ && tech ~ /^[1-3]/ { # 2G Mode
++		lac = $3; cid = $4
++		} END {print earfcn, lac, cid, csq_rssi, sinr, rsrp, rsrq, pci, bwdl, bwul}')
++	EARFCN=${1}; LAC=${2}; CID=${3}; CSQ_RSSI=${4}
++	case "$TECH" in 
++		8*)
++			SINR=${5}; RSRP=${6}; RSRQ=${7}; PCI=${8}; BWDL=${9}
++			ENBx=$(echo $CID | sed -e 's/..$//')
++			CELL=$(printf %d 0x${CID: -2})
++			ENBID=$(printf %d 0x$ENBx)
++			LTE_CA=$(echo "$O" | grep -i CA_Scell | wc -l)
++                        if [ $LTE_CA -gt 0 ]; then
++				LTE_CA=1
++				SCC=$(echo "$O" | awk -F'[,]' -v mode="$MODE" '
++					/CA_Scell/ && $3 > 1 {
++					cmd = "/usr/share/modeminfo/scripts/ch_to_band " mode " " $3
++					cmd | getline band
++					close(cmd)
++					printf "%s%s", (++n?"+":""), band }')
++
++				BWCA=$(echo "$O" | awk -F '[:,]' -v bwdl="$BWDL" '
++					BEGIN { ca_count = 0; bwca = 0
++					# Convert value to bandwith
++					bw_conv[1] = 3; bw_conv[2] = 5; bw_conv[3] = 10; bw_conv[4] = 15; bw_conv[5] = 20
++					main_bw = (bwdl in bw_conv) ? bw_conv[bwdl] : 0
++					} /CA_Scell/ { ca_count++; bw = $6
++					if (bw in bw_conv) {
++					bwca += bw_conv[bw] }
++					} END {	has_ca = (ca_count > 0) ? 1 : 0; total_bw = has_ca ? (bwca + main_bw) : 0
++					print has_ca, total_bw }')
++			fi
++		;;
++		4*|5*|6*|7*) SINR=${5} ;;
++	esac
++        LAC_NUM=$(printf %d 0x$LAC)
++        CID_NUM=$(printf %d 0x$CID)
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++		LAC=$LAC_NUM
++		CID=$CID_NUM
++	fi
++
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/SIMCOM.at b/package/modeminfo/root/usr/share/modeminfo/scripts/SIMCOM.at
+new file mode 100644
+index 0000000..0eeb20f
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/SIMCOM.at
+@@ -0,0 +1,8 @@
++ATE0
++AT+COPS=3,0; +COPS?
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CEREG=2; +CEREG?; +CSQ
++AT+CNSMOD?; +CPSI?; +CPMUTEMP
++AT+CMGRMI=4
++AT+CGMI; +CGMM; +CGMR; +CIMI; +ICCID; +CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/SKELETON b/package/modeminfo/root/usr/share/modeminfo/scripts/SKELETON
+new file mode 100644
+index 0000000..c2a7be1
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/SKELETON
+@@ -0,0 +1,50 @@
++# Expample parser file
++# define function "modem_data"
++# optionally include function "generic_data"
++# finction generic data declare next variables:
++# MODE="LTE"	- form: AT+COPS: 0,1,"Provider GSM",7		last arg
++# CSQ=24	- form: AT+CSQ: 24,99				second arg
++# CSQ_RSSI	- calculate form: CSQ/31*100 in dBm
++# CSQ_PER	- calculate form: CSQ*2-113 in dB
++# COPS		- form: AT+COPS: 0,1,"Provider GSM",7		trid arg
++# LAC		- form: AT+CREG: CREG: 2,1,"ABCD","ABCDEF0"	trid arg
++# TAC		- form: AT+CREG: CREG: 2,1,"ABCD","ABCDEF0"	four arg
++# incoming other data define variable "O"
++function modem_data() {
++	generic_gata
++#parse next variables:
++#hardware modem and sim information
++	MANUF="Example Manufacturer"		# Modem Manufacrurer. E.g Huawei
++	MODEL="Example Model"			# Modem model. E.g ME909
++	FW="Firmware modem version"
++	ICCID="12345678901234567890"		# 20 digit Integrated Circuit Card Identifier
++	IMSI="123456789012345"			# 15 digit International Mobile Subscriber Identity
++	IMEI="123456789012345"			# 15 digit International Mobile Equipment Identity
++	CHIPTEMP="50"				# Chip Themperature integer celsius
++
++#for LTE modem signal
++	EARFCN=3200				# E-UTRA Absolute Radio Frequency Channel Number.In LTE
++	RSRP=-96				# Reference Signal Received Power in dBm
++	RSRQ=-11				# Reference Signal Received Quality in dB
++	SINR=13					# Signal to Interference + Noise Ratio in dB
++	BWDL=3					# Bandwith Download channel: 1 - 3MHz; 2 - 5MHz; 3 - 10MHz; 4 - 15MHz; 5 - 20MHz
++	PCI=345					# Physical Cell ID
++
++#for LTE-A (LTE+) signal
++	SCC=+7+1				# Lte CA Dowmload bands
++	BWCA=60					# LTE CA Summ download Bandwith: BWDL+(SCC1+SCCN) in MHz
++# Calc next data
++	CELL=$(printf %d 0x${CID: -2})		# a unique number identifying a specific cell tower (base station) in a mobile network
++	ENBID=$(printf %d 0x$ENBx)		# a type of cellular base station used in LTE networks
++
++# for 3G/UMTS signal
++	EARFCN					# UTRA Absolute Radio Frequency Channel Number.In 3G/UMTS/WCDMA
++	SINR					# Energy per Chip to Interference/Noise ratio in 3G networks
++# for 2G/EDGE
++	EARFCN					# Absolute Radio Frequency Channel Number in 2G/GSM
++# calc next variables for decimal show LAC/TAC option 
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++		LAC=$(printf %d 0x$LAC)		# decimal LAC (ABCD) 43981
++		CID=$(printf %d 0x$CID)		# decimal CID (ABCDEF0) 180150000
++	fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/SKELETON.at b/package/modeminfo/root/usr/share/modeminfo/scripts/SKELETON.at
+new file mode 100644
+index 0000000..9e58530
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/SKELETON.at
+@@ -0,0 +1,9 @@
++# A custom at commants respone modem to parse
++ATE0
++AT+CSQ
++AT+COPS=3,0; +COPS?
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CEREG?
++AT+CGMI; +CGMM; +CGMR; +ICCID; +CGSN; +CIMI
++# Proprietary commands for parse
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/STYX b/package/modeminfo/root/usr/share/modeminfo/scripts/STYX
+new file mode 100644
+index 0000000..412bdb9
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/STYX
+@@ -0,0 +1,60 @@
++# STYX modems
++function modem_data(){
++    generic_data
++    # hwinfo
++    MANUF=$(echo "$O" | grep -i $FAMILY)
++    MODEL=$(echo "$O" | grep -A1 -i $FAMILY | tail -1)
++    DEVICE="$MANUF $MODEL"
++    FW=$(echo "$O" | grep -A2 -i $FAMILY | tail -1)
++    ICCID=$(echo "$O" | awk -F [:] '/ICCID:/{gsub("\r","");print $2}')
++    IMSI=$(echo "$O" | grep -A3 -i $FAMILY | tail -1)
++    IMEI=$(echo "$O" | grep -A1 -i $ICCID | tail -1)
++    # signal info
++    if [ "$MODE" = "LTE" ]; then
++        EARFCN=$(echo "$O" | awk -F: '/DL CHANNEL:/ {print $2}')
++    	RSRP=$(echo "$O" | awk -F: '/RSRP:/ {print $2}')
++    	SINR=$(echo "$O" | awk -F: '/SINR:/ {printf $2/5-20}')
++    	CID=$(echo "$O"  | awk -F: '/CELL ID:/ {print $2}')
++    	LAC=$(echo "$O" | awk -F[,\ ] '/\+CREG:/{print $5}')
++    	ENBx=$(echo $CID | sed -e 's/..$//')
++    	CELL=$(printf %d 0x${CID: -2})
++    	ENBID=$(printf %d 0x$ENBx)
++
++    	RSRQ=$(echo "$O" | awk -F: '/RSRQ:/ {print $2}')
++    	BWUL=$(echo "$O" | awk -F: '/UL CHANNEL:/ {print $2}')
++    	BWDL=$(echo "$O" | awk -F: '/DL CHANNEL:/ {print $2}')
++    elif [ "$MODE" = "WCDMA" ]; then
++    	LAC=$(echo "$O" | awk -F[,\ ] '/\+CREG:/{print $5}')
++    	CID=$(echo "$O"  | awk -F: '/CELL ID:/ {print $2}')
++    	EARFCN=$(echo "$O" | awk -F: '/DL CHANNEL:/ {print $2}')
++    	ECIO=$(echo "$O" | awk -F: '/ECIO:/ {print $2}')
++    	SINR=$ECIO
++    elif [ "$MODE" = "HDR" ]; then
++    	LAC=$(echo "$O" | awk -F[,\ ] '/\+CREG:/{print $5}')
++    	CID=$(echo "$O"  | awk -F: '/SECTOR ID:/ {print $2}')
++    	SINR=$(echo "$O" | awk -F: '/SINR:/ {printf $2/5-20}')
++    elif [ "$MODE" = "TDSCDMA" ]; then
++    	LAC=$(echo "$O" | awk -F[,\ ] '/\+CREG:/{print $5}')
++    	CID=$(echo "$O"  | awk -F: '/CELL ID:/ {print $2}')
++    elif [ "$MODE" = "GSM" ]; then
++    	LAC=$(echo "$O" | awk -F[,\ ] '/\+CREG:/{print $5}')
++    	CID=$(echo "$O"  | awk -F: '/CELL ID:/ {print $2}')
++    	ECIO=$(echo "$O" | awk -F: '/ECIO:/ {print $2}')
++    	SINR=$ECIO
++    else
++    	LAC=$(echo "$O" | awk -F[,\ ] '/\+CREG:/{print $5}')
++    	CID=$(echo "$O"  | awk -F: '/BASIC ID:/ {print $2}')
++    	ECIO=$(echo "$O" | awk -F: '/ECIO:/ {print $2}')
++    	SINR=$ECIO
++    fi
++
++    # TEMP -> according to documentation rev.1.0
++    # the device does not provide temperature information.
++
++    LAC_NUM=$(printf %d 0x$LAC)
++    CID_NUM=$(printf %d 0x$CID)
++    if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++    	LAC=$LAC_NUM
++    	CID=$CID_NUM
++    fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/STYX.at b/package/modeminfo/root/usr/share/modeminfo/scripts/STYX.at
+new file mode 100644
+index 0000000..c06ebbf
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/STYX.at
+@@ -0,0 +1,4 @@
++ATE0
++AT+COPS=3,0; +COPS?; +CREG=2; +CREG?; +CGREG?; +CEREG?; +CSQ
++AT+PLMCELLINF?
++AT+CGMI; +CGMM; +CGMR; +CIMI; +ICCID; +CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/THALES b/package/modeminfo/root/usr/share/modeminfo/scripts/THALES
+new file mode 100644
+index 0000000..3f3ff7a
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/THALES
+@@ -0,0 +1,64 @@
++modem_data(){
++        # hwinfo
++	O=$(echo "$O" | grep -Ev '^OK|^$|^NO|^ERR')
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk '
++		/^\+CEREG/{getline manuf; getline model; getline fw}
++		/ICCID/{iccid=$2;getline imei; getline imsi}
++		/^TSENS|xo_therm_buf:/{gsub("C", ""); temp=$2}
++		END {print manuf "|" model "|" fw "|" iccid "|" imei "|" imsi "|" temp}
++	')
++	MANUF=${1}; MODEL=${2}; FW=${3}; ICCID=${4}; IMEI=${5}; IMSI=${6}; CHIPTEMP=${7}
++	IFS=$OIFS; unset OIFS
++        DEVICE="$MANUF $MODEL"
++	# signal info
++	generic_data
++	OIFS="$IFS"; IFS="|"
++	set -- $(echo "$O" | awk -v mode="$MODE" '
++	BEGIN { map[3]=1; map[5]=2; map[10]=3; map[15]=4; map[20]=5 }
++	mode ~ /LTE/ { # LTE mode
++		if (/\+CEREG/) { gsub("\"",""); split($0,a,","); lac=a[3]; cid=a[4]}
++		if (/pcell:/) { f=1
++			for (i=1; i<=NF; i++) {
++				if ($i ~ /lte_band_width:/) { split($i, b, ":"); bwc_raw = b[2]; sub("MHz", "", bwc_raw)
++				bwc = sprintf("%.0f", bwc_raw);bw = map[bwc]
++			}
++		}; next }
++		if (/^scell:/) { f=0; next }
++		if (f && /channel:/) { split($0,a," "); earfcn=substr(a[1],9)+0; pci=substr(a[2],5)+0 }
++		if (f && /lte_rsrp:/) { split($0,a,","); rsrp=sprintf("%.0f", substr(a[1],10)+0); rsrq=sprintf("%.0f", substr(a[2],6)+0)}
++		if (f && /lte_snr:/) { split($0,a,","); sinr=sprintf("%.0f", substr(a[2],10)+0) }
++		if (/^SCC[0-9]+ info:/) { lte_ca++ }
++		if (/\+$QCSQ/) { split($0,a,","); rssi=a[5] }
++	}
++	mode !~ /LTE/{ # 3G mode
++		if (/\+CREG/) { gsub("\"",""); split($0,a,","); lac=a[3]; cid=a[4]}
++		if (/channel:/) {split($0,a,":"); earfcn=a[2]}
++		if (/\+$QCSQ/) { split($0,a,","); rssi=a[5] }
++		if (/cell1:/) { split($0,a,","); sinr=sprintf("%.0f", substr(a[3],6)) }
++	}
++	END { print earfcn "|" lac "|" cid "|" rssi "|" sinr "|" rsrp "|" rsrq "|" pci "|" bw "|" bwc "|" lte_ca }
++	')
++	EARFCN=${1}; LAC=${2}; CID=${3}; RSSI=${4}; SINR=${5}; RSRP=${6}; RSRQ=${7}; PCI=${8}; BWDL=${9}; BWDx=${10}; LTE_CA=${11}
++	IFS=$OIFS; unset OIFS
++	if [ "$MODE" = "LTE" ]; then
++		ENBx=$(echo $CID | sed -e 's/..$//')
++		CELL=$(printf %d 0x${CID: -2})
++		ENBID=$(printf %d 0x$ENBx)
++		# CA calc
++		if [ $LTE_CA -ge 1 ]; then
++			OIFS="$IFS"; IFS="|"
++			set -- $(echo "$O" | awk -v bwc=${BWDx:-0} '
++				/^SCC\d info:/ {for(i=1; i<=NF; i++) { if($i ~ /LTE_B/) { gsub(/[^0-9]/, "", $i); scc = scc "+" $i}}
++					bwca_raw += sprintf("%.0f", $8); bwca=bwca_raw+bwc}
++			END { print scc "|" bwca }')
++			IFS="$OIFS"; unset BWDx OIFS
++			SCC=${1}; BWCA=${2}
++                fi
++	fi
++
++        if [ $(uci -q get modeminfo.@general[0].decimail) -eq 1 ]; then
++                LAC=$(printf %d 0x$LAC)
++                CID=$(printf %d 0x$CID)
++        fi
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/THALES.at b/package/modeminfo/root/usr/share/modeminfo/scripts/THALES.at
+new file mode 100644
+index 0000000..cbd0814
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/THALES.at
+@@ -0,0 +1,12 @@
++ATE0
++AT+COPS=3,0; +COPS?
++AT+CSQ
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CEREG=2; +CEREG?
++AT+CGMI; +CGMM; +CGMR
++AT^DEBUG?
++AT+ICCID; +CGSN; +CIMI
++AT$QCSQ
++AT^TEMP?
++AT^CA_INFO?
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/THINKWILL b/package/modeminfo/root/usr/share/modeminfo/scripts/THINKWILL
+new file mode 100644
+index 0000000..45df0c7
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/THINKWILL
+@@ -0,0 +1,58 @@
++function modem_data(){
++	generic_data
++	DATA=$(echo "$O" | grep -Ev '^$|^OK|^AT' | sort)
++	MANUF=$(echo "$DATA" | awk '/CGMI/{print $2}')
++	MODEL=$(echo "$DATA" | awk '/CGMM/{print $2}')
++	FW=$(echo "$DATA" | awk '/CGMR/{print $2}')
++	DEVICE="$MANUF $MODEL"
++	TECH=$(echo "$DATA" | awk -F [,] '/\+COPS/{print $(NF-1)}')
++	ICCID=$(echo "$DATA" | awk '/ICCID:/{print $2}')
++	IMSI=$(echo "$DATA" | awk '/CIMI/{print $2}')
++	IMEI=$(echo "$DATA" | awk '/CGSN/{print $2}')
++	REGST=$(echo "$DATA" | awk -F[,] '/\'$CREG'/ {print $2}')
++	CHIPTEMP=$(echo "$DATA" | awk '/\+GETPATEMP/{printf "%.0f\n", ($2/100)}')
++	EARFCN=$(echo "$DATA" | awk -F [:,] '/\+ZEMSCIQ/{print $9}')
++
++	case $TECH in
++		0|1) MODE=GSM ;;
++		2) MODE=WCDMA ;;
++		3) MODE=EDGE ;;
++		4) MODE=HSDPA ;;
++		5) MODE=HSUPA ;;
++		6) MODE=HSDPA,HSUPA ;;
++		7) MODE=LTE ;;
++		8) MODE=HSPA+ ;;
++	esac
++	
++	case $TECH in
++		7)
++			PCI=$(echo "$DATA" | awk -F [:,] '/\+ZEMSCIQ/{print $8}')
++			BWDL=$(echo "$DATA" | awk -F[,] '/\+ZEMSCIQ/{print $13}')
++			LAC=$(echo "$DATA" | awk -F [:,] '/\+CEREG/{gsub("\"","");print $4}')
++			CID=$(echo "$DATA" | awk -F [:,] '/\+CEREG/{gsub("\"","");print $5}')
++			ENBx=$(echo $CID | sed -e 's/..$//')
++			ENBID=$(printf %d 0x$ENBx)
++			CELL=$(printf %d 0x${CID: -2})
++			CSQ_RSSI=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{print $2}')
++			RSRQ=$(echo "$DATA" | awk -F [:,] '/\+ZEMSCIQ/{printf "%.0f\n", ($12/2-20)}')
++			RSRP=$(echo "$DATA" | awk -F [:,] '/\+ZEMSCIQ/{print ($11-140)}')
++			SINR=$(echo "$DATA" | awk -F [:,] '/\+ZSINR/{printf "%.0f\n", $2}')
++			CHIPTEMP=$((85-$CHIPTEMP))
++		;;
++		2|4|5|6|8)
++			#LAC=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $4}')
++			#CID=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $5}')
++			SINR=$(echo "$DATA" | awk -F [:,] '/\+ZEMSCIQ/{printf "%.0f\n", (($NF/2)-20)}')
++		;;
++		*)
++			LAC=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $4}')
++			CID=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $5}')
++			EARFCN=$(echo "$DATA" | awk -F [:,] '/\+ZEMSCIQ/{print $9}')
++		;;
++			
++	esac
++	if [ $(uci -q get modeminfo.@general[0].decimail) -eq 1 ]; then
++                LAC=$(printf %d 0x$LAC)
++                CID=$(printf %d 0x$CID)
++        fi	
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/THINKWILL.at b/package/modeminfo/root/usr/share/modeminfo/scripts/THINKWILL.at
+new file mode 100644
+index 0000000..4441160
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/THINKWILL.at
+@@ -0,0 +1,20 @@
++ATE1
++AT+COPS=3,0
++AT+COPS?
++AT+CREG=2  
++AT+CGREG=2 
++AT+CEREG=2
++AT+CREG?
++AT+CGREG?
++AT+CEREG?
++AT+CSQ
++AT+ZRSSI
++AT+ZSINR
++AT+ZEMSCIQ=1
++AT+CGMI
++AT+CGMM
++AT+CGMR
++AT+CIMI
++AT+ICCID
++AT+CGSN
++AT+GETPATEMP?
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/YUGE b/package/modeminfo/root/usr/share/modeminfo/scripts/YUGE
+new file mode 100644
+index 0000000..ba0db4e
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/YUGE
+@@ -0,0 +1,54 @@
++function modem_data(){
++	DATA=$(echo "$O" | grep -Ev '^OK')
++	MANUF=$(echo "$DATA" | awk 'c&&! --c;/ICCID/{c=1}')
++	MODEL=$(echo "$DATA" | awk 'c&&! --c;/ICCID/{c=2}')
++	FW=$(echo "$DATA" | awk 'c&&! --c;/ICCID/{c=3}')
++	DEVICE="$MANUF $MODEL"
++	TECH=$(echo "$DATA" | awk -F [,] '/\+COPS/{print $NF}')
++	ICCID=$(echo "$DATA" | awk '/ICCID/{print $2}')
++	IMSI=$(echo "$DATA" | awk 'c&&! --c;/ICCID/{c=5}')
++	IMEI=$(echo "$DATA" | awk 'c&&! --c;/ICCID/{c=4}')
++	# ToDO
++	#CHIPTEMP=$(echo "$DATA" | awk '/\+ZCHIPTEMP/{print $2}')
++
++	case $TECH in
++		0|1) MODE=GSM ;;
++		2) MODE=WCDMA ;;
++		3) MODE=EDGE ;;
++		4) MODE=HSDPA ;;
++		5) MODE=HSUPA ;;
++		6) MODE=HSDPA,HSUPA ;;
++		7) MODE=LTE ;;
++		8) MODE=DC-HSPA+ ;;
++	esac
++
++	case $TECH in
++		7)
++			PCI=$(echo "$DATA" | awk -F [:,] '/\+ZCDS/{print $10}')
++			EEMGINFO=$(echo "$O" | awk -F[':'] '/^\+EEMLTESVC:/ {print $2}')
++			EARFCN=$(echo $EEMGINFO | awk -F [,] '{print $6}')
++			LAC=$(echo $EEMGINFO | awk -F [,] '{printf "%x\n", toupper($4)}')
++			CID=$(echo $EEMGINFO | awk -F [,] '{printf "%x\n", toupper($21)}')
++			ENBx=$(echo $CID | sed -e 's/..$//')
++			ENBID=$(printf %d 0x$ENBx)
++			CELL=$(printf %d 0x${CID: -2})
++			PCI=$(echo $EEMGINFO | awk -F [,] '{print $5}')
++			RSRQ=$(echo $EEMGINFO | awk -F[,] '{printf "%.0f\n", -19.5+$11/2}')
++			RSRP=$(echo $EEMGINFO | awk -F[,] '{print -140+$10'})
++			SINR=$(echo $EEMGINFO | awk -F[','] '{printf "%.0f\n", $12/4+5}')
++			BWDL=$(echo $EEMGINFO | awk -F[','] '{print $9}')
++		;;
++		2|4|5|6|8)
++			EEMGINFO=$(echo "$O" | awk -F[':'] '/^\+EEMUMTSSVC/ {print $2}')
++			EARFCN=$(echo $EEMGINFO | awk -F [,] '{print $20}')
++			SINR=$(echo $EEMGINFO | awk -F [,] '{printf "%.0f\n", -24+$6/2}')
++			LAC=$(echo $EEMGINFO | awk -F [,] '{printf "%x\n", toupper($16)}')
++			CID=$(echo $EEMGINFO | awk -F [,] '{printf "%x\n", toupper($17)}')
++			
++		;;
++	esac
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++                LAC=$(printf %d 0x$LAC)
++                CID=$(printf %d 0x$CID)
++        fi	
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/YUGE.at b/package/modeminfo/root/usr/share/modeminfo/scripts/YUGE.at
+new file mode 100644
+index 0000000..3aee1d6
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/YUGE.at
+@@ -0,0 +1,5 @@
++ATE0
++AT+COPS=3,0; +COPS?; +CREG?; +CGREG?; +CGREG?; +CEREG?; +CSQ
++AT+EEMGINFO?
++AT+CHIPTEMP?
++AT+ICCID; +CGMI; +CGMM; +CGMR; +CIMI ;+CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/ZTE b/package/modeminfo/root/usr/share/modeminfo/scripts/ZTE
+new file mode 100644
+index 0000000..1904ee5
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/ZTE
+@@ -0,0 +1,56 @@
++function modem_data(){
++	generic_data
++	DATA=$(echo "$O" | grep -Ev '^$|^OK' | sort)
++	MANUF=$(echo "$DATA" | awk 'c&&! --c;/ICCID/{c=2}')
++	MODEL=$(echo "$DATA" | awk 'c&&! --c;/ICCID/{c=1}')
++	FW=$(echo "$DATA" | awk 'c&&! --c;/ZRSSI/{c=3}')
++	DEVICE="$MANUF $MODEL"
++	TECH=$(echo "$DATA" | awk -F [,] '/\+COPS/{print $NF}')
++	ICCID=$(echo "$DATA" | awk '/ICCID:/{print $2}')
++	IMSI=$(echo "$DATA" | awk 'c&&! --c;/ZRSSI/{c=1}')
++	IMEI=$(echo "$DATA" | awk 'c&&! --c;/ZRSSI/{c=2}')
++
++	case $TECH in
++		0|1) MODE=GSM ;;
++		2) MODE=WCDMA ;;
++		3) MODE=EDGE ;;
++		4) MODE=HSDPA ;;
++		5) MODE=HSUPA ;;
++		6) MODE=HSDPA,HSUPA ;;
++		7) MODE=LTE ;;
++		8) MODE=DC-HSPA+ ;;
++	esac
++	
++	case $TECH in
++		7)
++			PCI=$(echo "$DATA" | awk -F [:,] '/\+ZCELLINFO/{print $3}')
++			EARFCN=$(echo "$DATA" | awk -F [:,] '/\+ZCELLINFO/{print $5}')
++			LAC=$(echo "$DATA" | awk -F [:,] '/\+CEREG/{gsub("\"","");print $4}')
++			CID=$(echo "$DATA" | awk -F [:,] '/\+CEREG/{gsub("\"","");print $6}')
++			ENBx=$(echo $CID | sed -e 's/..$//')
++			ENBID=$(printf %d 0x$ENBx)
++			CELL=$(printf %d 0x${CID: -2})
++			CSQ_RSSI=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{print $4}')
++			RSRQ=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{print $3}')
++			RSRP=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{print $2}')
++			SINR=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{printf "%.0f\n", $5}')
++		;;
++		2|4|5|6|8)
++			LAC=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $4}')
++			CID=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $5}')
++			EARFCN=$(echo "$DATA" | awk -F [:,] '/\+ZCELLINFO/{print $4}')
++			SINR=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{printf "%.0f\n", $3}')
++		;;
++		0|1|3)
++			CSQ_RSSI=$(echo "$DATA" | awk -F [:,] '/\+ZRSSI/{print $2}')
++			LAC=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $4}')
++			CID=$(echo "$DATA" | awk -F [:,] '/\+CGREG/{gsub("\"","");print $5}')
++			EARFCN=$(echo "$DATA" | awk -F [:,] '/\+ZCELLINFO/{print $4}')
++		;;
++			
++	esac
++	if [ $(uci -q get modeminfo.@general[0].decimail) = "1" ]; then
++                LAC=$(printf %d 0x$LAC)
++                CID=$(printf %d 0x$CID)
++        fi	
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/ZTE.at b/package/modeminfo/root/usr/share/modeminfo/scripts/ZTE.at
+new file mode 100644
+index 0000000..1f4ede5
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/ZTE.at
+@@ -0,0 +1,7 @@
++ATE0
++AT+COPS=3,0; +COPS?
++AT+CREG=2; +CREG?
++AT+CGREG=2; +CGREG?
++AT+CEREG=2; +CEREG?
++AT+CSQ; +ZPAS?; +ZRSSI; +ZCELLINFO?
++AT+CGMI; +CGMM; +CGMR; +CIMI; +ICCID; +CGSN
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/ch_to_band b/package/modeminfo/root/usr/share/modeminfo/scripts/ch_to_band
+new file mode 100755
+index 0000000..c91f051
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/ch_to_band
+@@ -0,0 +1,109 @@
++#!/usr/bin/awk -f
++
++function find_band(value, bands) {
++    for (i in bands) {
++        split(bands[i], parts, /[-:]/)
++        if (value >= parts[1] && value <= parts[2]) {
++            return parts[3]
++        }
++    }
++    return ""
++}
++
++BEGIN {
++    if (ARGC < 3) {
++        print "Usage: " ARGV[0] " <MODE> <CHANNEL>"
++        exit 1
++    }
++
++    mode = ARGV[1]
++    value = ARGV[2]
++    ARGC = 1
++
++    # LTE Bands (EARFCN)
++    lte_bands[0] = "0-599:1"
++    lte_bands[1] = "600-1199:2"
++    lte_bands[2] = "1200-1949:3"
++    lte_bands[3] = "1950-2399:4"
++    lte_bands[4] = "2400-2469:5"
++    lte_bands[5] = "2750-3449:7"
++    lte_bands[6] = "3450-3799:8"
++    lte_bands[7] = "6150-6449:20"
++    lte_bands[8] = "9210-9659:28"
++    lte_bands[9] = "9870-9919:31"
++    lte_bands[10] = "37750-38249:38"
++    lte_bands[11] = "38650-39649:40"
++    lte_bands[12] = "39650-41589:41"
++
++    # Other Bands (GSM/UMTS ARFCN/UARFCN)
++    other_bands[0] = "1-124:GSM900"
++    other_bands[1] = "512-885:DCS1800"
++    other_bands[2] = "955-1023:DCS900"
++    other_bands[3] = "2937-3088:UMTS900"
++    other_bands[4] = "10562-10838:IMT2100"
++
++    # 5G NR Bands (NR-ARFCN, 3GPP TS 38.101)
++    # FR1 (Sub-6 GHz)
++    nr_bands[0]  = "422000-434000:n1"
++    nr_bands[1]  = "386000-398000:n2"
++    nr_bands[2]  = "361000-376000:n3"
++    nr_bands[3]  = "173800-178800:n5"
++    nr_bands[4]  = "524000-538000:n7"
++    nr_bands[5]  = "185000-192000:n8"
++    nr_bands[6]  = "145800-149200:n12"
++    nr_bands[7]  = "149200-151200:n13"
++    nr_bands[8]  = "151600-153600:n14"
++    nr_bands[9]  = "158200-164200:n18"
++    nr_bands[10] = "166400-172400:n20"
++    nr_bands[11] = "386000-399000:n25"
++    nr_bands[12] = "171800-178800:n26"
++    nr_bands[13] = "151600-160600:n28"
++    nr_bands[14] = "143400-145600:n29"
++    nr_bands[15] = "470000-472000:n30"
++    nr_bands[16] = "402000-405000:n34"
++    nr_bands[17] = "514000-524000:n38"
++    nr_bands[18] = "376000-384000:n39"
++    nr_bands[19] = "460000-480000:n40"
++    nr_bands[20] = "499200-537999:n41"
++    nr_bands[21] = "743334-795000:n48"
++    nr_bands[22] = "286400-303400:n50"
++    nr_bands[23] = "285400-286400:n51"
++    nr_bands[24] = "496700-499000:n53"
++    nr_bands[25] = "422000-440000:n65"
++    nr_bands[26] = "342000-356000:n66"
++    nr_bands[27] = "285400-294000:n70"
++    nr_bands[28] = "132972-135884:n71"
++    nr_bands[29] = "285400-286400:n74"
++    nr_bands[30] = "285400-294000:n75"
++    nr_bands[31] = "285400-286400:n76"
++    nr_bands[32] = "620000-680000:n77"
++    nr_bands[33] = "620000-653333:n78"
++    nr_bands[34] = "693334-733333:n79"
++    nr_bands[35] = "499200-537999:n80"
++    nr_bands[36] = "422000-440000:n83"
++    nr_bands[37] = "323624-333584:n84"
++    nr_bands[38] = "496700-499000:n86"
++    nr_bands[39] = "285400-294000:n89"
++    nr_bands[40] = "380000-382000:n90"
++    nr_bands[41] = "285400-286400:n91"
++    nr_bands[42] = "285400-286400:n92"
++    nr_bands[43] = "285400-286400:n93"
++    nr_bands[44] = "285400-286400:n94"
++    # FR2 (mmWave, 24–100 GHz)
++    nr_bands[45] = "2016667-2070833:n257"
++    nr_bands[46] = "2070833-2084999:n258"
++    nr_bands[47] = "2229166-2279166:n260"
++    nr_bands[48] = "2070833-2084999:n261"
++
++    if (mode ~ /^(5GNR|LTE\+NR)$/) {
++        result = find_band(value, nr_bands)
++	if (result == "") result = find_band(value, lte_bands)
++        print (result != "" ? result : 0)
++    } else if (mode ~ /^LTE/) {
++        result = find_band(value, lte_bands)
++        print (result != "" ? result : 0)
++    } else {
++        result = find_band(value, other_bands)
++        print (result != "" ? result : "")
++    }
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo b/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
+new file mode 100644
+index 0000000..e865049
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
+@@ -0,0 +1,176 @@
++# (c) 2010-2016 Cezary Jackiewicz <cezary@eko.one.pl>
++# (c) 2020-2025 modified by Konstantine Shevlyakov  <shevlakov@132lan.ru>
++# (c) 2021-2025 modified by Vladislav Kadulin  <spanky@yandex.ru>
++
++
++RES="/usr/share/modeminfo"
++#GSCRIPT="$RES/scripts/${FAMILY}.txt"
++
++function get_device_info() {
++	DEVPORT=$(uci -q get modeminfo.@modeminfo[${s}].device)
++	case $DEVPORT in
++		!*tty*) get_port ;;
++	esac
++	modem_family
++	GSCRIPT="$RES/scripts/${FAMILY}.at"
++	O=$(atinout $GSCRIPT $DEVPORT - |grep -v '^$')
++}
++
++function get_port() {
++	devices="$(ls /dev/ttyUSB* /dev/ttyACM* /dev/ttyHS* 2>/dev/null | sort -r)"
++		for d in $devices; do
++			DEVPORT=$d gcom -s $RES/scripts/probeport.gcom > /dev/null 2>&1
++			if [ $? = 0 ]; then
++				uci set modeminfo.@modeminfo[${s}].device="$d"
++				uci commit modeminfo
++				break
++			fi
++		done
++	DEVPORT=$(uci -q get modeminfo.@modeminfo[${s}].device)
++	O=$(atinout $GSCRIPT $DEVPORT - |grep -v '^$')
++}
++
++function modem_family() {
++    FAMILY=$(uci -q get modeminfo.@modeminfo[${s}].device | awk -F/ -v res="$RES" '
++        function read_file(path) {
++            value = ""
++            if ((getline value < path) > 0) {
++                close(path)
++                return value
++            }
++            return ""
++        }
++        
++        {
++            comport = $NF
++            if (comport ~ /ttyUSB|ttyHS/) {
++                device_path = "/sys/class/tty/" comport "/device/../.."
++            } else if (comport ~ /ttyACM/) {
++                device_path = "/sys/class/tty/" comport "/device/.."
++            } else {
++                print "GENERIC"
++                exit
++            }
++            
++            vid = read_file(device_path "/idVendor")
++            pid = read_file(device_path "/idProduct")
++            
++            if (vid == "" || pid == "") {
++                print "GENERIC"
++                exit
++            }
++            
++            vidpid = vid pid
++            modem_list = res "/modem.list"
++            
++           # Read modem.list file
++            while ((getline line < modem_list) > 0) {
++                if (line ~ /^#/ || line == "") continue
++                split(line, parts, ";")
++                if (parts[1] == vidpid) {
++                    close(modem_list)
++                    print toupper(parts[2])
++                    exit
++                }
++            }
++            close(modem_list)
++            print "GENERIC"
++        }
++    ')
++}
++
++# get CSQ
++function get_csq(){
++    eval $(echo "$O" | awk -F[:,] '
++        /^\+CSQ/ {
++            csq = $2
++            if (csq == "" || csq < 0 || csq > 31) {
++                print "CSQ=-1; CSQ_PER=0; CSQ_COL=\"black\"; CSQ_RSSI=0"
++                exit
++            }
++            
++            # Percentage calc
++            csq_per = int(csq * 100 / 31)
++            
++            # Color
++            if (csq >= 20) csq_col = "green"
++            else if (csq >= 15) csq_col = "orange" 
++            else if (csq >= 10) csq_col = "red"
++            else csq_col = "red"
++            
++            # RSSI calc
++            csq_rssi = 2 * csq - 113
++            
++            printf "CSQ=%d; CSQ_PER=%d; CSQ_COL=\"%s\"; CSQ_RSSI=%d", csq, csq_per, csq_col, csq_rssi
++            exit
++        }
++        
++        END {
++            if (!csq) print "CSQ=-1; CSQ_PER=0; CSQ_COL=\"black\"; CSQ_RSSI=0"
++        }
++    ')
++}
++
++# Get MCC or MNC 
++function get_cops() {
++	COPS=$(echo "$O" | awk -F[\"] '/^\+COPS:\s?.,[0-9]+/ {print $2}' | awk '{for(i=NF;i>=1;i--){w=tolower($i);if(!s[w]++)r=r?$i" "r:$i} print r}')	
++}
++
++# Get Registration data
++function get_reg_data(){
++	REGST=$(echo "$O" | awk -F',' '/\+CREG|\+CGREG|\+CEREG/ {print $2; exit}')
++}
++
++function generic_data(){
++    MODE=$(echo "$O" | awk -F, '
++        /^\+COPS/ {
++            modes["2"] = "UMTS"
++            modes["0"] = modes["3"] = "EDGE"
++            modes["4"] = "HSDPA"
++            modes["5"] = "HSUPA"
++            modes["6"] = "HSPA"
++            modes["7"] = "LTE"
++	    modes["11"] = modes["12"] = "5GNR"
++	    modes["10"] = modes["13"] = "LTE+NR"
++            
++            prefix = substr($4, 1, 2)
++            print (prefix in modes ? modes[prefix] : "--")
++        }')
++}
++
++# name device via mmcli utility
++mmcli_name(){
++        MMCLI=$(uci -q get modeminfo.@modeminfo[${s}].mmcli_name)
++        if [ "$MMCLI" = "1" ]; then
++                if [ -x /usr/bin/mmcli ]; then
++                        MODEM=$(mmcli -L | awk '{print $1}' | awk -F [/] '{print $NF}')
++                        for mm in $MODEM; do
++                                MMCLIMEI=$(mmcli -m $mm -J | jsonfilter -e '@["modem"].*["imei"]')
++                                IMEI=$(echo $IMEI | tr -d ' ')
++                                if [ "$IMEI" = "$MMCLIMEI" ]; then
++                                        MANUF=$(mmcli -m $mm -J | jsonfilter -e '@["modem"].*["manufacturer"]' | awk '{gsub("\r", ""); print $0}')
++                                        MODEL=$(mmcli -m $mm -J | jsonfilter -e '@["modem"].*["model"]' | awk '{gsub("\r", ""); print $0}')
++                                        if [ -n "$(echo "$MODEL" | grep "${MANUF}")" ]; then
++                                                DEVICE="$MODEL"
++                                        else
++                                                DEVICE="$MANUF $MODEL"
++                                        fi
++                                fi
++                        done
++                fi
++        fi
++}
++
++function get_data_in(){
++	modem_family
++	get_reg_data
++	get_cops
++	get_csq
++	if [ -f "$RES/scripts/${FAMILY}" ]; then
++		. $RES/scripts/$FAMILY
++		modem_data
++	else
++		generic_data
++	fi
++	mmcli_name
++}
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/probeport.gcom b/package/modeminfo/root/usr/share/modeminfo/scripts/probeport.gcom
+new file mode 100644
+index 0000000..1b221b3
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/probeport.gcom
+@@ -0,0 +1,14 @@
++let $d = $env("DEVPORT")
++if $d = "" goto timeout
++
++open com $d
++set com 57600n81
++set senddelay 0.05
++waitquiet 2 0.5
++send "AT^m"
++waitfor 2 "OK"
++if % = -1 goto timeout
++exit 0
++
++:timeout
++  exit 1
+diff --git a/package/modeminfo/root/usr/share/snmpmodem.sh b/package/modeminfo/root/usr/share/snmpmodem.sh
+new file mode 100755
+index 0000000..61d1e78
+--- /dev/null
++++ b/package/modeminfo/root/usr/share/snmpmodem.sh
+@@ -0,0 +1,22 @@
++#!/bin/sh
++
++# Simple SNMP Script for modeminfo
++# Exapmle configuration OpenWrt snmpd package
++# file: /etc/config/snmpd
++# config exec
++#        option name     modem				# Example name
++#        option prog     /usr/share/snmpmodem.sh	# This script
++#        option args     0				# Modem in system
++#        option miboid   1.3.6.1.2.1.25.1.9		# Example OID
++
++if [ ! $1 ]; then
++	exit 0
++fi
++
++modeminfo | jsonfilter -e "@['modem'][$1]['device']" \
++	-e "@['modem'][$1]['cops']" \
++	-e "@['modem'][$1]['rssi']" \
++	-e "@['modem'][$1]['rsrp']" \
++	-e "@['modem'][$1]['rsrq']" \
++	-e "@['modem'][$1]['sinr']"
++
 diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
 index b4e2d06..6ad2d61 100644
 --- a/package/pejir-sms/Makefile
