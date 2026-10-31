@@ -66,6 +66,14 @@ CONFIG_PACKAGE_coreutils-stty=y
 CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
 CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
 CONFIG_PACKAGE_kmod-usb-serial-option=y
+CONFIG_PACKAGE_lxc=y
+CONFIG_PACKAGE_lxc-auto=y
+CONFIG_PACKAGE_lxc-attach=y
+CONFIG_PACKAGE_lxc-create=y
+CONFIG_PACKAGE_lxc-templates=y
+CONFIG_PACKAGE_lxc-hooks=y
+CONFIG_PACKAGE_kmod-veth=y
+CONFIG_PACKAGE_pejir-lxc-base=y
 CONFIG_PACKAGE_dropbear=y
 EOF
 make defconfig

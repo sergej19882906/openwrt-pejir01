@@ -18,6 +18,7 @@
 | Кнопка Reset | ✅ |
 | **LED-индикация (STM32)** | ✅ вендорные `mcu`/`mcud` из стока 9.0.4 |
 | **Zigbee (EFR32)** | ✅ через `uartmuxd` → `/dev/umxtty1`, координатор EZSP (HOMEd) — ставится на extroot |
+| **LXC-контейнеры** | ✅ LXC 7.0 + cgroup2 + kmod-veth, `/srv/lxc` на extroot ([docs](docs/LXC.md)) |
 | Батарея/питание | ✅ `mcu getvolt`/`getsys` + ubus-события `pwroff`/`pr`/`paerr` ([docs](docs/STM32_BATTERY_SOUND.md)) |
 | Звук (siren) | ⚠️ событие `mcud.mcu.siren` пробрасывается; ручной запуск — эксперимент ([docs](docs/STM32_BATTERY_SOUND.md)) |
 
