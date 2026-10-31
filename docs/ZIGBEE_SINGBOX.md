@@ -1,21 +1,21 @@
-# Часть 2 — Zigbee (HOMEd) и sing-box — ПОСЛЕ extroot
+# Часть 2 — Zigbee (HOMEd) и sing-box
 
-Выполнять после того, как extroot применился (`df -h /overlay` = размер флешки).
+`mosquitto` и `sing-box` **уже вшиты в образ** (mosquitto-nossl + клиент,
+sing-box 1.13). Фид HOMEd преднастроен (`pejir-homed-feed`): ключ
+`/etc/apk/keys/homed.pem` и запись в `repositories.d` создаются при первой
+загрузке — остаётся одна команда установки. Ставить на extroot
+(см. POSTINSTALL.md).
 
-## 1. MQTT-брокер
+## 1. MQTT-брокер (уже установлен)
 
 ```sh
-apk update
-apk search mosquitto            # узнаём точное имя (обычно mosquitto-nossl)
-apk add mosquitto-nossl || apk add mosquitto
 /etc/init.d/mosquitto enable && /etc/init.d/mosquitto start
+# конфиг: /etc/mosquitto/mosquitto.conf (порт 1883, без TLS)
 ```
 
-## 2. Репозиторий HOMEd (APK, для OpenWrt 25.12+)
+## 2. HOMEd (одна команда)
 
 ```sh
-wget -O /etc/apk/keys/homed.pem https://apk.homed.dev/apk.key
-echo "https://apk.homed.dev/$(cat /etc/apk/arch)/packages.adb" > /etc/apk/repositories.d/homed.list
 apk update
 apk add homed-zigbee homed-automation homed-web
 ```
@@ -55,16 +55,16 @@ logread -e homed
 - Проверить, что отвечает: `mcu getver` (STM32) и `hexdump -C /dev/umxtty1 | head`
   после `stty -F /dev/umxtty1 115200`.
 
-## 5. sing-box
+## 5. sing-box (уже установлен)
 
 ```sh
-apk update && apk add sing-box
 # конфиг: /etc/sing-box/config.json
 /etc/init.d/sing-box enable && /etc/init.d/sing-box start
 ```
 
-sing-box ~15+ МБ — после extroot спокойно ставится на флешку.
 Правила трафика — в LuCI (Сеть→Firewall) или через nftables вручную.
+Обновления sing-box: `apk update && apk add sing-box` (пакет из официального
+фида, живёт в NAND — при частых обновлениях можно перенести на extroot).
 
 ## 6. LED-индикация (шпаргалка)
 

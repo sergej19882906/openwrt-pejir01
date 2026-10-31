@@ -1,4 +1,4 @@
-From da4a0012d20f0d13ba79582f07c0c17b8b8e2cd3 Mon Sep 17 00:00:00 2001
+From 843cd2660c761efd64f92e0d088e807b33b66b82 Mon Sep 17 00:00:00 2001
 From: sergej19882906 <sergej19882906@users.noreply.github.com>
 Date: Sat, 31 Oct 2026 04:00:46 +0300
 Subject: [PATCH 2/4] ramips: mt7621: enable LXC on PEJIR01
@@ -23,7 +23,7 @@ OpenWrt 19.07, now on upstream OpenWrt 25.12.
 
 diff --git a/package/pejir-lxc-base/Makefile b/package/pejir-lxc-base/Makefile
 new file mode 100644
-index 0000000..8e08fd8
+index 0000000..ba869ef
 --- /dev/null
 +++ b/package/pejir-lxc-base/Makefile
 @@ -0,0 +1,35 @@
@@ -31,7 +31,7 @@ index 0000000..8e08fd8
 +
 +PKG_NAME:=pejir-lxc-base
 +PKG_VERSION:=1
-+PKG_RELEASE:=2
++PKG_RELEASE:=3
 +
 +include $(INCLUDE_DIR)/package.mk
 +
@@ -39,7 +39,7 @@ index 0000000..8e08fd8
 +  SECTION:=utils
 +  CATEGORY:=Utilities
 +  TITLE:=PEJIR01 LXC base: cgroup2 mount and /srv/lxc
-+  DEPENDS:=+kmod-veth +lxc-templates +lxc-configs
++  DEPENDS:=+kmod-veth +lxc-templates +lxc-configs +liblxc +libcap +libopenssl +libdbus +libseccomp
 +endef
 +
 +define Package/pejir-lxc-base/description

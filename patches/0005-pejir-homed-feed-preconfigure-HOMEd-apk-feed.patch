@@ -1,0 +1,79 @@
+From 2f92a7f157e1ba1ce0de53de4dbcf3226ade7112 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 06:06:31 +0300
+Subject: [PATCH] pejir-homed-feed: preconfigure HOMEd apk feed
+
+Ships apk.homed.dev signing key and registers the feed at first boot
+(arch resolved on-device), so homed-zigbee/homed-automation/homed-web
+install with a single apk add after extroot is set up.
+---
+ package/pejir-homed-feed/Makefile             | 34 +++++++++++++++++++
+ .../files/homed-feed.defaults                 |  3 ++
+ package/pejir-homed-feed/files/homed.pem      |  4 +++
+ 3 files changed, 41 insertions(+)
+ create mode 100644 package/pejir-homed-feed/Makefile
+ create mode 100644 package/pejir-homed-feed/files/homed-feed.defaults
+ create mode 100644 package/pejir-homed-feed/files/homed.pem
+
+diff --git a/package/pejir-homed-feed/Makefile b/package/pejir-homed-feed/Makefile
+new file mode 100644
+index 0000000..f005105
+--- /dev/null
++++ b/package/pejir-homed-feed/Makefile
+@@ -0,0 +1,34 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-homed-feed
++PKG_VERSION:=1
++PKG_RELEASE:=1
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-homed-feed
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=Preconfigured HOMEd apk feed for PEJIR01
++endef
++
++define Package/pejir-homed-feed/description
++  Ships the HOMEd apk repository key and registers the feed at first
++  boot, so `apk add homed-zigbee` works out of the box (place software
++  on extroot).
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-homed-feed/install
++	$(INSTALL_DIR) $(1)/etc/apk/keys
++	$(INSTALL_DATA) ./files/homed.pem $(1)/etc/apk/keys/homed.pem
++	$(INSTALL_DIR) $(1)/etc/uci-defaults
++	$(INSTALL_BIN) ./files/homed-feed.defaults $(1)/etc/uci-defaults/40-homed-feed
++endef
++
++$(eval $(call BuildPackage,pejir-homed-feed))
+diff --git a/package/pejir-homed-feed/files/homed-feed.defaults b/package/pejir-homed-feed/files/homed-feed.defaults
+new file mode 100644
+index 0000000..ac47ff6
+--- /dev/null
++++ b/package/pejir-homed-feed/files/homed-feed.defaults
+@@ -0,0 +1,3 @@
++#!/bin/sh
++echo "https://apk.homed.dev/$(cat /etc/apk/arch)/packages.adb" > /etc/apk/repositories.d/homed.list
++exit 0
+diff --git a/package/pejir-homed-feed/files/homed.pem b/package/pejir-homed-feed/files/homed.pem
+new file mode 100644
+index 0000000..82492ca
+--- /dev/null
++++ b/package/pejir-homed-feed/files/homed.pem
+@@ -0,0 +1,4 @@
++-----BEGIN PUBLIC KEY-----
++MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMo2u8chqrvJAoOePWsyv2HeFhYih
++wzY7XZxtZN8YfSRgfWCaO8BEQxLYS34bEhyvpC12irhEzkov0FwdnX73Vw==
++-----END PUBLIC KEY-----
+-- 
+2.43.0
+
