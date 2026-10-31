@@ -74,6 +74,9 @@ CONFIG_PACKAGE_lxc-templates=y
 CONFIG_PACKAGE_lxc-hooks=y
 CONFIG_PACKAGE_kmod-veth=y
 CONFIG_PACKAGE_pejir-lxc-base=y
+CONFIG_PACKAGE_kmod-amneziawg=y
+CONFIG_PACKAGE_amneziawg-tools=y
+CONFIG_PACKAGE_luci-proto-amneziawg=y
 CONFIG_PACKAGE_dropbear=y
 EOF
 make defconfig
