@@ -104,6 +104,23 @@ CONFIG_PACKAGE_usbutils=y
 CONFIG_PACKAGE_iperf3=y
 CONFIG_PACKAGE_tcpdump=y
 CONFIG_PACKAGE_htop=y
+# universal modem stack (replace GM510 with EC25/EP06/GM610/etc.)
+CONFIG_PACKAGE_kmod-usb-net-qmi-wwan=y
+CONFIG_PACKAGE_uqmi=y
+CONFIG_PACKAGE_kmod-usb-net-cdc-mbim=y
+CONFIG_PACKAGE_umbim=y
+CONFIG_PACKAGE_kmod-usb-net-rndis=y
+CONFIG_PACKAGE_kmod-usb-net-huawei-cdc-ncm=y
+CONFIG_PACKAGE_kmod-usb-serial-sierrawireless=y
+CONFIG_PACKAGE_comgt=y
+CONFIG_PACKAGE_usb-modeswitch=y
+CONFIG_PACKAGE_atinout=y
+CONFIG_PACKAGE_luci-app-atinout=y
+CONFIG_PACKAGE_luci-app-modeminfo=y
+CONFIG_PACKAGE_pingcontrol=y
+CONFIG_PACKAGE_qminfo=y
+# theme
+CONFIG_PACKAGE_luci-theme-cyberpunk=y
 CONFIG_PACKAGE_dropbear=y
 EOF
 make defconfig

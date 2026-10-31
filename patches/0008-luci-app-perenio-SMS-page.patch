@@ -1,7 +1,7 @@
 From e64c41f5bb537fad407a18bb1015b092a363b50b Mon Sep 17 00:00:00 2001
 From: sergej19882906 <sergej19882906@users.noreply.github.com>
 Date: Sat, 31 Oct 2026 06:49:50 +0300
-Subject: [PATCH 8/8] luci-app-perenio: SMS page
+Subject: [PATCH 08/10] luci-app-perenio: SMS page
 
 Reads /var/spool/sms/incoming (smstools3 files) in LuCI: time, sender,
 text; polling 20s. Menu shown only when the spool directory exists.
