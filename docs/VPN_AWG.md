@@ -41,6 +41,28 @@ logread | grep -i awg       # ошибки модуля
 Альтернатива без Entware: LuCI-конфигурация (см. выше) + `ubus`/`awg show`
 для мониторинга.
 
+## Почему awg-manager не портируется «как есть»
+
+[hoaxisr/awg-manager](https://github.com/hoaxisr/awg-manager) — менеджер
+экосистемы Keenetic: управляет **NDMS-интерфейсами** (системные WireGuard
+Keenetic), KeenDNS, Kill Switch и маршрутизацией через собственные
+kernel-модули (`awg-proxy`, `awgm-relay`), собранные под ядра Keenetic
+(4.9/5.10). Go-бэкенд кросс-компилируется в mipsel тривиально, но:
+
+- слой NDMS-интерфейсов нужно переписывать на `awg`/ubus/uci/nftables;
+- kernel-модули — отдельный проект портирования на 6.12;
+- HydraRoute Neo — часть экосистемы Keenetic.
+
+Вердикт: это форк-проект, а не адаптация. Для веб-управления **sing-box**
+на OpenWrt правильный путь — встроенный `clash_api` + дашборд
+[metacubexd](https://github.com/MetaCubeX/metacubexd) (GUI по подпискам,
+прокси и правилам, аналогично awg-manager):
+
+```json
+"experimental": { "clash_api": { "external_ui": "/etc/sing-box/ui",
+                                 "external_controller": "0.0.0.0:9090" } }
+```
+
 ## Источники пакетов
 
 Пакеты взяты из [2Grey/awg-openwrt](https://github.com/2Grey/awg-openwrt)
