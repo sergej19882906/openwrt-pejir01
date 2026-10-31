@@ -72,6 +72,7 @@ CONFIG_PACKAGE_lxc-attach=y
 CONFIG_PACKAGE_lxc-create=y
 CONFIG_PACKAGE_lxc-templates=y
 CONFIG_PACKAGE_lxc-hooks=y
+CONFIG_PACKAGE_xz-utils=y
 CONFIG_PACKAGE_kmod-veth=y
 CONFIG_PACKAGE_pejir-lxc-base=y
 CONFIG_PACKAGE_kmod-amneziawg=y

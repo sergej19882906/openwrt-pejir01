@@ -1,8 +1,8 @@
 From eb4dde5013eaafe17158983dab71f019645e50f6 Mon Sep 17 00:00:00 2001
 From: sergej19882906 <sergej19882906@users.noreply.github.com>
 Date: Sat, 31 Oct 2026 03:40:58 +0300
-Subject: [PATCH] ramips: mt7621: add IoT Perenio Elegance PEJIR01 support for
- OpenWrt 25.12
+Subject: [PATCH 1/4] ramips: mt7621: add IoT Perenio Elegance PEJIR01 support
+ for OpenWrt 25.12
 
 Device: Perenio Elegance PEJIR01 (A1 Elegance), MT7621A, 256MB RAM,
 128MB NAND, Wi-Fi 2.4 (MT7603) + 5GHz (MT7612), 1xWAN + 2xLAN gigabit,

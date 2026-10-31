@@ -1,0 +1,196 @@
+From 17f1a174f2616468fe0eade5120741580d610665 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 04:14:21 +0300
+Subject: [PATCH 4/4] luci-app-perenio: battery/power status page for PEJIR01
+
+Status page in LuCI (Status -> Battery (Perenio)): SVG battery icon
+from mcu getvolt (level mapped 3.30-4.20V), system status (getsys),
+STM32 version (getver); XHR polling every 15s via rpcd file exec.
+Menu hidden when mcu binary is absent.
+---
+ package/luci-app-perenio/Makefile             | 37 ++++++++
+ .../resources/view/perenio/battery.js         | 91 +++++++++++++++++++
+ .../share/luci/menu.d/luci-app-perenio.json   | 11 +++
+ .../share/rpcd/acl.d/luci-app-perenio.json    | 10 ++
+ 4 files changed, 149 insertions(+)
+ create mode 100644 package/luci-app-perenio/Makefile
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+ create mode 100644 package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+ create mode 100644 package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+new file mode 100644
+index 0000000..1d3e00f
+--- /dev/null
++++ b/package/luci-app-perenio/Makefile
+@@ -0,0 +1,37 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=luci-app-perenio
++PKG_VERSION:=1.0.0
++PKG_RELEASE:=1
++
++PKG_LICENSE:=Apache-2.0
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/luci-app-perenio
++  SECTION:=luci
++  CATEGORY:=LuCI
++  SUBMENU:=3. Applications
++  TITLE:=Perenio PEJIR01 battery and power status
++  DEPENDS:=+luci-base +perenio-mcu
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/luci-app-perenio/install
++	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/perenio
++	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/perenio/battery.js \
++		$(1)/www/luci-static/resources/view/perenio/battery.js
++	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
++	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-perenio.json \
++		$(1)/usr/share/luci/menu.d/luci-app-perenio.json
++	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
++	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-perenio.json \
++		$(1)/usr/share/rpcd/acl.d/luci-app-perenio.json
++endef
++
++$(eval $(call BuildPackage,luci-app-perenio))
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+new file mode 100644
+index 0000000..f485ff0
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+@@ -0,0 +1,91 @@
++'use strict';
++'require view';
++'require fs';
++'require ui';
++'require poll';
++
++function parseVolts(out) {
++	var m = (out || '').match(/(\d+[.,]\d+)/);
++	return m ? parseFloat(m[1].replace(',', '.')) : null;
++}
++
++function battSvg(level, charging, txt) {
++	/* level: 0..100, txt: voltage string */
++	var pct = Math.max(0, Math.min(100, level));
++	var w = Math.round(pct * 0.46);
++	var color = pct > 60 ? '#5cb85c' : (pct > 30 ? '#f0ad4e' : '#d9534f');
++	var bolt = charging ?
++		'<path d="M20 10 L14 26 h5 l-2 12 L27 20 h-5 l3 -10 Z" fill="#fff" stroke="#333" stroke-width="1"/>' : '';
++	return '<svg width="90" height="40" viewBox="0 0 90 40" xmlns="http://www.w3.org/2000/svg">' +
++		'<rect x="4" y="8" width="70" height="24" rx="4" fill="none" stroke="#333" stroke-width="2.5"/>' +
++		'<rect x="75" y="15" width="6" height="10" rx="2" fill="#333"/>' +
++		'<rect x="8" y="12" width="' + w + '" height="16" rx="2" fill="' + color + '"/>' +
++		'<text x="42" y="39" font-size="11" text-anchor="middle" fill="#333">' + txt + '</text>' +
++		bolt + '</svg>';
++}
++
++return view.extend({
++	render: function() {
++		var body = E([
++			E('h2', _('Battery / Power (Perenio STM32)')),
++			E('div', { 'class': 'cbi-map' }, [
++				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'id': 'batt-widget',
++						'style': 'display:flex; align-items:center; gap:12px; padding:12px' }),
++					E('table', { 'class': 'table' }, [
++						E('tr', { 'class': 'tr' }, [
++							E('td', { 'class': 'td', 'width': '33%' }, _('Voltage')),
++							E('td', { 'class': 'td', 'id': 'batt-volt' }, '…')
++						]),
++						E('tr', { 'class': 'tr' }, [
++							E('td', { 'class': 'td' }, _('System status')),
++							E('td', { 'class': 'td', 'id': 'batt-sys' }, '…')
++						]),
++						E('tr', { 'class': 'tr' }, [
++							E('td', { 'class': 'td' }, _('STM32 firmware')),
++							E('td', { 'class': 'td', 'id': 'batt-ver' }, '…')
++						])
++					]),
++					E('div', { 'class': 'cbi-value-description' },
++						_('Data from STM32 via mcud: mcu getvolt / getsys / getver. ' +
++						  'Power events (pwroff/pr/paerr) appear in logread.'))
++				])
++			])
++		]);
++
++		poll.add(L.bind(function() {
++			return Promise.all([
++				fs.exec('/usr/bin/mcu', [ 'getvolt' ]).catch(function() { return null; }),
++				fs.exec('/usr/bin/mcu', [ 'getsys' ]).catch(function() { return null; }),
++				fs.exec('/usr/bin/mcu', [ 'getver' ]).catch(function() { return null; })
++			]).then(L.bind(function(res) {
++				var volt = parseVolts(res[0] && res[0].stdout);
++				var sys = res[1] && res[1].stdout ? res[1].stdout.trim() : '—';
++				var ver = res[2] && res[2].stdout ? res[2].stdout.trim() : '—';
++
++				var widget = document.getElementById('batt-widget');
++				var tdV = document.getElementById('batt-volt');
++				var tdS = document.getElementById('batt-sys');
++				var tdVer = document.getElementById('batt-ver');
++
++				if (tdV) tdV.textContent = volt != null ? volt.toFixed(2) + ' V' : 'n/a';
++				if (tdS) tdS.textContent = sys || '—';
++				if (tdVer) tdVer.textContent = ver || '—';
++
++				if (widget && volt != null) {
++					var level = Math.round((volt - 3.30) / (4.20 - 3.30) * 100);
++					var charging = /chg|charg|ac|adapter/i.test(sys);
++					widget.innerHTML = battSvg(level, charging, volt.toFixed(2) + 'V');
++				} else if (widget) {
++					widget.innerHTML = '<em>mcud not running</em>';
++				}
++			}, this));
++		}, this), 15);
++
++		return body;
++	},
++
++	handleSaveApply: null,
++	handleSave: null,
++	handleReset: null
++});
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+new file mode 100644
+index 0000000..aa9acec
+--- /dev/null
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -0,0 +1,11 @@
++{
++	"admin/status/perenio-battery": {
++		"title": "Battery (Perenio)",
++		"order": 65,
++		"icon": "reload.svg",
++		"action": { "type": "view", "path": "perenio/battery" },
++		"depends": {
++			"fs": { "/usr/bin/mcu": "executable" }
++		}
++	}
++}
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+new file mode 100644
+index 0000000..eee2065
+--- /dev/null
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -0,0 +1,10 @@
++{
++	"luci-app-perenio": {
++		"description": "Grant access to Perenio STM32 battery status",
++		"read": {
++			"ubus": {
++				"file": [ "exec" ]
++			}
++		}
++	}
++}
+-- 
+2.43.0
+
