@@ -82,6 +82,28 @@ CONFIG_PACKAGE_sing-box=y
 CONFIG_PACKAGE_kmod-amneziawg=y
 CONFIG_PACKAGE_amneziawg-tools=y
 CONFIG_PACKAGE_luci-proto-amneziawg=y
+CONFIG_PACKAGE_pejir-lte-base=y
+CONFIG_PACKAGE_smstools3=y
+CONFIG_PACKAGE_pejir-sms=y
+CONFIG_PACKAGE_pejir-homed-feed=y
+# monitoring / traffic / diagnostics
+CONFIG_PACKAGE_mwan3=y
+CONFIG_PACKAGE_luci-app-mwan3=y
+CONFIG_PACKAGE_sqm-scripts=y
+CONFIG_PACKAGE_luci-app-sqm=y
+CONFIG_PACKAGE_collectd=y
+CONFIG_PACKAGE_luci-app-statistics=y
+CONFIG_PACKAGE_nlbwmon=y
+CONFIG_PACKAGE_luci-app-nlbwmon=y
+CONFIG_PACKAGE_banip=y
+CONFIG_PACKAGE_luci-app-banip=y
+CONFIG_PACKAGE_vnstat2=y
+CONFIG_PACKAGE_luci-app-vnstat2=y
+CONFIG_PACKAGE_picocom=y
+CONFIG_PACKAGE_usbutils=y
+CONFIG_PACKAGE_iperf3=y
+CONFIG_PACKAGE_tcpdump=y
+CONFIG_PACKAGE_htop=y
 CONFIG_PACKAGE_dropbear=y
 EOF
 make defconfig
