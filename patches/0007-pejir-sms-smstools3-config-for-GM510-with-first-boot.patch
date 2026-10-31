@@ -1,0 +1,111 @@
+From a2fb7e52d4430d3c062f1697d102373419a69c07 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 06:49:50 +0300
+Subject: [PATCH 7/8] pejir-sms: smstools3 config for GM510 with first-boot
+ port autodetect
+
+smsd.conf: text mode, SM storage, unicode decode; AT port written to
+device= at first boot (41-pejir-sms), spool dirs created. Incoming SMS
+appear as files in /var/spool/sms/incoming (readable in LuCI via
+luci-app-perenio SMS page).
+---
+ package/pejir-sms/Makefile                    | 35 +++++++++++++++++++
+ package/pejir-sms/root/etc/smsd.conf          | 22 ++++++++++++
+ .../root/etc/uci-defaults/41-pejir-sms        | 14 ++++++++
+ 3 files changed, 71 insertions(+)
+ create mode 100644 package/pejir-sms/Makefile
+ create mode 100644 package/pejir-sms/root/etc/smsd.conf
+ create mode 100644 package/pejir-sms/root/etc/uci-defaults/41-pejir-sms
+
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+new file mode 100644
+index 0000000..b4e2d06
+--- /dev/null
++++ b/package/pejir-sms/Makefile
+@@ -0,0 +1,35 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-sms
++PKG_VERSION:=1
++PKG_RELEASE:=1
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-sms
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=PEJIR01 SMS: smstools3 config for GM510
++  DEPENDS:=+smstools3 +pejir-lte-base
++endef
++
++define Package/pejir-sms/description
++  /etc/smsd.conf for GM510: first boot autodetects the AT port and
++  writes device= into smsd.conf. Incoming SMS land in
++  /var/spool/sms/incoming and are visible in LuCI (luci-app-perenio).
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-sms/install
++	$(INSTALL_DIR) $(1)/etc
++	$(INSTALL_DATA) ./files/smsd.conf $(1)/etc/smsd.conf
++	$(INSTALL_DIR) $(1)/etc/uci-defaults
++	$(INSTALL_BIN) ./files/sms.defaults $(1)/etc/uci-defaults/41-pejir-sms
++endef
++
++$(eval $(call BuildPackage,pejir-sms))
+diff --git a/package/pejir-sms/root/etc/smsd.conf b/package/pejir-sms/root/etc/smsd.conf
+new file mode 100644
+index 0000000..6cb7afe
+--- /dev/null
++++ b/package/pejir-sms/root/etc/smsd.conf
+@@ -0,0 +1,22 @@
++# SMS Server Tools 3 — PEJIR01 / GM510
++devices = GM510
++loglevel = notice
++logfile = /var/log/smsd.log
++pidfile = /var/run/smsd.pid
++infofile = /var/run/smsd.working
++outgoing = /var/spool/sms/outgoing
++checked = /var/spool/sms/checked
++failed = /var/spool/sms/failed
++incoming = /var/spool/sms/incoming
++sent = /var/spool/sms/sent
++receive_before_send = no
++
++[GM510]
++device = /dev/ttyUSB0
++baudrate = 115200
++init = AT+CPMS="SM","SM","SM"
++init = AT+CMGF=1
++init = AT+CNMI=2,1,0,2,0
++incoming = yes
++outgoing = yes
++decode_unicode_text = yes
+diff --git a/package/pejir-sms/root/etc/uci-defaults/41-pejir-sms b/package/pejir-sms/root/etc/uci-defaults/41-pejir-sms
+new file mode 100644
+index 0000000..3a51215
+--- /dev/null
++++ b/package/pejir-sms/root/etc/uci-defaults/41-pejir-sms
+@@ -0,0 +1,14 @@
++#!/bin/sh
++# autodetect AT port at first boot, write it into smsd.conf
++PORT=""
++for p in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB3; do
++  [ -c "$p" ] || continue
++  echo -e "AT\r" > "$p" 2>/dev/null
++  sleep 0.3
++  if head -c 60 "$p" 2>/dev/null | grep -q OK; then PORT="$p"; break; fi
++done
++[ -n "$PORT" ] && sed -i "s|^device = .*|device = $PORT|" /etc/smsd.conf
++mkdir -p /var/spool/sms/incoming /var/spool/sms/outgoing \
++         /var/spool/sms/sent /var/spool/sms/failed /var/spool/sms/checked
++/etc/init.d/smstools3 enable 2>/dev/null || true
++exit 0
+-- 
+2.43.0
+

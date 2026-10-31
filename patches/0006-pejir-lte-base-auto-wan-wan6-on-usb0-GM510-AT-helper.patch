@@ -1,0 +1,109 @@
+From 1e6ca2ee10a63f516f83fce2d5612e521348e035 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 06:33:57 +0300
+Subject: [PATCH 6/8] pejir-lte-base: auto wan/wan6 on usb0 + GM510 AT helper
+
+netifd brings interfaces up as soon as the modem binds usb0 (ECM/NCM);
+LTE gets metric 20 so ethernet wins when present. wan6 (DHCPv6,
+reqprefix auto) is ready for operators/modems that provide IPv6.
+mdm-at: finds the AT port and sends commands (PDP type, APN, signal).
+---
+ package/pejir-lte-base/Makefile               | 35 +++++++++++++++++++
+ .../root/etc/uci-defaults/40-pejir-lte        | 20 +++++++++++
+ package/pejir-lte-base/root/usr/bin/mdm-at    | 15 ++++++++
+ 3 files changed, 70 insertions(+)
+ create mode 100644 package/pejir-lte-base/Makefile
+ create mode 100755 package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
+ create mode 100755 package/pejir-lte-base/root/usr/bin/mdm-at
+
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+new file mode 100644
+index 0000000..cd85332
+--- /dev/null
++++ b/package/pejir-lte-base/Makefile
+@@ -0,0 +1,35 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-lte-base
++PKG_VERSION:=1
++PKG_RELEASE:=1
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-lte-base
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=PEJIR01 LTE base: auto wan/wan6 on usb0 + AT helper
++  DEPENDS:=+kmod-usb-net-cdc-ether +kmod-usb-net-cdc-ncm +kmod-usb-serial-option
++endef
++
++define Package/pejir-lte-base/description
++  Creates wan (DHCP) and wan6 (DHCPv6) interfaces on usb0 at first boot
++  (metric 20, LTE wins only if ethernet is down) and ships mdm-at
++  helper for GM510 AT commands (PDP type, APN, signal).
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-lte-base/install
++	$(INSTALL_DIR) $(1)/etc/uci-defaults
++	$(INSTALL_BIN) ./root/etc/uci-defaults/40-pejir-lte $(1)/etc/uci-defaults/40-pejir-lte
++	$(INSTALL_DIR) $(1)/usr/bin
++	$(INSTALL_BIN) ./root/usr/bin/mdm-at $(1)/usr/bin/mdm-at
++endef
++
++$(eval $(call BuildPackage,pejir-lte-base))
+diff --git a/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte b/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
+new file mode 100755
+index 0000000..73eec0a
+--- /dev/null
++++ b/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
+@@ -0,0 +1,20 @@
++#!/bin/sh
++# wan over LTE (usb0 = GM510 ECM/NCM)
++if ! uci -q get network.lte >/dev/null; then
++  uci set network.lte=interface
++  uci set network.lte.device='usb0'
++  uci set network.lte.proto='dhcp'
++  uci set network.lte.metric='20'
++  uci set network.lte.peerdns='0'
++fi
++# wan6 over LTE (if operator/modem provide IPv6)
++if ! uci -q get network.lte6 >/dev/null; then
++  uci set network.lte6=interface
++  uci set network.lte6.device='usb0'
++  uci set network.lte6.proto='dhcpv6'
++  uci set network.lte6.metric='20'
++  uci set network.lte6.reqprefix='auto'
++  uci set network.lte6.norelease='1'
++fi
++uci commit network
++exit 0
+diff --git a/package/pejir-lte-base/root/usr/bin/mdm-at b/package/pejir-lte-base/root/usr/bin/mdm-at
+new file mode 100755
+index 0000000..bf9854b
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/bin/mdm-at
+@@ -0,0 +1,15 @@
++#!/bin/sh
++# GM510 AT helper. Usage: mdm-at "AT+CGDCONT=?" [tty]
++TTY=${2:-auto}
++if [ "$TTY" = auto ]; then
++  for p in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2; do
++    [ -c "$p" ] || continue
++    echo -e "AT\r" > "$p" 2>/dev/null
++    sleep 0.3
++    if head -c 60 "$p" 2>/dev/null | grep -q OK; then TTY="$p"; break; fi
++  done
++fi
++[ -c "$TTY" ] || { echo "no AT port found"; exit 1; }
++echo -e "$1\r" > "$TTY"
++sleep 0.7
++head -c 500 "$TTY" | strings
+-- 
+2.43.0
+
