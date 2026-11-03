@@ -35,7 +35,7 @@
 
 ## Скачать готовые образы
 
-[Релиз v25.12.6-pejir01.5](https://github.com/sergej19882906/openwrt-pejir01/releases/latest) — образы, apk-пакеты, вендор-блобы:
+[Последний релиз](https://github.com/sergej19882906/openwrt-pejir01/releases/latest) — образы, apk-пакеты, вендор-блобы:
 
 - [`openwrt-...-squashfs-factory.bin`](https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/openwrt-ramips-mt7621-perenio_pejir01-34-BA-squashfs-factory.bin) — прошивка со стока (U-Boot)
 - [`openwrt-...-squashfs-sysupgrade.bin`](https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/openwrt-ramips-mt7621-perenio_pejir01-34-BA-squashfs-sysupgrade.bin) — обновление с OpenWrt
