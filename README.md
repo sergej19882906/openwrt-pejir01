@@ -19,6 +19,8 @@
 | **LED-индикация (STM32)** | ✅ вендорные `mcu`/`mcud` из стока 9.0.4 |
 | **Zigbee (EFR32)** | ✅ через `uartmuxd` → `/dev/umxtty1`, координатор EZSP (HOMEd) — ставится на extroot |
 | **LXC-контейнеры** | ✅ LXC 7.0 + cgroup2 + kmod-veth, `/srv/lxc` на extroot ([docs](docs/LXC.md)) |
+| **Другие модемы** | ✅ QMI/MBIM/RNDIS/Huawei + AT-консоль в LuCI ([docs](docs/MODEMS.md)) |
+| **Тема** | ✅ Cyberpunk (тёмная OLED/HUD) по умолчанию |
 | **AmneziaWG (AWG)** | ✅ kmod против нашего ядра + `awg` CLI + LuCI ([docs](docs/VPN_AWG.md)) |
 | Батарея/питание | ✅ `mcu getvolt`/`getsys` + ubus-события; **значок АКБ в LuCI** (`luci-app-perenio`) ([docs](docs/STM32_BATTERY_SOUND.md)) |
 | Звук (siren) | ⚠️ событие `mcud.mcu.siren` пробрасывается; ручной запуск — эксперимент ([docs](docs/STM32_BATTERY_SOUND.md)) |

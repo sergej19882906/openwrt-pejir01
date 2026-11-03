@@ -1,4 +1,4 @@
-From 8ab5ac02fe4d4ff4b7f85b299d75dc4beaf09769 Mon Sep 17 00:00:00 2001
+From ac16cead558c242962a46bf8e072cd32b10f6572 Mon Sep 17 00:00:00 2001
 From: sergej19882906 <sergej19882906@users.noreply.github.com>
 Date: Sat, 31 Oct 2026 09:21:05 +0300
 Subject: [PATCH 10/10] packages: vendor modemfeed tools (atinout, qminfo,
@@ -48,6 +48,7 @@ LTE ping watchdog, QMI info tool, Intel XMM modem support.
  .../screenshots/modeminfo-network.png         |  Bin 0 -> 34159 bytes
  .../screenshots/modeminfo-overview.png        |  Bin 0 -> 10829 bytes
  .../screenshots/modeminfo-setup.png           |  Bin 0 -> 61241 bytes
+ .../luci-static/resources/view/perenio/sms.js |    2 +-
  package/pingcontrol/Makefile                  |   40 +
  package/pingcontrol/files/pingcontrol         |  114 ++
  package/pingcontrol/files/pingcontrol.config  |    8 +
@@ -67,7 +68,7 @@ LTE ping watchdog, QMI info tool, Intel XMM modem support.
  .../root/etc/gcom/xmm-disconnect.gcom         |   11 +
  .../root/etc/hotplug.d/usb/01_xmm.sh          |   35 +
  .../xmm-modem/root/lib/netifd/proto/xmm.sh    |  233 +++
- 60 files changed, 6097 insertions(+)
+ 61 files changed, 6098 insertions(+), 1 deletion(-)
  create mode 100644 package/atinout/Makefile
  create mode 100644 package/luci-app-atinout/LICENSE
  create mode 100644 package/luci-app-atinout/Makefile
@@ -13876,6 +13877,19 @@ nc5V%tvh(|0LH|}$wt4(VvjUceCt<t5f7dm2FBe|A{pkMyGG9{8
 literal 0
 HcmV?d00001
 
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 4cd494d..f197cc2 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -22,7 +22,7 @@ return view.extend({
+ 		]);
+ 
+ 		poll.add(L.bind(function() {
+-			return fs.list(DIR).then(L.bind(function(list) {
++			return fs.list(DIR).catch(function() { return []; }).then(L.bind(function(list) {
+ 				var files = (list || []).filter(function(f) { return f.type == 'file'; });
+ 				files.sort(function(a, b) { return b.mtime - a.mtime; });
+ 				files = files.slice(0, 50);
 diff --git a/package/pingcontrol/Makefile b/package/pingcontrol/Makefile
 new file mode 100755
 index 0000000..9093308

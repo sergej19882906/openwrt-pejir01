@@ -27,8 +27,12 @@ mkdir -p "$WORKDIR" && cd "$WORKDIR"
 cd openwrt
 
 echo "==> 3. Apply PEJIR01 patch series"
-git am --3way "$REPO_DIR"/patches/*.patch \
-  || { echo "git am failed — apply manually: git am patches/*.patch"; exit 1; }
+if git log --oneline -1 | grep -q "Perenio Elegance PEJIR01"; then
+  echo "    series already applied, skip"
+else
+  git am --3way "$REPO_DIR"/patches/*.patch \
+    || { echo "git am failed — apply manually: git am patches/*.patch"; exit 1; }
+fi
 
 echo "==> 4. Vendor binaries from stock 9.0.4 (Perenio public S3)"
 MCU_DIR="package/perenio-mcu/files"
@@ -75,7 +79,6 @@ CONFIG_PACKAGE_lxc-hooks=y
 CONFIG_PACKAGE_xz-utils=y
 CONFIG_PACKAGE_kmod-veth=y
 CONFIG_PACKAGE_pejir-lxc-base=y
-CONFIG_PACKAGE_pejir-homed-feed=y
 CONFIG_PACKAGE_mosquitto-nossl=y
 CONFIG_PACKAGE_mosquitto-client-nossl=y
 CONFIG_PACKAGE_sing-box=y
@@ -118,7 +121,6 @@ CONFIG_PACKAGE_atinout=y
 CONFIG_PACKAGE_luci-app-atinout=y
 CONFIG_PACKAGE_luci-app-modeminfo=y
 CONFIG_PACKAGE_pingcontrol=y
-CONFIG_PACKAGE_qminfo=y
 # theme
 CONFIG_PACKAGE_luci-theme-cyberpunk=y
 CONFIG_PACKAGE_dropbear=y

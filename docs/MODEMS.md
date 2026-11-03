@@ -24,7 +24,6 @@ ECM/NCM, RNDIS, Huawei-NCM + usb-modeswitch + AT-инструменты.
 - `mdm-at "AT..."` — AT-команды с автопоиском порта (наш)
 - `atinout` + **LuCI: Сервис → AT commands** — то же с веб-морды (modemfeed)
 - **LuCI: Статус → Modem info** (`luci-app-modeminfo`) — сигнал, оператор, температура
-- `qminfo` — состояние QMI-модема
 - `pingcontrol` — watchdog LTE (перезвон при потере пинга; конфиг
   `/etc/config/pingcontrol`)
 
