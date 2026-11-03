@@ -30,6 +30,7 @@
 | mosquitto / sing-box | ✅ вшиты (sing-box выключен, конфиг вручную) ([docs](docs/ZIGBEE_SINGBOX.md)) |
 | **Мониторинг и сеть** | ✅ mwan3 (failover Ethernet↔LTE), sqm (QoS), collectd+графики, nlbwmon, banip, vnstat2 — с LuCI |
 | **Диагностика** | ✅ picocom, usbutils, iperf3, tcpdump, htop |
+| **DynDNS** | ✅ ddns-scripts + LuCI (100+ провайдеров, IPv4/IPv6) — Сеть→Dynamic DNS |
 | **Тема** | ✅ Cyberpunk (тёмная OLED/HUD) по умолчанию |
 
 ## Скачать готовые образы

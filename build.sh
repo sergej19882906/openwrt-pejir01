@@ -138,6 +138,10 @@ CONFIG_PACKAGE_luci-app-modeminfo=y
 CONFIG_PACKAGE_pingcontrol=y
 # theme
 CONFIG_PACKAGE_luci-theme-cyberpunk=y
+# dynamic DNS
+CONFIG_PACKAGE_ddns-scripts=y
+CONFIG_PACKAGE_ddns-scripts-services=y
+CONFIG_PACKAGE_luci-app-ddns=y
 CONFIG_PACKAGE_dropbear=y
 EOF
 make defconfig
