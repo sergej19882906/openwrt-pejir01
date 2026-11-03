@@ -44,6 +44,11 @@ if [ ! -f "$MCU_DIR/mcu" ]; then
   unsquashfs -q -d vendor-root root.squashfs
   cp vendor-root/usr/bin/mcu vendor-root/usr/bin/mcud \
      vendor-root/usr/bin/stm32flash "$WORKDIR/openwrt/$MCU_DIR/"
+  IDATA_DIR="$WORKDIR/openwrt/package/pejir-idata/files"
+  mkdir -p "$IDATA_DIR"
+  cp vendor-root/usr/sbin/idata_load vendor-root/usr/sbin/idata_flash \
+     vendor-root/usr/sbin/idata_getconf vendor-root/usr/sbin/idata_lib.sh \
+     "$IDATA_DIR/"
   cd "$WORKDIR/openwrt"
 else
   echo "    vendor binaries already present, skip"
