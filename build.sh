@@ -36,20 +36,30 @@ fi
 
 echo "==> 4. Vendor binaries from stock 9.0.4 (Perenio public S3)"
 MCU_DIR="package/perenio-mcu/files"
-mkdir -p "$MCU_DIR"
+IDATA_DIR="package/pejir-idata/files"
+mkdir -p "$MCU_DIR" "$IDATA_DIR"
 if [ ! -f "$MCU_DIR/mcu" ]; then
-  curl -L -o /tmp/pejir-9.0.4.swu "$STOCK_FW_URL"
-  rm -rf /tmp/pejir-stock && mkdir /tmp/pejir-stock && cd /tmp/pejir-stock
-  cpio -idm --no-absolute-filenames < /tmp/pejir-9.0.4.swu
-  unsquashfs -q -d vendor-root root.squashfs
-  cp vendor-root/usr/bin/mcu vendor-root/usr/bin/mcud \
-     vendor-root/usr/bin/stm32flash "$WORKDIR/openwrt/$MCU_DIR/"
-  IDATA_DIR="$WORKDIR/openwrt/package/pejir-idata/files"
-  mkdir -p "$IDATA_DIR"
-  cp vendor-root/usr/sbin/idata_load vendor-root/usr/sbin/idata_flash \
-     vendor-root/usr/sbin/idata_getconf vendor-root/usr/sbin/idata_lib.sh \
-     "$IDATA_DIR/"
-  cd "$WORKDIR/openwrt"
+  if ! curl -sfL -o /tmp/pejir-9.0.4.swu "$STOCK_FW_URL"; then
+    echo "    S3 unavailable — falling back to GitHub release blobs"
+    curl -sfL -o /tmp/pejir-vendor-blobs.zip \
+      "https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/pejir-vendor-blobs-9.0.4.zip" \
+      || { echo "both sources failed"; exit 1; }
+    rm -rf /tmp/pejir-vendor-blobs-9.0.4 && cd /tmp
+    unzip -q pejir-vendor-blobs.zip
+    cp pejir-vendor-blobs-9.0.4/perenio-mcu/* "$WORKDIR/openwrt/$MCU_DIR/"
+    cp pejir-vendor-blobs-9.0.4/pejir-idata/* "$WORKDIR/openwrt/$IDATA_DIR/"
+    cd "$WORKDIR/openwrt"
+  else
+    rm -rf /tmp/pejir-stock && mkdir /tmp/pejir-stock && cd /tmp/pejir-stock
+    cpio -idm --no-absolute-filenames < /tmp/pejir-9.0.4.swu
+    unsquashfs -q -d vendor-root root.squashfs
+    cp vendor-root/usr/bin/mcu vendor-root/usr/bin/mcud \
+       vendor-root/usr/bin/stm32flash "$WORKDIR/openwrt/$MCU_DIR/"
+    cp vendor-root/usr/sbin/idata_load vendor-root/usr/sbin/idata_flash \
+       vendor-root/usr/sbin/idata_getconf vendor-root/usr/sbin/idata_lib.sh \
+       "$WORKDIR/openwrt/$IDATA_DIR/"
+    cd "$WORKDIR/openwrt"
+  fi
 else
   echo "    vendor binaries already present, skip"
 fi
