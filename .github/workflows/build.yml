@@ -1,3 +1,17 @@
+# Каноническая копия workflow сборки.
+#
+# GitHub читает workflow только из .github/workflows/. Этот файл — та же
+# копия, но в обычном каталоге: его можно открыть и нажать "Copy raw contents",
+# затем вставить в .github/workflows/build.yml через редактор GitHub.
+#
+# Отличия от версии, которая падала:
+#   - build.sh запускается через bash, а не ./build.sh: в репозитории у
+#     build.sh нет бита исполнения, из-за чего был exit 126;
+#   - при чистке диска node из тулкэша не удаляется (на нём работают
+#     upload-artifact и cache);
+#   - поиск собранных пакетов идёт по всему дереву bin/packages;
+#   - gh release получает --repo, т.к. шаг работает вне каталога репозитория.
+#
 name: Build
 
 # Полная сборка порта OpenWrt для Perenio Elegance (PEJIR01).
@@ -38,13 +52,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # На GitHub-hosted раннере доступно ~14 ГБ, а OpenWrt с этим набором
+      # На GitHub-hosted раннере свободно ~14 ГБ, а OpenWrt с этим набором
       # пакетов требует ~30 ГБ. Без этого шага сборка упадёт по месту.
+      # ВАЖНО: node из тулкэша не удаляем — на нём работают node-овые
+      # экшены (upload-artifact, cache), без него они падают.
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                     /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
-                     /usr/share/swift "$AGENT_TOOLSDIRECTORY"
+                     /usr/local/share/boost /usr/local/share/powershell \
+                     /usr/share/swift /usr/local/.ghcup /usr/local/lib/node_modules
+          sudo rm -rf /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/Python \
+                     /opt/hostedtoolcache/PyPy /opt/hostedtoolcache/go \
+                     /opt/hostedtoolcache/Java_* /opt/hostedtoolcache/ruby \
+                     /opt/hostedtoolcache/swift /opt/hostedtoolcache/terraform
           sudo rm -rf /var/lib/apt/lists/*
           df -h /
 
@@ -62,16 +82,22 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          # build.sh сам ставит зависимости, применяет патчи и собирает образ.
-          ./build.sh 2>&1 | tee build.log
+          # build.sh в репозитории не имеет бита исполнения, поэтому
+          # запускаем его через bash (иначе exit 126: Permission denied).
+          chmod +x build.sh
+          bash build.sh 2>&1 | tee build.log
 
       - name: Verify image contents
         run: |
           set -e
           BIN="$WORKDIR/openwrt/bin/targets/ramips/mt7621"
           ROOTFS="$(ls "$BIN"/*-rootfs.squashfs | head -1)"
-          PKGDIR="$WORKDIR/openwrt/bin/packages/ramips/mt7621/base"
+          PKGDIR="$WORKDIR/openwrt/bin/packages/ramips/mt7621"
           fail=0
+
+          command -v unsquashfs >/dev/null || {
+            sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools
+          }
 
           check_file() {
             if unsquashfs -l "$ROOTFS" 2>/dev/null | grep -q "$1"; then
@@ -82,7 +108,7 @@ jobs:
             fi
           }
           check_pkg() {
-            if ls "$PKGDIR" 2>/dev/null | grep -q "^$1"; then
+            if find "$PKGDIR" -name "$1*.apk" 2>/dev/null | grep -q .; then
               echo "  ok   package: $1"
             else
               echo "  FAIL package: $1 не собран"
@@ -137,14 +163,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           cd "$WORKDIR/openwrt/bin/targets/ramips/mt7621"
           sha256sum *.bin > sha256sums
           files=$(ls *.bin)
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" $files sha256sums --clobber
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" $files sha256sums --clobber --repo "$REPO"
           else
-            gh release create "$TAG" $files sha256sums \
+            gh release create "$TAG" $files sha256sums --repo "$REPO" \
               --title "Perenio Elegance PEJIR01 — OpenWrt 25.12.6" \
               --notes "Сборка из GitHub Actions."
           fi
