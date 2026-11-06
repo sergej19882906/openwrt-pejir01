@@ -137,10 +137,46 @@ if [ ! -f "$MCU_DIR/mcu" ]; then
           "содержимое: $(ls -1 /tmp/pejir-stock 2>/dev/null | tr '\n' ' ')"
       exit 2
     fi
-    if ! unsquashfs -q -d /tmp/pejir-stock/vendor-root /tmp/pejir-stock/root.squashfs; then
-      ann error "build.sh: root.squashfs не распаковался" \
-          "файл: $(stat -c%s /tmp/pejir-stock/root.squashfs 2>/dev/null || echo '?') байт"
+    # unsquashfs без прав root не может создать device-node'ы (например
+    # /dev/console) и завершается с кодом 2 ("non-fatal errors"). Файлы при
+    # этом распакованы, поэтому код 2 терпим — важно лишь, что нужные
+    # бинари на месте. Если есть sudo, распаковываем от root и код будет 0.
+    VENDOR_ROOT=/tmp/pejir-stock/vendor-root
+    UNSQUASH_OPTS="-q"
+    if unsquashfs -help 2>&1 | grep -q -- "-no-xattrs"; then
+      UNSQUASH_OPTS="-q -no-xattrs"
+    fi
+    UNSQUASH="unsquashfs"
+    if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      UNSQUASH="sudo -n unsquashfs"
+    fi
+    set +e
+    $UNSQUASH $UNSQUASH_OPTS -d "$VENDOR_ROOT" /tmp/pejir-stock/root.squashfs
+    urc=$?
+    set -e
+    if [ "$urc" -ne 0 ]; then
+      echo "    WARNING: unsquashfs завершился с кодом $urc"
+      echo "             (код 2 = некритичные ошибки: device-node'ы без прав root)"
+      if [ "$urc" -ne 2 ]; then
+        ann error "build.sh: root.squashfs не распаковался" \
+            "код unsquashfs: $urc, файл: $(stat -c%s /tmp/pejir-stock/root.squashfs 2>/dev/null || echo '?') байт"
+        exit 2
+      fi
+    fi
+
+    missing=""
+    for f in usr/bin/mcu usr/bin/mcud usr/bin/stm32flash \
+             usr/sbin/idata_load usr/sbin/idata_flash usr/sbin/idata_getconf \
+             usr/sbin/idata_lib.sh; do
+      [ -f "$VENDOR_ROOT/$f" ] || missing="$missing $f"
+    done
+    if [ -n "$missing" ]; then
+      ann error "build.sh: вендорские бинари не извлеклись" \
+          "не найдены в root.squashfs:$missing (код unsquashfs: $urc)"
       exit 2
+    fi
+    if [ "$(id -u)" -ne 0 ]; then
+      sudo -n chown -R "$(id -u):$(id -g)" "$VENDOR_ROOT" 2>/dev/null || true
     fi
     cp /tmp/pejir-stock/vendor-root/usr/bin/mcu \
        /tmp/pejir-stock/vendor-root/usr/bin/mcud \
