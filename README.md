@@ -47,7 +47,7 @@
 
 ```sh
 git clone https://github.com/sergej19882906/openwrt-pejir01.git
-cd openwrt-pejir01 && ./build.sh
+cd openwrt-pejir01 && bash build.sh
 ```
 
 Вендорные бинарники (`mcu`, `mcud`, `stm32flash`, `idata_*`) **не входят в репозиторий** —
