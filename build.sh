@@ -30,8 +30,16 @@ on_err() {
   local rc=$?
   [ "$rc" -eq 0 ] && return 0
   sleep 1  # дать tee допечатать хвост лога
+  # GitHub обрезает workflow-команду до 4096 символов, поэтому берём
+  # последние ~1600 символов лога (там и есть причина) плюс строки
+  # с признаками ошибки. Раньше брались последние N строк, но строки
+  # make бывают по километру — ошибка не влезала в аннотацию.
+  local tail_txt errs
+  tail_txt="$(tail -c 1600 "$LOGFILE" 2>/dev/null | tr '\n' ' ')"
+  errs="$(grep -aiE 'error|fatal|cannot|no space|failed|conflict|not found' "$LOGFILE" 2>/dev/null \
+            | tail -n 10 | cut -c1-160 | tr '\n' ' ')"
   ann error "build.sh: сбой на шаге '${STEP}' (exit ${rc})" \
-      "$(tail -n 60 "$LOGFILE" 2>/dev/null | tail -n 25)"
+      "Хвост: ${tail_txt} | Ошибки: ${errs}"
   exit "$rc"
 }
 trap on_err EXIT
