@@ -34,6 +34,12 @@ mkdir -p "$WORKDIR" && cd "$WORKDIR"
   https://github.com/openwrt/openwrt.git openwrt
 cd openwrt
 
+# git am требует идентификацию автора. На машине без глобального
+# user.name/user.email патчи не применятся: «unable to auto-detect
+# email address». Задаём её локально для этого дерева.
+git config user.name "openwrt-pejir01-build"
+git config user.email "build@localhost"
+
 echo "==> 3. Apply PEJIR01 patch series"
 # Серия применяется целиком, поэтому проверяем не HEAD, а историю:
 # патч 0001 — это и есть маркер серии.
