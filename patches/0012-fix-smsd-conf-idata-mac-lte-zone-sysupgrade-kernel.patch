@@ -1,19 +1,22 @@
-From bcf067c3cd4f55024a9892fc7f3f1202103382a5 Mon Sep 17 00:00:00 2001
+From ff460bc197a50a9d5562829ce76f5102bb872709 Mon Sep 17 00:00:00 2001
 From: sergej19882906 <sergej19882906@users.noreply.github.com>
 Date: Fri, 6 Nov 2026 14:30:28 +0000
 Subject: [PATCH] =?UTF-8?q?fix:=20SMS-=D0=BA=D0=BE=D0=BD=D1=84=D0=B8=D0=B3?=
- =?UTF-8?q?,=20MAC=20=D0=B8=D0=B7=20idata,=20=D0=B7=D0=BE=D0=BD=D0=B0=20fi?=
- =?UTF-8?q?rewall=20=D0=B4=D0=BB=D1=8F=20LTE,=20=D1=8F=D0=B4=D1=80=D0=BE?=
- =?UTF-8?q?=20=D0=BF=D1=80=D0=B8=20sysupgrade?=
+ =?UTF-8?q?=20=D0=B2=20=D0=BE=D0=B1=D1=80=D0=B0=D0=B7=D0=B5,=20MAC=20?=
+ =?UTF-8?q?=D0=B8=D0=B7=20idata,=20=D0=B7=D0=BE=D0=BD=D0=B0=20firewall=20?=
+ =?UTF-8?q?=D0=B4=D0=BB=D1=8F=20LTE,=20=D1=8F=D0=B4=D1=80=D0=BE=20=D0=BF?=
+ =?UTF-8?q?=D1=80=D0=B8=20sysupgrade?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-По результатам аудита порта на OpenWrt v25.12.6:
-
-- pejir-sms: /etc/smsd.conf не устанавливался в образ (патч 0008 удалил
-  строку установки вместо переименования пути), из-за чего smstools3
-  оставался без конфига и SMS не работали.
+- pejir-sms: /etc/smsd.conf не попадал в образ. Патч 0007 создал файл
+  по пути package/pejir-sms/root/etc/smsd.conf, но Makefile ссылался на
+  ./files/smsd.conf; патч 0008 убрал и файл, и строку установки, и
+  оставил только генерацию конфига при первом запуске. Восстановлены
+  и файл, и установка: в образе есть корректный конфиг по умолчанию,
+  а скрипт /etc/uci-defaults/41-pejir-sms на первом запуске определяет
+  AT-порт и перезаписывает его целиком.
 - 02_network: gsub("'''","") в разборе MAC из раздела idata снимал
   три апострофа подряд, то есть не снимал ничего: значение приходило
   с кавычками и MAC оказывался невалидным. Теперь кавычки снимаются
@@ -37,11 +40,13 @@ Content-Transfer-Encoding: 8bit
  .../root/etc/uci-defaults/20-pejir-idata      | 11 ++++++-
  .../root/etc/uci-defaults/40-pejir-lte        | 12 +++++++
  package/pejir-sms/Makefile                    |  2 ++
+ package/pejir-sms/root/etc/smsd.conf          | 24 ++++++++++++++
  package/perenio-mcu/Makefile                  | 32 ++++++++++++++++---
  target/linux/ramips/image/mt7621.mk           |  2 +-
  .../mt7621/base-files/etc/board.d/02_network  |  7 ++--
  .../mt7621/base-files/lib/upgrade/platform.sh | 31 +++++++++++++++++-
- 7 files changed, 88 insertions(+), 9 deletions(-)
+ 8 files changed, 112 insertions(+), 9 deletions(-)
+ create mode 100644 package/pejir-sms/root/etc/smsd.conf
 
 diff --git a/package/pejir-idata/root/etc/uci-defaults/20-pejir-idata b/package/pejir-idata/root/etc/uci-defaults/20-pejir-idata
 index 3e7a396..d5881ea 100755
@@ -101,6 +106,36 @@ index 6ad2d61..d70d068 100644
  	$(INSTALL_DIR) $(1)/etc/uci-defaults
  	$(INSTALL_BIN) ./root/etc/uci-defaults/41-pejir-sms $(1)/etc/uci-defaults/41-pejir-sms
  endef
+diff --git a/package/pejir-sms/root/etc/smsd.conf b/package/pejir-sms/root/etc/smsd.conf
+new file mode 100644
+index 0000000..e4239dd
+--- /dev/null
++++ b/package/pejir-sms/root/etc/smsd.conf
+@@ -0,0 +1,24 @@
++# SMS Server Tools 3 — PEJIR01 / GM510
++# Конфиг по умолчанию. При первом запуске скрипт /etc/uci-defaults/41-pejir-sms
++# определяет AT-порт модема и перезаписывает файл целиком.
++devices = GM510
++loglevel = notice
++logfile = /var/log/smsd.log
++pidfile = /var/run/smsd.pid
++infofile = /var/run/smsd.working
++outgoing = /var/spool/sms/outgoing
++checked = /var/spool/sms/checked
++failed = /var/spool/sms/failed
++incoming = /var/spool/sms/incoming
++sent = /var/spool/sms/sent
++receive_before_send = no
++
++[GM510]
++device = /dev/ttyUSB0
++baudrate = 115200
++init = AT+CPMS="SM","SM","SM"
++init = AT+CMGF=1
++init = AT+CNMI=2,1,0,2,0
++incoming = yes
++outgoing = yes
++decode_unicode_text = yes
 diff --git a/package/perenio-mcu/Makefile b/package/perenio-mcu/Makefile
 index 47e7e19..c917262 100644
 --- a/package/perenio-mcu/Makefile
