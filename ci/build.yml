@@ -1,7 +1,7 @@
 # Файл workflow для GitHub Actions.
 # GitHub читает workflow только из .github/workflows/ — положите его туда:
 #   mkdir -p .github/workflows && cp ci/build.yml .github/workflows/build.yml
-# (или запустите ./ci/install-workflow.sh)
+# (или запустите sh ci/install-workflow.sh)
 
 name: Build
 
