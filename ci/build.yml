@@ -10,7 +10,11 @@
 #   - при чистке диска node из тулкэша не удаляется (на нём работают
 #     upload-artifact и cache);
 #   - поиск собранных пакетов идёт по всему дереву bin/packages;
-#   - gh release получает --repo, т.к. шаг работает вне каталога репозитория.
+#   - gh release получает --repo, т.к. шаг работает вне каталога репозитория;
+#   - образ выгружается артефактом ДО проверки содержимого: иначе при
+#     неудачной проверке готовый образ теряется вместе с раннером;
+#   - ошибки проверки публикуются как annotation (::error::), поэтому видны
+#     в check-runs API без доступа к логам job'а.
 #
 name: Build
 
@@ -87,73 +91,17 @@ jobs:
           chmod +x build.sh
           bash build.sh 2>&1 | tee build.log
 
-      - name: Verify image contents
-        run: |
-          set -e
-          BIN="$WORKDIR/openwrt/bin/targets/ramips/mt7621"
-          ROOTFS="$(ls "$BIN"/*-rootfs.squashfs | head -1)"
-          PKGDIR="$WORKDIR/openwrt/bin/packages/ramips/mt7621"
-          fail=0
-
-          command -v unsquashfs >/dev/null || {
-            sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools
-          }
-
-          check_file() {
-            if unsquashfs -l "$ROOTFS" 2>/dev/null | grep -q "$1"; then
-              echo "  ok   rootfs: $1"
-            else
-              echo "  FAIL rootfs: $1 отсутствует"
-              fail=1
-            fi
-          }
-          check_pkg() {
-            if find "$PKGDIR" -name "$1*.apk" 2>/dev/null | grep -q .; then
-              echo "  ok   package: $1"
-            else
-              echo "  FAIL package: $1 не собран"
-              fail=1
-            fi
-          }
-
-          echo "== содержимое rootfs =="
-          # конфиг smstools3 (регрессия: ставился только uci-defaults, но не сам файл)
-          check_file "etc/smsd.conf"
-          # скрипты миграции со стока и настройки LTE
-          check_file "etc/uci-defaults/20-pejir-idata"
-          check_file "etc/uci-defaults/40-pejir-lte"
-          # вендорные бинари
-          check_file "usr/bin/mcud"
-          check_file "usr/sbin/idata_load"
-          # LuCI-приложения PEJIR01
-          check_file "www/luci-static/resources/view/perenio/battery.js"
-          check_file "www/luci-static/resources/view/perenio/sms.js"
-          # разбор MAC из idata: кавычки должны сниматься со всей строки
-          if unsquashfs -cat "$ROOTFS" etc/board.d/02_network 2>/dev/null \
-               | grep -q 'tr -d' ; then
-            echo "  ok   02_network: парсер MAC снимает кавычки"
-          else
-            echo "  FAIL 02_network: старый парсер MAC"
-            fail=1
-          fi
-
-          echo "== собранные пакеты =="
-          check_pkg "luci-app-perenio"
-          check_pkg "pejir-idata"
-          check_pkg "pejir-sms"
-          check_pkg "pejir-lte-base"
-          check_pkg "perenio-mcu"
-
-          echo "== образы =="
-          ls -la "$BIN"/*.bin
-          exit $fail
-
+      # Порядок шагов важен: сначала отдаём образ артефактом, потом
+      # проверяем его содержимое. Иначе при неудачной проверке готовый
+      # образ теряется вместе с раннером (и собирать его заново 2 часа).
       - name: Upload images
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pejir01-images
           path: |
             ${{ env.WORKDIR }}/openwrt/bin/targets/ramips/mt7621/*.bin
+            ${{ env.WORKDIR }}/openwrt/bin/targets/ramips/mt7621/*.squashfs
             ${{ env.WORKDIR }}/openwrt/bin/targets/ramips/mt7621/sha256sums
           if-no-files-found: error
           retention-days: 30
@@ -175,3 +123,90 @@ jobs:
               --title "Perenio Elegance PEJIR01 — OpenWrt 25.12.6" \
               --notes "Сборка из GitHub Actions."
           fi
+
+      - name: Verify image contents
+        run: |
+          set -e
+          BIN="$WORKDIR/openwrt/bin/targets/ramips/mt7621"
+          PKGDIR="$WORKDIR/openwrt/bin/packages/ramips/mt7621"
+          LIST=/tmp/rootfs.list
+          LISTERR=/tmp/rootfs.err
+          fail=0
+
+          # Ошибки проверки публикуем как annotation: они видны в API
+          # check-runs без доступа к логам job'а.
+          ann() {
+            local msg
+            msg="$(printf '%s' "$1" | tr -d '\r' | sed 's/%/%25/g; s/:/%3A/g; s/,/%2C/g' | tr '\n' ' ')"
+            echo "::error title=Verify image contents::$msg"
+          }
+
+          command -v unsquashfs >/dev/null || {
+            sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools
+          }
+
+          ROOTFS="$(find "$BIN" -maxdepth 1 -name '*rootfs*.squashfs' 2>/dev/null | head -1)"
+          [ -n "$ROOTFS" ] || ROOTFS="$(find "$BIN" -maxdepth 1 -name '*.squashfs' 2>/dev/null | head -1)"
+          if [ -z "$ROOTFS" ]; then
+            ann "в $BIN нет rootfs squashfs"
+            ls -la "$BIN" || true
+            exit 1
+          fi
+          echo "  rootfs: $ROOTFS"
+
+          if ! unsquashfs -l "$ROOTFS" > "$LIST" 2>"$LISTERR"; then
+            ann "не читается $ROOTFS: $(head -c 300 "$LISTERR")"
+          fi
+
+          check_file() {
+            if [ -s "$LIST" ] && grep -q "$1" "$LIST"; then
+              echo "  ok   rootfs: $1"
+            else
+              echo "  FAIL rootfs: $1 отсутствует"
+              ann "в rootfs нет $1"
+              fail=1
+            fi
+          }
+          check_pkg() {
+            if find "$PKGDIR" -name "$1*.apk" 2>/dev/null | grep -q .; then
+              echo "  ok   package: $1"
+            else
+              echo "  FAIL package: $1 не собран"
+              ann "пакет $1 не собран"
+              fail=1
+            fi
+          }
+
+          echo "== содержимое rootfs =="
+          # конфиг smstools3 (в образе его даёт пакет smstools3)
+          check_file "etc/smsd.conf"
+          # скрипты миграции со стока и настройки LTE
+          check_file "etc/uci-defaults/20-pejir-idata"
+          check_file "etc/uci-defaults/40-pejir-lte"
+          # вендорные бинари
+          check_file "usr/bin/mcud"
+          check_file "usr/sbin/idata_load"
+          # LuCI-приложения PEJIR01
+          check_file "www/luci-static/resources/view/perenio/battery.js"
+          check_file "www/luci-static/resources/view/perenio/sms.js"
+          # разбор MAC из idata: кавычки должны сниматься со всей строки
+          if unsquashfs -cat "$ROOTFS" etc/board.d/02_network 2>/dev/null \
+               | grep -q 'tr -d' ; then
+            echo "  ok   02_network: парсер MAC снимает кавычки"
+          else
+            echo "  FAIL 02_network: старый парсер MAC"
+            ann "02_network: парсер MAC не снимает кавычки (нет 'tr -d')"
+            fail=1
+          fi
+
+          echo "== собранные пакеты =="
+          check_pkg "luci-app-perenio"
+          check_pkg "pejir-idata"
+          check_pkg "pejir-sms"
+          check_pkg "pejir-lte-base"
+          check_pkg "perenio-mcu"
+
+          echo "== образы =="
+          ls -la "$BIN"/*.bin || true
+          { echo "### Сборка PEJIR01"; echo; echo "rootfs: $ROOTFS"; echo; ls -la "$BIN"/*.bin || true; } >> "$GITHUB_STEP_SUMMARY"
+          exit $fail
