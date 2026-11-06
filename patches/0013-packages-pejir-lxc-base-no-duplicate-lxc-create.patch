@@ -1,6 +1,6 @@
-From 303b8ac859f14538e50355f901e9d1a1272f0c05 Mon Sep 17 00:00:00 2001
+From 4bd34b06ec6f698233a5deddf0aa827aaa2a2f00 Mon Sep 17 00:00:00 2001
 From: sergej19882906 <sergej19882906@users.noreply.github.com>
-Date: Fri, 6 Nov 2026 18:28:02 +0000
+Date: Fri, 6 Nov 2026 20:10:08 +0000
 Subject: [PATCH] =?UTF-8?q?packages:=20pejir-lxc-base=20=D0=BD=D0=B5=20?=
  =?UTF-8?q?=D0=B4=D1=83=D0=B1=D0=BB=D0=B8=D1=80=D1=83=D0=B5=D1=82=20/usr/b?=
  =?UTF-8?q?in/lxc-create?=
@@ -12,7 +12,7 @@ Content-Transfer-Encoding: 8bit
 23.05 (opkg) такой дубль проходил с предупреждением, но в 25.12 основой
 стал apk: при установке пакетов в rootfs ("apk add" без --force-overwrite)
 два пакета с одним и тем же файлом — это ошибка, сборка обрывается на
-этапе упаковки/установки.
+этапе установки пакетов.
 
 Сам бинарь lxc-create поставляется пакетом lxc-create из feed packages,
 он уже включён в конфигурацию сборки, поэтому копия избыточна: пакет
