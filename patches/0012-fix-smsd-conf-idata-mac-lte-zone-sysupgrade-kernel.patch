@@ -1,0 +1,249 @@
+From bcf067c3cd4f55024a9892fc7f3f1202103382a5 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 14:30:28 +0000
+Subject: [PATCH] =?UTF-8?q?fix:=20SMS-=D0=BA=D0=BE=D0=BD=D1=84=D0=B8=D0=B3?=
+ =?UTF-8?q?,=20MAC=20=D0=B8=D0=B7=20idata,=20=D0=B7=D0=BE=D0=BD=D0=B0=20fi?=
+ =?UTF-8?q?rewall=20=D0=B4=D0=BB=D1=8F=20LTE,=20=D1=8F=D0=B4=D1=80=D0=BE?=
+ =?UTF-8?q?=20=D0=BF=D1=80=D0=B8=20sysupgrade?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+По результатам аудита порта на OpenWrt v25.12.6:
+
+- pejir-sms: /etc/smsd.conf не устанавливался в образ (патч 0008 удалил
+  строку установки вместо переименования пути), из-за чего smstools3
+  оставался без конфига и SMS не работали.
+- 02_network: gsub("'''","") в разборе MAC из раздела idata снимал
+  три апострофа подряд, то есть не снимал ничего: значение приходило
+  с кавычками и MAC оказывался невалидным. Теперь кавычки снимаются
+  со строки целиком (tr -d), одинаково для значений в кавычках и без.
+- pejir-lte-base: интерфейсы lte/lte6 создавались, но не попадали ни
+  в одну зону firewall — без этого нет ни NAT, ни форвардинга, и трафик
+  через usb0 не идёт.
+- platform.sh: sysupgrade писал ядро в UBI-том "kernel", которого на
+  этом устройстве нет, а MTD-разделы kernel0/kernel1 оставались со
+  старым ядром. Теперь ядро пишется в оба слота, как это делает
+  factory.bin, а rootfs уходит в UBI.
+- image/mt7621.mk: IMAGE_SIZE был на ~3.9 МиБ меньше реального места
+  в разделе ubi (128384k вместо 124416k).
+- perenio-mcu: жёсткая зависимость +libubox20260213 ломала сборку при
+  любом обновлении OpenWrt. Теперь тянется обычный libubox/libubus, а в
+  /usr/lib кладутся symlink'и и под текущий SONAME, и под тот, что зашит
+  в вендорный блоб.
+- pejir-idata: заводской пароль root больше не ставится молча и не
+  поверх уже изменённого пароля — в лог идёт предупреждение.
+---
+ .../root/etc/uci-defaults/20-pejir-idata      | 11 ++++++-
+ .../root/etc/uci-defaults/40-pejir-lte        | 12 +++++++
+ package/pejir-sms/Makefile                    |  2 ++
+ package/perenio-mcu/Makefile                  | 32 ++++++++++++++++---
+ target/linux/ramips/image/mt7621.mk           |  2 +-
+ .../mt7621/base-files/etc/board.d/02_network  |  7 ++--
+ .../mt7621/base-files/lib/upgrade/platform.sh | 31 +++++++++++++++++-
+ 7 files changed, 88 insertions(+), 9 deletions(-)
+
+diff --git a/package/pejir-idata/root/etc/uci-defaults/20-pejir-idata b/package/pejir-idata/root/etc/uci-defaults/20-pejir-idata
+index 3e7a396..d5881ea 100755
+--- a/package/pejir-idata/root/etc/uci-defaults/20-pejir-idata
++++ b/package/pejir-idata/root/etc/uci-defaults/20-pejir-idata
+@@ -24,9 +24,18 @@ map_wifi() { # $1=idata ssid key  $2=radio  $3=suffix
+ uci commit wireless 2>/dev/null
+ 
+ # --- root password from stock admin_pass ---------------------------------
++# Восстанавливаем заводской пароль, но не молча и не поверх пароля,
++# который пользователь уже сменил.
+ AP=$(uci -q get idata.device.admin_pass)
++CUR=$(awk -F: '$1 == "root" { print $2 }' /etc/shadow 2>/dev/null)
+ if [ -n "$AP" ]; then
+-    (echo "$AP"; sleep 1; echo "$AP") | passwd root >/dev/null 2>&1
++    if [ -z "$CUR" ]; then
++        (echo "$AP"; sleep 1; echo "$AP") | passwd root >/dev/null 2>&1
++        logger -t pejir-idata "root password restored from stock idata - change it: passwd root"
++        echo "pejir-idata: root password restored from stock idata, change it: passwd root" > /dev/kmsg
++    else
++        logger -t pejir-idata "stock root password NOT applied: password is already set"
++    fi
+ fi
+ 
+ # --- WPS PIN (stored for reference) --------------------------------------
+diff --git a/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte b/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
+index 73eec0a..ffb714c 100755
+--- a/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
++++ b/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
+@@ -17,4 +17,16 @@ if ! uci -q get network.lte6 >/dev/null; then
+   uci set network.lte6.norelease='1'
+ fi
+ uci commit network
++
++# LTE-интерфейсы обязаны быть в зоне wan: без этого для них нет ни NAT,
++# ни форвардинга, и трафик через usb0 не пойдёт (интерфейс вне зоны).
++for i in 0 1 2 3 4 5 6 7 8 9; do
++  [ "$(uci -q get firewall.@zone[$i].name)" = "wan" ] || continue
++  for n in lte lte6; do
++    uci -q get firewall.@zone[$i].network | tr ' ' '\n' | grep -qx "$n" || \
++      uci -q add_list firewall.@zone[$i].network "$n"
++  done
++  break
++done
++uci commit firewall
+ exit 0
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+index 6ad2d61..d70d068 100644
+--- a/package/pejir-sms/Makefile
++++ b/package/pejir-sms/Makefile
+@@ -26,6 +26,8 @@ define Build/Compile
+ endef
+ 
+ define Package/pejir-sms/install
++	$(INSTALL_DIR) $(1)/etc
++	$(INSTALL_DATA) ./root/etc/smsd.conf $(1)/etc/smsd.conf
+ 	$(INSTALL_DIR) $(1)/etc/uci-defaults
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/41-pejir-sms $(1)/etc/uci-defaults/41-pejir-sms
+ endef
+diff --git a/package/perenio-mcu/Makefile b/package/perenio-mcu/Makefile
+index 47e7e19..c917262 100644
+--- a/package/perenio-mcu/Makefile
++++ b/package/perenio-mcu/Makefile
+@@ -2,7 +2,25 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=perenio-mcu
+ PKG_VERSION:=9.0.4
+-PKG_RELEASE:=3
++PKG_RELEASE:=4
++
++# Вендорные блобы (mcu/mcud/stm32flash) — MIPS mipsel musl, линкуются к
++# конкретным SONAME libubox/libubus. SONAME зашит в самих блобах, поэтому
++# жёсткая зависимость вида +libubox20260213 ломала бы сборку при любом
++# обновлении OpenWrt (невнятная ошибка satisfy_dependencies).
++#
++# Вместо этого тянем обычные libubox/libubus, а в /usr/lib кладём symlink'и:
++#   - под текущий SONAME этого дерева OpenWrt;
++#   - под тот SONAME, который зашит в вендорный блоб.
++# Второй нужен, чтобы блоб продолжал запускаться, когда upstream сменил
++# версию библиотеки. Если ABI библиотеки реально изменился, блоб может
++# работать неверно — тогда его нужно пересобрать у вендора.
++VENDOR_LIBUBOX_SONAME:=libubox.so.20260213
++VENDOR_LIBUBUS_SONAME:=libubus.so.20251202
++
++# Текущий SONAME в этом дереве: берём из upstream Makefile'ов.
++LIBUBOX_ABI:=$(shell grep -oE 'PKG_ABI_VERSION:=[0-9]+' $(TOPDIR)/package/libs/libubox/Makefile 2>/dev/null | head -1 | cut -d= -f2)
++LIBUBUS_ABI:=$(shell grep -oE 'PKG_ABI_VERSION:=[0-9]+' $(TOPDIR)/package/system/ubus/Makefile 2>/dev/null | head -1 | cut -d= -f2)
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -10,7 +28,7 @@ define Package/perenio-mcu
+   SECTION:=utils
+   CATEGORY:=Utilities
+   TITLE:=Perenio PEJIR01 STM32 MCU tools (vendor binaries)
+-  DEPENDS:=+libubox20260213 +libubus20251202
++  DEPENDS:=+libubox +libubus
+ endef
+ 
+ define Package/perenio-mcu/description
+@@ -33,10 +51,16 @@ define Package/perenio-mcu/install
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./files/mcud.init $(1)/etc/init.d/mcud
+ 	$(INSTALL_DIR) $(1)/usr/lib
+-	bv=$$$$(grep -o 'libubox\.so\.[0-9]*' $(STAGING_DIR)/pkginfo/libubox.provides | head -n1); \
+-	uv=$$$$(grep -o 'libubus\.so\.[0-9]*' $(STAGING_DIR)/pkginfo/libubus.provides | head -n1); \
++	bv=$$$$(grep -o 'libubox\.so\.[0-9]*' $(STAGING_DIR)/pkginfo/libubox.provides 2>/dev/null | head -n1); \
++	[ -n "$$$$bv" ] || bv="libubox.so.$(LIBUBOX_ABI)"; \
++	uv=$$$$(grep -o 'libubus\.so\.[0-9]*' $(STAGING_DIR)/pkginfo/libubus.provides 2>/dev/null | head -n1); \
++	[ -n "$$$$uv" ] || uv="libubus.so.$(LIBUBUS_ABI)"; \
+ 	[ -n "$$$$bv" ] && ln -sf $$$$bv $(1)/usr/lib/libubox.so; \
+ 	[ -n "$$$$uv" ] && ln -sf $$$$uv $(1)/usr/lib/libubus.so; \
++	[ -n "$$$$bv" ] && [ "$$$$bv" != "$(VENDOR_LIBUBOX_SONAME)" ] && \
++		ln -sf $$$$bv $(1)/usr/lib/$(VENDOR_LIBUBOX_SONAME); \
++	[ -n "$$$$uv" ] && [ "$$$$uv" != "$(VENDOR_LIBUBUS_SONAME)" ] && \
++		ln -sf $$$$uv $(1)/usr/lib/$(VENDOR_LIBUBUS_SONAME); \
+ 	true
+ endef
+ 
+diff --git a/target/linux/ramips/image/mt7621.mk b/target/linux/ramips/image/mt7621.mk
+index de0716a..3d304d3 100644
+--- a/target/linux/ramips/image/mt7621.mk
++++ b/target/linux/ramips/image/mt7621.mk
+@@ -2625,7 +2625,7 @@ define Device/perenio_pejir01-34-BA
+   BLOCKSIZE := 128k
+   PAGESIZE := 2048
+   KERNEL_SIZE:= 4096k
+-  IMAGE_SIZE := 124416k
++  IMAGE_SIZE := 128384k
+   UBINIZE_OPTS := -E 5
+   IMAGES += factory.bin
+   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-kernel | \
+diff --git a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+index 77b90a6..c97bc90 100644
+--- a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+@@ -340,8 +340,11 @@ ramips_setup_macs()
+ 		;;
+ 	perenio,pejir01-34-BA)
+ 		local config="$(dd if=/dev/mtd$(find_mtd_index idata) bs=1 skip=19 count=474)"
+-		wan_mac="$(echo "$config" | awk '/option mac_wan/{gsub("'''","");print $3}')"
+-		lan_mac="$(echo "$config" | awk '/option mac_lan/{gsub("'''","");print $3}')"
++		# idata — это UCI-экспорт: option mac_wan 'AA:BB:CC:DD:EE:FF'.
++		# Кавычки снимаем со всей строки, а не по полям — так одинаково
++		# работает и со значением в кавычках, и без них.
++		wan_mac="$(echo "$config" | awk '/option mac_wan/{print $3}' | tr -d "'")"
++		lan_mac="$(echo "$config" | awk '/option mac_lan/{print $3}' | tr -d "'")"
+ 		label_mac=$lan_mac
+ 		;;
+ 	yuncore,ax820)
+diff --git a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+index 02ef0c6..9436468 100644
+--- a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+@@ -24,10 +24,40 @@ platform_check_image() {
+ 	return 0
+ }
+ 
++# Perenio PEJIR01: ядро лежит в MTD-разделах kernel0/kernel1 (по 4 МиБ),
++# rootfs — в UBI. MTD-раздела "kernel" здесь нет, а U-Boot выбирает
++# активный слот A/B по переменной imgidx, значение которой нам неизвестно.
++# Поэтому новый kernel пишем в оба слота — ровно так же, как это делает
++# factory.bin. U-Boot env при этом не трогаем: если запись не удалась,
++# устройство всё равно загрузится со старым ядром из активного слота.
++perenio_do_upgrade() {
++	local tar_file="$1"
++	local cmd="${2:-cat}"
++	local board_dir part idx
++
++	board_dir="$($cmd < "$tar_file" | tar tf - | grep -m 1 '^sysupgrade-.*/$')"
++	board_dir="${board_dir%/}"
++
++	for part in kernel0 kernel1; do
++		idx="$(find_mtd_index "$part")"
++		[ -n "$idx" ] || continue
++		echo "writing kernel to $part"
++		$cmd < "$tar_file" | tar xOf - "$board_dir/kernel" | \
++			mtd write - "$part" || return 1
++	done
++
++	# rootfs уходит в UBI; kernel в UBI этому устройству не нужен
++	CI_KERNPART=none
++	nand_do_upgrade "$tar_file" "$cmd"
++}
++
+ platform_do_upgrade() {
+ 	local board=$(board_name)
+ 
+ 	case "$board" in
++	perenio,pejir01-34-BA)
++		perenio_do_upgrade "$1"
++		;;
+ 	alfa-network,quad-e4g)
+ 		[ "$(fw_printenv -n dual_image 2>/dev/null)" = "1" ] &&\
+ 		[ -n "$(find_mtd_part backup)" ] && {
+@@ -139,7 +169,6 @@ platform_do_upgrade() {
+ 	netgear,wax214v2|\
+ 	netis,n6|\
+ 	netis,wf2881|\
+-	perenio,pejir01-34-BA|\
+ 	raisecom,msg1500-x-00|\
+ 	rostelecom,rt-fe-1a|\
+ 	rostelecom,rt-sf-1|\
+-- 
+2.39.5
+
