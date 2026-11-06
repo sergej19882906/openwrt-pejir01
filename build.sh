@@ -11,6 +11,33 @@
 # ============================================================
 set -e
 
+# ---- диагностика ----------------------------------------------------------
+# Лог всего прогона дублируется в файл, а при сбое последние строки
+# публикуются как GitHub-annotation (::error::). Их видно в логе job'а
+# без доступа к API логов — в том числе в CI.
+LOGFILE="${LOGFILE:-/tmp/pejir-build.log}"
+mkdir -p "$(dirname "$LOGFILE")"
+exec > >(tee -a "$LOGFILE") 2>&1
+
+ann() { # ann <level> <title> <text>
+  local lvl="$1" title="$2" text="$3"
+  text="$(printf '%s' "$text" | tr -d '\r' | sed 's/%/%25/g; s/:/%3A/g; s/,/%2C/g' | tr '\n' ' ')"
+  echo "::$lvl title=$title::$text"
+}
+
+STEP="startup"
+on_err() {
+  local rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  sleep 1  # дать tee допечатать хвост лога
+  ann error "build.sh: сбой на шаге '${STEP}' (exit ${rc})" \
+      "$(tail -n 60 "$LOGFILE" 2>/dev/null | tail -n 25)"
+  exit "$rc"
+}
+trap on_err EXIT
+
+step() { STEP="$1"; echo "==> $1"; }
+
 OPENWRT_VER="v25.12.6"
 WORKDIR="${WORKDIR:-$HOME/openwrt-pejir01-build}"
 JOBS="$(nproc)"
@@ -19,7 +46,7 @@ STOCK_SHA256="842f10d78d9d5d28063d72331bbf9b35d1983c713bebe24d9cabfb98a47c0c67"
 BLOBS_URL="https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/pejir-vendor-blobs-9.0.4.zip"
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "==> 1. Build dependencies (Debian/Ubuntu)"
+step "1. Build dependencies (Debian/Ubuntu)"
 if command -v apt-get >/dev/null; then
   sudo apt-get update
   sudo apt-get install -y build-essential flex bison gawk gettext git \
@@ -28,7 +55,7 @@ if command -v apt-get >/dev/null; then
     xsltproc libelf-dev ccache python3-yaml squashfs-tools
 fi
 
-echo "==> 2. OpenWrt $OPENWRT_VER"
+step "2. OpenWrt $OPENWRT_VER"
 mkdir -p "$WORKDIR" && cd "$WORKDIR"
 [ -d openwrt ] || git clone --depth 1 --branch "$OPENWRT_VER" \
   https://github.com/openwrt/openwrt.git openwrt
@@ -40,7 +67,7 @@ cd openwrt
 git config user.name "openwrt-pejir01-build"
 git config user.email "build@localhost"
 
-echo "==> 3. Apply PEJIR01 patch series"
+step "3. Apply PEJIR01 patch series"
 # Серия применяется целиком, поэтому проверяем не HEAD, а историю:
 # патч 0001 — это и есть маркер серии.
 if git log --oneline | grep -q "Perenio Elegance PEJIR01"; then
@@ -50,7 +77,7 @@ else
     || { echo "git am failed — apply manually: git am patches/*.patch"; exit 1; }
 fi
 
-echo "==> 4. Vendor binaries from stock 9.0.4 (Perenio public S3)"
+step "4. Vendor binaries from stock 9.0.4 (Perenio public S3)"
 MCU_DIR="package/perenio-mcu/files"
 IDATA_DIR="package/pejir-idata/files"
 mkdir -p "$MCU_DIR" "$IDATA_DIR"
@@ -69,7 +96,8 @@ if [ ! -f "$MCU_DIR/mcu" ]; then
   # 4b. публичный S3 Perenio
   if [ ! -f "$SW" ]; then
     echo "    downloading stock firmware from S3"
-    curl -sfL -o "$SW" "$STOCK_FW_URL" || rm -f "$SW"
+    curl -sfL --retry 3 --retry-delay 2 --retry-connrefused \
+         -o "$SW" "$STOCK_FW_URL" || rm -f "$SW"
   fi
 
   # 4c. ассет релиза с уже распакованными блобами
@@ -98,8 +126,22 @@ if [ ! -f "$MCU_DIR/mcu" ]; then
       fi
     fi
     rm -rf /tmp/pejir-stock && mkdir -p /tmp/pejir-stock
-    ( cd /tmp/pejir-stock && cpio -idm --no-absolute-filenames < "$SW" )
-    unsquashfs -q -d /tmp/pejir-stock/vendor-root /tmp/pejir-stock/root.squashfs
+    if ! ( cd /tmp/pejir-stock && cpio -idm --no-absolute-filenames < "$SW" ); then
+      ann error "build.sh: не распаковалась заводская прошивка" \
+          "cpio не смог разобрать $SW (размер $(stat -c%s "$SW" 2>/dev/null || echo '?') байт). \
+Похоже на оборванную загрузку — скачайте прошивку заново и запустите сборку с STOCK_FW=./pejir-9.0.4.swu"
+      exit 2
+    fi
+    if [ ! -f /tmp/pejir-stock/root.squashfs ]; then
+      ann error "build.sh: в заводской прошивке нет root.squashfs" \
+          "содержимое: $(ls -1 /tmp/pejir-stock 2>/dev/null | tr '\n' ' ')"
+      exit 2
+    fi
+    if ! unsquashfs -q -d /tmp/pejir-stock/vendor-root /tmp/pejir-stock/root.squashfs; then
+      ann error "build.sh: root.squashfs не распаковался" \
+          "файл: $(stat -c%s /tmp/pejir-stock/root.squashfs 2>/dev/null || echo '?') байт"
+      exit 2
+    fi
     cp /tmp/pejir-stock/vendor-root/usr/bin/mcu \
        /tmp/pejir-stock/vendor-root/usr/bin/mcud \
        /tmp/pejir-stock/vendor-root/usr/bin/stm32flash "$WORKDIR/openwrt/$MCU_DIR/"
@@ -126,7 +168,7 @@ else
   echo "    vendor binaries already present, skip"
 fi
 
-echo "==> 5. Feeds + config"
+step "5. Feeds + config"
 cp feeds.conf.default feeds.conf
 ./scripts/feeds update -a
 ./scripts/feeds install -a
@@ -212,11 +254,11 @@ CONFIG_PACKAGE_dropbear=y
 EOF
 make defconfig
 
-echo "==> 6. Download sources"
+step "6. Download sources"
 export FORCE_UNSAFE_CONFIGURE=1
 make download -j"$JOBS"
 
-echo "==> 7. Build (this takes hours)"
+step "7. Build (this takes hours)"
 make -j"$JOBS" || make -j1 V=s
 
 echo ""
