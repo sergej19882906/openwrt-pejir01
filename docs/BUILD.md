@@ -11,7 +11,7 @@
 ```sh
 git clone https://github.com/sergej19882906/openwrt-pejir01.git
 cd openwrt-pejir01
-./build.sh
+bash build.sh
 ```
 
 Скрипт: ставит зависимости → клонирует OpenWrt `v25.12.6` → применяет
