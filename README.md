@@ -14,7 +14,7 @@
 |---|---|
 | Wi-Fi 2.4 (MT7603) / 5 ГГц (MT7612) | ✅ kmod-mt7603 / kmod-mt76x2 |
 | LAN1/LAN2/WAN гигабит (DSA) | ✅ MAC из MTD-раздела `idata` |
-| USB 2.0/3.0, extroot | ✅ block-mount + ext4 в комплекте |
+| USB 2.0/3.0, extroot | ✅ block-mount + ext4 в комплекте; хост-контроллер `xhci` включён патчем 0015 — до него USB в образе не было вообще (ни LTE-модема, ни флешки) |
 | **LTE-автостарт** | ✅ `lte`/`lte6` (DHCP/DHCPv6) на `usb0` создаются сами, metric 20 и в зоне `wan` (NAT работает) ([docs](docs/LTE_IPV6.md)) |
 | LTE-модем GOSUNCN GM510 (ECM/NCM) | ✅ патч ядра `305a:1415` + `mdm-at` |
 | **Другие модемы** | ✅ QMI/MBIM/RNDIS/Huawei-NCM/Sierra + AT-консоль и телеметрия в LuCI ([docs](docs/MODEMS.md)) |
@@ -25,6 +25,7 @@
 | **SMS** | ✅ smstools3 (автодетект AT-порта) + чтение в LuCI; отправка — файл в `/var/spool/sms/outgoing` |
 | **Миграция со стока** | ✅ `pejir-idata`: SSID/пароли Wi-Fi, страна, пароль root — из заводского раздела `idata` при первой загрузке. Пароль ставится только если он ещё не задан, в лог идёт предупреждение «смените его» |
 | **Обновление** | ✅ `sysupgrade` пишет **и ядро** (в оба слота `kernel0`/`kernel1`), и rootfs в UBI ([docs](docs/FLASH.md)) |
+| **OTA по кнопке** | ✅ Система → Firmware update: проверка релиза на GitHub, сверка sha256, `sysupgrade --test` и прошивка. Автообновления нет — только по нажатию ([docs](docs/OTA.md)) |
 | **Zigbee (EFR32)** | ✅ `uartmuxd` → `/dev/umxtty1`, координатор EZSP (HOMEd) — ставится на extroot одной командой |
 | **LXC-контейнеры** | ✅ LXC 7.0 + cgroup2 + kmod-veth, `/srv/lxc` на extroot ([docs](docs/LXC.md)) |
 | **AmneziaWG (AWG)** | ✅ kmod против нашего ядра + `awg` CLI + LuCI ([docs](docs/VPN_AWG.md)) |
