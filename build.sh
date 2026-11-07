@@ -100,6 +100,21 @@ else
     || { echo "git am failed — apply manually: git am patches/*.patch"; exit 1; }
 fi
 
+# Версия прошивки, зашиваемая в образ: OTA-модуль должен знать, какая
+# сборка установлена. Подставляется в пакет pejir-ota (файл попадает
+# в /usr/lib/pejir/version — в ROM, а не в /etc: при sysupgrade с
+# сохранением настроек файлы /etc восстанавливаются из старой системы,
+# и маркер версии устарел бы).
+OTA_VER_FILE="$REPO_DIR/VERSION"
+OTA_DST="package/pejir-ota/files/version"
+if [ -f "$OTA_VER_FILE" ] && [ -f "$OTA_DST" ]; then
+  OTA_VER="$(tr -d ' \t\r\n' <"$OTA_VER_FILE")"
+  printf '%s\n' "$OTA_VER" >"$OTA_DST"
+  echo "    OTA: версия в образе — $OTA_VER"
+else
+  echo "    OTA: VERSION не найден, версия в образе останется 0.0.0-dev"
+fi
+
 step "4. Vendor binaries from stock 9.0.4 (Perenio public S3)"
 MCU_DIR="package/perenio-mcu/files"
 IDATA_DIR="package/pejir-idata/files"
@@ -335,6 +350,25 @@ if [ -n "$SU" ]; then
       OUT="$BINDIR/$(basename "$SU" -squashfs-sysupgrade.bin)-rootfs.squashfs"
       if cp "$R" "$OUT" 2>/dev/null; then
         echo "  rootfs для проверки: $OUT"
+      fi
+
+      # Проверяем, что OTA-модуль действительно попал в образ.
+      # unsquashfs -l не требует root и не создаёт device-node'ы,
+      # поэтому код возврата здесь всегда 0.
+      if command -v unsquashfs >/dev/null 2>&1; then
+        ROOTFS_LIST="$(unsquashfs -l "$R" 2>/dev/null || true)"
+        OTA_MISSING=""
+        for f in usr/bin/pejir-ota usr/lib/pejir/version etc/config/pejir_ota \
+                 www/luci-static/resources/view/perenio/ota.js \
+                 usr/share/luci/menu.d/luci-app-pejir-ota.json \
+                 usr/share/rpcd/acl.d/luci-app-pejir-ota.json; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || OTA_MISSING="$OTA_MISSING $f"
+        done
+        if [ -n "$OTA_MISSING" ]; then
+          ann error "build.sh: OTA" "В образе нет файлов OTA:$OTA_MISSING"
+        else
+          echo "  OTA-модуль в образе: OK"
+        fi
       fi
     fi
   fi

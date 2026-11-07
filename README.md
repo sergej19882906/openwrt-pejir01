@@ -107,6 +107,7 @@ git tag v25.12.6-pejir01.7 && git push origin v25.12.6-pejir01.7
 | Файл | О чём |
 |---|---|
 | [docs/FLASH.md](docs/FLASH.md) | Бэкап, прошивка через U-Boot, recovery, калибровка |
+| [docs/OTA.md](docs/OTA.md) | Обновление прошивки кнопкой в LuCI (без автообновления) |
 | [docs/POSTINSTALL.md](docs/POSTINSTALL.md) | Extroot на USB-флешку |
 | [docs/ZIGBEE_SINGBOX.md](docs/ZIGBEE_SINGBOX.md) | HOMEd (EZSP), mosquitto, sing-box, LED-шпаргалка |
 | [docs/VPN_AWG.md](docs/VPN_AWG.md) | AmneziaWG, awg-manager (и почему он не портируется) |

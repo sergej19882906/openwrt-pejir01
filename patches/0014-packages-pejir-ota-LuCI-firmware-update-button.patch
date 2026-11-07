@@ -1,0 +1,521 @@
+From 398c3e07d8c54268ee884cf27affad4a864f7127 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 09:34:55 +0000
+Subject: [PATCH] =?UTF-8?q?packages:=20=D0=B4=D0=BE=D0=B1=D0=B0=D0=B2?=
+ =?UTF-8?q?=D0=BB=D0=B5=D0=BD=20pejir-ota=20=E2=80=94=20=D0=BE=D0=B1=D0=BD?=
+ =?UTF-8?q?=D0=BE=D0=B2=D0=BB=D0=B5=D0=BD=D0=B8=D0=B5=20=D0=BF=D1=80=D0=BE?=
+ =?UTF-8?q?=D1=88=D0=B8=D0=B2=D0=BA=D0=B8=20=D0=BA=D0=BD=D0=BE=D0=BF=D0=BA?=
+ =?UTF-8?q?=D0=BE=D0=B9=20=D0=B2=20LuCI?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Пакет pejir-ota даёт страницу «Система → Firmware update (PEJIR01)»:
+кнопка «Check for updates» сравнивает версию образа с последним
+релизом GitHub, кнопка «Install update» скачивает sysupgrade-образ,
+сверяет sha256 с sha256sums релиза, проверяет его через sysupgrade
+--test и прошивает.
+
+Автоматического обновления нет: cron не ставится, образ ставится
+только по явной команде пользователя. Версия образа хранится в
+/usr/lib/pejir/version (в ROM, а не в /etc), иначе при sysupgrade
+с сохранением настроек маркер версии восстанавливался бы из старой
+системы.
+---
+ package/pejir-ota/Makefile                    |  55 +++++
+ package/pejir-ota/files/pejir-ota             | 190 ++++++++++++++++++
+ package/pejir-ota/files/version               |   1 +
+ .../luci-static/resources/view/perenio/ota.js | 171 ++++++++++++++++
+ package/pejir-ota/root/etc/config/pejir_ota   |   4 +
+ .../share/luci/menu.d/luci-app-pejir-ota.json |   8 +
+ .../share/rpcd/acl.d/luci-app-pejir-ota.json  |  10 +
+ 7 files changed, 439 insertions(+)
+ create mode 100644 package/pejir-ota/Makefile
+ create mode 100644 package/pejir-ota/files/pejir-ota
+ create mode 100644 package/pejir-ota/files/version
+ create mode 100644 package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+ create mode 100644 package/pejir-ota/root/etc/config/pejir_ota
+ create mode 100644 package/pejir-ota/root/usr/share/luci/menu.d/luci-app-pejir-ota.json
+ create mode 100644 package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+
+diff --git a/package/pejir-ota/Makefile b/package/pejir-ota/Makefile
+new file mode 100644
+index 0000000..aad047f
+--- /dev/null
++++ b/package/pejir-ota/Makefile
+@@ -0,0 +1,55 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-ota
++PKG_VERSION:=1.0.0
++PKG_RELEASE:=1
++
++PKG_LICENSE:=Apache-2.0
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-ota
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=PEJIR01 firmware update helper (LuCI button)
++  DEPENDS:=+wget-ssl +luci-base
++endef
++
++define Package/pejir-ota/description
++  Firmware update for the PEJIR01 port.
++  Adds a "Firmware update (PEJIR01)" page under System in LuCI and the
++  /usr/bin/pejir-ota helper behind it. The helper compares the running
++  build (version marker in /usr/lib/pejir/version) with the latest GitHub
++  release and, only on an explicit request, downloads the sysupgrade
++  image, verifies its sha256 against the release sha256sums, checks it
++  with "sysupgrade --test" and flashes it.
++  There is no automatic update: nothing is scheduled, nothing is
++  downloaded and nothing is written to flash until the user presses the
++  button.
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-ota/install
++	$(INSTALL_DIR) $(1)/usr/bin
++	$(INSTALL_BIN) ./files/pejir-ota $(1)/usr/bin/pejir-ota
++	$(INSTALL_DIR) $(1)/usr/lib/pejir
++	$(INSTALL_DATA) ./files/version $(1)/usr/lib/pejir/version
++	$(INSTALL_DIR) $(1)/etc/config
++	$(INSTALL_CONF) ./root/etc/config/pejir_ota $(1)/etc/config/pejir_ota
++	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/perenio
++	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/perenio/ota.js \
++		$(1)/www/luci-static/resources/view/perenio/ota.js
++	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
++	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-pejir-ota.json \
++		$(1)/usr/share/luci/menu.d/luci-app-pejir-ota.json
++	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
++	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json \
++		$(1)/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
++endef
++
++$(eval $(call BuildPackage,pejir-ota))
+diff --git a/package/pejir-ota/files/pejir-ota b/package/pejir-ota/files/pejir-ota
+new file mode 100644
+index 0000000..15badda
+--- /dev/null
++++ b/package/pejir-ota/files/pejir-ota
+@@ -0,0 +1,190 @@
++#!/bin/sh
++# pejir-ota — проверка и установка обновлений прошивки Perenio PEJIR01.
++#
++# Автоматического обновления нет: образ ставится только по явной команде,
++# то есть по кнопке «Install update» в LuCI (Система → Firmware update).
++#
++# Команды:
++#   check    сравнить установленную версию с последним релизом на GitHub
++#   install  скачать образ, сверить сумму и запустить sysupgrade (в фоне)
++#   status   состояние фоновой установки и хвост журнала
++#   flash    внутренняя команда, запускается из install в фоне
++
++. /lib/functions.sh
++
++CFG="pejir_ota"
++WORK="/tmp/pejir-ota"
++LOG="/tmp/pejir-ota.log"
++STATE="/tmp/pejir-ota.state"
++API="https://api.github.com"
++
++cfgval() { uci -q get "$CFG.$1" 2>/dev/null; }
++
++REPO="$(cfgval repo)"
++[ -n "$REPO" ] || REPO="sergej19882906/openwrt-pejir01"
++
++ASSET="$(cfgval asset)"
++[ -n "$ASSET" ] || ASSET="openwrt-ramips-mt7621-perenio_pejir01-34-BA-squashfs-sysupgrade.bin"
++
++# Версия собранного образа лежит в ROM (/usr/lib/pejir/version), а не в
++# /etc: при sysupgrade с сохранением настроек файлы /etc восстанавливаются
++# из старой системы, и маркер версии устарел бы.
++INSTALLED="$(cat /usr/lib/pejir/version 2>/dev/null)"
++[ -n "$INSTALLED" ] || INSTALLED="$(cfgval version)"
++[ -n "$INSTALLED" ] || INSTALLED="unknown"
++
++KEEP="$(cfgval keep_settings)"
++[ -n "$KEEP" ] || KEEP="1"
++
++log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"$LOG"; }
++
++# Числовой счётчик релиза: 25.12.6-pejir01.11 -> 11
++relnum() { echo "$1" | sed -n 's/.*pejir01\.\([0-9][0-9]*\)$/\1/p'; }
++
++# Тег последнего релиза, например v25.12.6-pejir01.11
++latest_tag() {
++	wget -q -T 30 -O - "$API/repos/$REPO/releases/latest" 2>/dev/null \
++		| sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
++		| head -n1
++}
++
++cmd_check() {
++	local tag cur cur_n lat_n
++
++	tag="$(latest_tag)"
++	if [ -z "$tag" ]; then
++		echo "error=Не удалось получить список релизов (нет связи с GitHub?)"
++		return 1
++	fi
++
++	cur="$INSTALLED"
++	cur_n="$(relnum "$cur")"
++	lat_n="$(relnum "$tag")"
++
++	echo "installed=$cur"
++	echo "latest=$tag"
++	echo "url=https://github.com/$REPO/releases/tag/$tag"
++
++	if [ -z "$cur_n" ] || [ -z "$lat_n" ]; then
++		echo "available=yes"
++		echo "note=Версия в образе неизвестна, обновление рекомендуется"
++	elif [ "$lat_n" -gt "$cur_n" ]; then
++		echo "available=yes"
++	else
++		echo "available=no"
++	fi
++	return 0
++}
++
++cmd_install() {
++	local d
++
++	if [ -f "$STATE" ] && [ "$(cat "$STATE" 2>/dev/null)" = "running" ]; then
++		echo "error=Обновление уже выполняется"
++		return 1
++	fi
++
++	d="$(cmd_check)"
++	echo "$d"
++	case "$d" in
++		*available=yes*) : ;;
++		*) echo "error=Обновлений нет"; return 1 ;;
++	esac
++
++	: >"$LOG"
++	echo "running" >"$STATE"
++	# Отсоединяем процесс от вызывающего: иначе rpcd будет ждать закрытия
++	# канала вывода и запрос из LuCI зависнет на всё время прошивки.
++	( /usr/bin/pejir-ota flash >>"$LOG" 2>&1 </dev/null & )
++	echo "started=yes"
++	return 0
++}
++
++cmd_flash() {
++	local tag url img rc
++
++	mkdir -p "$WORK" || return 1
++	img="$WORK/$ASSET"
++
++	log "=== Начало обновления ==="
++	tag="$(latest_tag)"
++	if [ -z "$tag" ]; then
++		log "ОШИБКА: не удалось получить тег последнего релиза"
++		echo "failed" >"$STATE"
++		return 1
++	fi
++	log "Последний релиз: $tag"
++
++	url="https://github.com/$REPO/releases/download/$tag/$ASSET"
++	log "Скачиваю $ASSET ..."
++	wget -q -T 60 -O "$img" "$url" >>"$LOG" 2>&1
++	rc=$?
++	if [ $rc -ne 0 ] || [ ! -s "$img" ]; then
++		log "ОШИБКА: скачивание не удалось (код $rc)"
++		echo "failed" >"$STATE"
++		return 1
++	fi
++	log "Скачано: $(wc -c <"$img") байт"
++
++	log "Скачиваю sha256sums ..."
++	wget -q -T 60 -O "$WORK/sha256sums" \
++		"https://github.com/$REPO/releases/download/$tag/sha256sums" >>"$LOG" 2>&1
++	rc=$?
++	if [ $rc -ne 0 ] || [ ! -s "$WORK/sha256sums" ]; then
++		log "ОШИБКА: не удалось скачать sha256sums (код $rc)"
++		echo "failed" >"$STATE"
++		return 1
++	fi
++
++	log "Проверяю контрольную сумму ..."
++	if ! ( cd "$WORK" && grep -F " $ASSET" sha256sums | sha256sum -c - ) >>"$LOG" 2>&1; then
++		log "ОШИБКА: контрольная сумма не совпала"
++		echo "failed" >"$STATE"
++		return 1
++	fi
++	log "Контрольная сумма совпала"
++
++	log "Проверяю образ (sysupgrade --test) ..."
++	sysupgrade --test "$img" >>"$LOG" 2>&1
++	rc=$?
++	if [ $rc -ne 0 ]; then
++		log "ОШИБКА: образ не прошёл проверку (код $rc)"
++		echo "failed" >"$STATE"
++		return 1
++	fi
++	log "Образ проверен"
++
++	log "Прошиваю (sysupgrade) ..."
++	if [ "$KEEP" = "1" ]; then
++		sysupgrade "$img" >>"$LOG" 2>&1
++	else
++		sysupgrade -n "$img" >>"$LOG" 2>&1
++	fi
++	rc=$?
++	if [ $rc -ne 0 ]; then
++		log "ОШИБКА: sysupgrade завершился с кодом $rc"
++		echo "failed" >"$STATE"
++		return 1
++	fi
++
++	log "Готово, устройство перезагружается"
++	echo "rebooting" >"$STATE"
++	return 0
++}
++
++cmd_status() {
++	echo "state=$(cat "$STATE" 2>/dev/null || echo idle)"
++	echo "--- log ---"
++	tail -n 25 "$LOG" 2>/dev/null
++}
++
++case "${1:-}" in
++	check)   cmd_check ;;
++	install) cmd_install ;;
++	status)  cmd_status ;;
++	flash)   cmd_flash ;;
++	*)
++		echo "Использование: pejir-ota {check|install|status}" >&2
++		exit 1
++		;;
++esac
+diff --git a/package/pejir-ota/files/version b/package/pejir-ota/files/version
+new file mode 100644
+index 0000000..cb676de
+--- /dev/null
++++ b/package/pejir-ota/files/version
+@@ -0,0 +1 @@
++0.0.0-dev
+diff --git a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+new file mode 100644
+index 0000000..cd95dd0
+--- /dev/null
++++ b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+@@ -0,0 +1,171 @@
++'use strict';
++'require view';
++'require fs';
++'require ui';
++'require poll';
++
++/* Разбор вывода pejir-ota вида "key=value" */
++function kv(out) {
++	var o = {};
++
++	(out || '').split('\n').forEach(function(line) {
++		var i = line.indexOf('=');
++
++		if (i > 0)
++			o[line.substring(0, i).trim()] = line.substring(i + 1).trim();
++	});
++
++	return o;
++}
++
++function setText(id, s) {
++	var el = document.getElementById(id);
++
++	if (el)
++		el.textContent = s;
++}
++
++/* Следить за ходом прошивки и дождаться перезагрузки */
++function watchUpdate() {
++	var stop = poll.add(function() {
++		return fs.exec('/usr/bin/pejir-ota', [ 'status' ]).then(function(res) {
++			var d = kv(res.stdout);
++			var el = document.getElementById('pejir-ota-log');
++
++			if (el)
++				el.textContent = res.stdout;
++
++			if (d.state == 'rebooting' || d.state == 'done') {
++				stop();
++				setText('pejir-ota-status', _('Rebooting…'));
++				ui.awaitReconnect(window.location.host, '192.168.1.1');
++			}
++			else if (d.state == 'failed') {
++				stop();
++				setText('pejir-ota-status', _('Update failed, see the log below.'));
++			}
++		}).catch(function() {});
++	});
++}
++
++return view.extend({
++	load: function() {
++		return fs.exec('/usr/bin/pejir-ota', [ 'check' ])
++			.catch(function() { return { code: 1, stdout: '', stderr: '' }; });
++	},
++
++	handleCheck: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++
++		return fs.exec('/usr/bin/pejir-ota', [ 'check' ]).then(function(res) {
++			var d = kv(res.stdout);
++			var b;
++
++			if (res.code != 0) {
++				setText('pejir-ota-status',
++					_('Cannot reach the release server') +
++					(res.stderr ? ': ' + res.stderr.trim() : ''));
++				return;
++			}
++
++			setText('pejir-ota-installed', d.installed || '?');
++			setText('pejir-ota-latest', d.latest || '?');
++			setText('pejir-ota-status', d.available == 'yes'
++				? _('Update available') + (d.note ? ' — ' + d.note : '')
++				: _('The installed version is up to date'));
++
++			b = document.getElementById('pejir-ota-install');
++			if (b)
++				b.disabled = (d.available != 'yes');
++		}).catch(function(e) {
++			setText('pejir-ota-status', e.message);
++		}).finally(function() {
++			btn.disabled = false;
++		});
++	},
++
++	handleInstall: function(ev) {
++		return new Promise(function(resolve, reject) {
++			ui.showModal(_('Install firmware update?'), [
++				E('p', {}, _('The router will download the new firmware, verify the checksum ' +
++					'and flash it. The device reboots during the installation — do not ' +
++					'power it off.')),
++				E('div', { 'class': 'right' }, [
++					E('button', {
++						'class': 'btn',
++						'click': function() { ui.hideModal(); reject(); }
++					}, [ _('Cancel') ]),
++					' ',
++					E('button', {
++						'class': 'btn cbi-button-action important',
++						'click': function() { ui.hideModal(); resolve(); }
++					}, [ _('Continue') ])
++				])
++			]);
++		}).then(function() {
++			return fs.exec('/usr/bin/pejir-ota', [ 'install' ]);
++		}).then(function(res) {
++			if (res.code != 0) {
++				ui.addNotification(null, E('p',
++					_('Failed to start the update: ') + (res.stderr || '').trim()));
++				return;
++			}
++
++			setText('pejir-ota-status', _('Updating, please wait…'));
++			watchUpdate();
++		}).catch(function(e) {
++			if (e)
++				ui.addNotification(null, E('p', e.message));
++		});
++	},
++
++	render: function(res) {
++		var d = kv(res && res.stdout);
++		var btnCheck = E('button', {
++			'class': 'cbi-button cbi-button-action',
++			'id': 'pejir-ota-check',
++			'click': ui.createHandlerFn(this, 'handleCheck')
++		}, [ _('Check for updates') ]);
++		var btnInstall = E('button', {
++			'class': 'cbi-button cbi-button-action important',
++			'id': 'pejir-ota-install',
++			'click': ui.createHandlerFn(this, 'handleInstall')
++		}, [ _('Install update') ]);
++
++		btnInstall.disabled = (d.available != 'yes');
++
++		return E('div', { 'class': 'cbi-section' }, [
++			E('h2', {}, _('Firmware update (PEJIR01)')),
++			E('div', { 'class': 'cbi-section' }, [
++				E('table', { 'class': 'table' }, [
++					E('tr', { 'class': 'tr' }, [
++						E('td', { 'class': 'td', 'width': '33%' }, _('Installed version')),
++						E('td', { 'class': 'td', 'id': 'pejir-ota-installed' },
++							d.installed || _('unknown'))
++					]),
++					E('tr', { 'class': 'tr' }, [
++						E('td', { 'class': 'td' }, _('Latest release')),
++						E('td', { 'class': 'td', 'id': 'pejir-ota-latest' }, d.latest || '…')
++					])
++				]),
++				E('div', { 'class': 'cbi-value-description', 'id': 'pejir-ota-status' },
++					d.available == 'yes' ? _('Update available') : _('Checking…')),
++				E('div', { 'class': 'cbi-value' }, [
++					btnCheck,
++					' ',
++					btnInstall
++				]),
++				E('pre', {
++					'id': 'pejir-ota-log',
++					'style': 'max-height:320px; overflow:auto; white-space:pre-wrap'
++				}, ''),
++				E('div', { 'class': 'cbi-value-description' },
++					_('There is no automatic update: the new firmware is downloaded and installed ' +
++					  'only when you press "Install update". The router reboots by itself when ' +
++					  'the installation is finished.'))
++			])
++		]);
++	}
++});
+diff --git a/package/pejir-ota/root/etc/config/pejir_ota b/package/pejir-ota/root/etc/config/pejir_ota
+new file mode 100644
+index 0000000..6801b00
+--- /dev/null
++++ b/package/pejir-ota/root/etc/config/pejir_ota
+@@ -0,0 +1,4 @@
++config ota 'main'
++	option repo 'sergej19882906/openwrt-pejir01'
++	option asset 'openwrt-ramips-mt7621-perenio_pejir01-34-BA-squashfs-sysupgrade.bin'
++	option keep_settings '1'
+diff --git a/package/pejir-ota/root/usr/share/luci/menu.d/luci-app-pejir-ota.json b/package/pejir-ota/root/usr/share/luci/menu.d/luci-app-pejir-ota.json
+new file mode 100644
+index 0000000..a1da942
+--- /dev/null
++++ b/package/pejir-ota/root/usr/share/luci/menu.d/luci-app-pejir-ota.json
+@@ -0,0 +1,8 @@
++{
++	"admin/system/pejir-ota": {
++		"title": "Firmware update (PEJIR01)",
++		"order": 80,
++		"action": { "type": "view", "path": "perenio/ota" },
++		"depends": { "fs": { "/usr/bin/pejir-ota": "executable" } }
++	}
++}
+diff --git a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+new file mode 100644
+index 0000000..d7e6599
+--- /dev/null
++++ b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+@@ -0,0 +1,10 @@
++{
++	"luci-app-pejir-ota": {
++		"description": "Grant access to the PEJIR01 firmware update helper",
++		"read": {
++			"ubus": {
++				"file": [ "exec", "list", "read" ]
++			}
++		}
++	}
++}
