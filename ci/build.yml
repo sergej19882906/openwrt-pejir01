@@ -146,9 +146,19 @@ jobs:
           }
 
           ROOTFS="$(find "$BIN" -maxdepth 1 -name '*rootfs*.squashfs' 2>/dev/null | head -1)"
-          [ -n "$ROOTFS" ] || ROOTFS="$(find "$BIN" -maxdepth 1 -name '*.squashfs' 2>/dev/null | head -1)"
           if [ -z "$ROOTFS" ]; then
-            ann "в $BIN нет rootfs squashfs"
+            # В OpenWrt 25.12 отдельного rootfs squashfs не бывает: rootfs
+            # лежит внутри sysupgrade-образа под именем "root".
+            SU="$(find "$BIN" -maxdepth 1 -name '*squashfs-sysupgrade.bin' 2>/dev/null | head -1)"
+            if [ -n "$SU" ]; then
+              rm -rf /tmp/pejir-su && mkdir -p /tmp/pejir-su
+              tar xf "$SU" -C /tmp/pejir-su
+              ROOTFS="$(find /tmp/pejir-su -type f -name root | head -1)"
+              [ -n "$ROOTFS" ] && echo "  rootfs взят из $SU"
+            fi
+          fi
+          if [ -z "$ROOTFS" ]; then
+            ann "в $BIN нет rootfs: не нашли ни squashfs, ни sysupgrade-образ"
             ls -la "$BIN" || true
             exit 1
           fi
