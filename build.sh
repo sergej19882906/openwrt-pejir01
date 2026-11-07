@@ -286,6 +286,8 @@ CONFIG_PACKAGE_pejir-homed-feed=y
 CONFIG_PACKAGE_pejir-idata=y
 # LuCI: battery/power status and SMS pages for PEJIR01
 CONFIG_PACKAGE_luci-app-perenio=y
+# OTA: обновление прошивки кнопкой в LuCI (без автообновления)
+CONFIG_PACKAGE_pejir-ota=y
 # monitoring / traffic / diagnostics
 CONFIG_PACKAGE_mwan3=y
 CONFIG_PACKAGE_luci-app-mwan3=y
@@ -366,6 +368,10 @@ if [ -n "$SU" ]; then
         done
         if [ -n "$OTA_MISSING" ]; then
           ann error "build.sh: OTA" "В образе нет файлов OTA:$OTA_MISSING"
+          # Пакет pejir-ota не попал в образ — сборку считаем проваленной,
+          # иначе несоответствие тихо уедет в релиз.
+          echo "ОШИБКА: пакет pejir-ota не попал в образ ($OTA_MISSING)"
+          exit 1
         else
           echo "  OTA-модуль в образе: OK"
         fi
