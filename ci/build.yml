@@ -128,7 +128,9 @@ jobs:
         run: |
           set -e
           BIN="$WORKDIR/openwrt/bin/targets/ramips/mt7621"
-          PKGDIR="$WORKDIR/openwrt/bin/packages/ramips/mt7621"
+          # В 25.12 пакеты лежат в bin/targets/<board>/<subtarget>/packages
+          # (или bin/packages/<arch>), поэтому ищем по всему дереву bin.
+          PKGDIR="$WORKDIR/openwrt/bin"
           LIST=/tmp/rootfs.list
           LISTERR=/tmp/rootfs.err
           fail=0
