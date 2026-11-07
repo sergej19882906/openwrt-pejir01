@@ -325,6 +325,15 @@ if [ -n "$SU" ]; then
   fi
 fi
 
+# Пакеты (.apk) в OpenWrt 25.12 кладутся в bin/targets/<board>/<subtarget>/packages,
+# а не в bin/packages/<board>/<subtarget>, как было в 23.05. Складываем ссылки на
+# них в bin/packages/ramips/mt7621 — там, где их ищет проверка содержимого образа.
+mkdir -p bin/packages/ramips/mt7621
+find bin -type f -name '*.apk' 2>/dev/null | while read -r f; do
+  ln -sf "$(pwd)/$f" "bin/packages/ramips/mt7621/$(basename "$f")" 2>/dev/null || true
+done
+echo "  пакетов в bin/packages/ramips/mt7621: $(ls bin/packages/ramips/mt7621 2>/dev/null | wc -l)"
+
 echo ""
 echo "============================================================"
 echo " DONE. Images:"
