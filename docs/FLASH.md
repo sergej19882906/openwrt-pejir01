@@ -39,11 +39,11 @@ done
 2. Зажмите Reset, включите питание, держите ~5–7 сек до входа в загрузчик.
 3. На ПК задайте статический IP `192.168.1.2`, маска `255.255.255.0`.
 4. Откройте `http://192.168.1.1` — веб-интерфейс U-Boot.
-5. Выберите файл `openwrt-25.12.6-ramips-mt7621-perenio_pejir01-34-BA-squashfs-factory.bin` и прошейте.
+5. Выберите файл `openwrt-ramips-mt7621-perenio_pejir01-34-BA-squashfs-factory.bin` и прошейте.
 6. После прошивки: IP роутера `192.168.1.1`, LuCI: `http://192.168.1.1` (root, без пароля при первом входе).
 
 Альтернатива sysupgrade (если уже стоит OpenWrt 21.02+/B1ackSn0w):
-`sysupgrade openwrt-...-sysupgrade.bin` (Force, если ругнётся на совместимость: `sysupgrade -n` сбрасывает конфиг).
+`sysupgrade openwrt-ramips-mt7621-perenio_pejir01-34-BA-squashfs-sysupgrade.bin` (Force, если ругнётся на совместимость: `sysupgrade -n` сбрасывает конфиг).
 
 `sysupgrade` обновляет **и ядро, и rootfs**: ядро пишется в оба слота
 `kernel0`/`kernel1` (активный слот выбирает U-Boot по переменной `imgidx`,
