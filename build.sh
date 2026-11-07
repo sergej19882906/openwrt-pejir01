@@ -65,8 +65,23 @@ fi
 
 step "2. OpenWrt $OPENWRT_VER"
 mkdir -p "$WORKDIR" && cd "$WORKDIR"
-[ -d openwrt ] || git clone --depth 1 --branch "$OPENWRT_VER" \
-  https://github.com/openwrt/openwrt.git openwrt
+# Каталог openwrt/ к моменту сборки может уже существовать: кэш CI
+# восстанавливает в него dl/, build_dir/ и staging_dir/. Проверять надо
+# наличие .git, а не сам каталог — иначе клонирование пропускается, git am
+# находит .git родительского репозитория (checkout самого pejir01) и
+# пытается применить патчи OpenWrt к нему:
+#   error: sha1 information is lacking or useless
+#   error: could not build fake ancestor
+if [ ! -d openwrt/.git ]; then
+  mkdir -p openwrt
+  (
+    cd openwrt
+    git init -q
+    git remote add origin https://github.com/openwrt/openwrt.git
+    git fetch --depth 1 origin tag "$OPENWRT_VER"
+    git checkout -q --detach FETCH_HEAD
+  )
+fi
 cd openwrt
 
 # git am требует идентификацию автора. На машине без глобального
