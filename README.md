@@ -43,6 +43,17 @@
 - [`openwrt-...-initramfs-kernel.bin`](https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/openwrt-ramips-mt7621-perenio_pejir01-34-BA-initramfs-kernel.bin) — тест по TFTP без записи NAND
 - `pejir-vendor-blobs-9.0.4.zip` — вендорные бинари (используются build.sh как fallback)
 
+### Как появляется релиз
+
+Релиз создаёт workflow `Build` — но только при пуше тега вида `v*`:
+
+1. тег `v<версия>` указывает на нужный коммит `main`;
+2. workflow собирает образы и прикрепляет их к релизу с этим тегом
+   (`factory.bin`, `sysupgrade.bin`, `initramfs-kernel.bin`, `sha256sums`).
+
+Тег можно поставить через веб-интерфейс GitHub: **Releases → Create new release →
+«Create new tag on: main»**. Сборка занимает около часа, кэш сборки переиспользуется.
+
 ## Как собрать
 
 ```sh
