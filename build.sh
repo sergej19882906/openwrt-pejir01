@@ -305,8 +305,28 @@ make download -j"$JOBS"
 step "7. Build (this takes hours)"
 make -j"$JOBS" || make -j1 V=s
 
+step "8. Export rootfs for verification"
+# В OpenWrt 25.12 отдельного rootfs squashfs не создаётся: rootfs лежит
+# внутри sysupgrade-образа под именем "root". Кладём его рядом с образами
+# под именем *-rootfs.squashfs, чтобы проверка содержимого образа в CI
+# находила rootfs обычным поиском и проверяла реальное содержимое.
+BINDIR="bin/targets/ramips/mt7621"
+SU="$(ls "$BINDIR"/*squashfs-sysupgrade.bin 2>/dev/null | head -1 || true)"
+if [ -n "$SU" ]; then
+  rm -rf /tmp/pejir-rootfs && mkdir -p /tmp/pejir-rootfs
+  if tar xf "$SU" -C /tmp/pejir-rootfs 2>/dev/null; then
+    R="$(find /tmp/pejir-rootfs -type f -name root | head -1 || true)"
+    if [ -n "$R" ]; then
+      OUT="$BINDIR/$(basename "$SU" -squashfs-sysupgrade.bin)-rootfs.squashfs"
+      if cp "$R" "$OUT" 2>/dev/null; then
+        echo "  rootfs для проверки: $OUT"
+      fi
+    fi
+  fi
+fi
+
 echo ""
 echo "============================================================"
 echo " DONE. Images:"
-ls -la bin/targets/ramips/mt7621/*.bin
+ls -la "$BINDIR"/*.bin
 echo "============================================================"
