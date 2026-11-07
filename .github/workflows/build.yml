@@ -14,7 +14,9 @@
 #   - образ выгружается артефактом ДО проверки содержимого: иначе при
 #     неудачной проверке готовый образ теряется вместе с раннером;
 #   - ошибки проверки публикуются как annotation (::error::), поэтому видны
-#     в check-runs API без доступа к логам job'а.
+#     в check-runs API без доступа к логам job'а;
+#   - шаг создания релиза получил contents: write (на уровне шага), иначе
+#     gh release create упирается в 403: токен по умолчанию только читает.
 #
 name: Build
 
@@ -108,6 +110,11 @@ jobs:
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
+        # Создание релиза и загрузка файлов требуют записи в contents;
+        # на уровне job оставлен contents: read, право на запись выдаём
+        # только этому шагу.
+        permissions:
+          contents: write
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -128,7 +135,9 @@ jobs:
         run: |
           set -e
           BIN="$WORKDIR/openwrt/bin/targets/ramips/mt7621"
-          PKGDIR="$WORKDIR/openwrt/bin/packages/ramips/mt7621"
+          # В 25.12 пакеты лежат в bin/targets/<board>/<subtarget>/packages
+          # (или bin/packages/<arch>), поэтому ищем по всему дереву bin.
+          PKGDIR="$WORKDIR/openwrt/bin"
           LIST=/tmp/rootfs.list
           LISTERR=/tmp/rootfs.err
           fail=0
@@ -146,9 +155,19 @@ jobs:
           }
 
           ROOTFS="$(find "$BIN" -maxdepth 1 -name '*rootfs*.squashfs' 2>/dev/null | head -1)"
-          [ -n "$ROOTFS" ] || ROOTFS="$(find "$BIN" -maxdepth 1 -name '*.squashfs' 2>/dev/null | head -1)"
           if [ -z "$ROOTFS" ]; then
-            ann "в $BIN нет rootfs squashfs"
+            # В OpenWrt 25.12 отдельного rootfs squashfs не бывает: rootfs
+            # лежит внутри sysupgrade-образа под именем "root".
+            SU="$(find "$BIN" -maxdepth 1 -name '*squashfs-sysupgrade.bin' 2>/dev/null | head -1)"
+            if [ -n "$SU" ]; then
+              rm -rf /tmp/pejir-su && mkdir -p /tmp/pejir-su
+              tar xf "$SU" -C /tmp/pejir-su
+              ROOTFS="$(find /tmp/pejir-su -type f -name root | head -1)"
+              [ -n "$ROOTFS" ] && echo "  rootfs взят из $SU"
+            fi
+          fi
+          if [ -z "$ROOTFS" ]; then
+            ann "в $BIN нет rootfs: не нашли ни squashfs, ни sysupgrade-образ"
             ls -la "$BIN" || true
             exit 1
           fi
