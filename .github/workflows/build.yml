@@ -15,8 +15,9 @@
 #     неудачной проверке готовый образ теряется вместе с раннером;
 #   - ошибки проверки публикуются как annotation (::error::), поэтому видны
 #     в check-runs API без доступа к логам job'а;
-#   - шаг создания релиза получил contents: write (на уровне шага), иначе
-#     gh release create упирается в 403: токен по умолчанию только читает.
+#   - права contents: write выданы на уровне workflow: без них gh release create
+#     упирается в 403 (токен по умолчанию только читает). На уровне шага
+#     permissions в GitHub не поддерживается.
 #
 name: Build
 
@@ -42,8 +43,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# contents: write нужен шагу "Attach to release": создание релиза и
+# загрузка файлов в него требуют права записи. На уровне шага permissions
+# не поддерживается (GitHub: "Unexpected value 'permissions'"), поэтому
+# право выдаётся на уровне workflow — job наследует его.
 permissions:
-  contents: read
+  contents: write
 
 env:
   WORKDIR: ${{ github.workspace }}/openwrt-pejir01-build
@@ -110,11 +115,6 @@ jobs:
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
-        # Создание релиза и загрузка файлов требуют записи в contents;
-        # на уровне job оставлен contents: read, право на запись выдаём
-        # только этому шагу.
-        permissions:
-          contents: write
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
