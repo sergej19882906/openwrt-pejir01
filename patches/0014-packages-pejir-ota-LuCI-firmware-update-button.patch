@@ -1,4 +1,4 @@
-From 1ebee80345d8c9f70cb161a71fa169698d5851a5 Mon Sep 17 00:00:00 2001
+From 33ad9ba9ce41abdde044531ad0f4e50d70a6df43 Mon Sep 17 00:00:00 2001
 From: sergej19882906 <sergej19882906@users.noreply.github.com>
 Date: Sat, 7 Nov 2026 09:34:55 +0000
 Subject: [PATCH] =?UTF-8?q?packages:=20=D0=B4=D0=BE=D0=B1=D0=B0=D0=B2?=
@@ -23,13 +23,13 @@ Content-Transfer-Encoding: 8bit
 системы.
 ---
  package/pejir-ota/Makefile                    |  55 +++++
- package/pejir-ota/files/pejir-ota             | 210 ++++++++++++++++++
+ package/pejir-ota/files/pejir-ota             | 214 ++++++++++++++++++
  package/pejir-ota/files/version               |   1 +
- .../luci-static/resources/view/perenio/ota.js | 177 +++++++++++++++
+ .../luci-static/resources/view/perenio/ota.js | 181 +++++++++++++++
  package/pejir-ota/root/etc/config/pejir_ota   |   4 +
  .../share/luci/menu.d/luci-app-pejir-ota.json |   8 +
  .../share/rpcd/acl.d/luci-app-pejir-ota.json  |  10 +
- 7 files changed, 465 insertions(+)
+ 7 files changed, 473 insertions(+)
  create mode 100644 package/pejir-ota/Makefile
  create mode 100644 package/pejir-ota/files/pejir-ota
  create mode 100644 package/pejir-ota/files/version
@@ -101,10 +101,10 @@ index 0000000..aad047f
 +$(eval $(call BuildPackage,pejir-ota))
 diff --git a/package/pejir-ota/files/pejir-ota b/package/pejir-ota/files/pejir-ota
 new file mode 100644
-index 0000000..198843d
+index 0000000..c3dd012
 --- /dev/null
 +++ b/package/pejir-ota/files/pejir-ota
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,214 @@
 +#!/bin/sh
 +# pejir-ota — проверка и установка обновлений прошивки Perenio PEJIR01.
 +#
@@ -168,6 +168,10 @@ index 0000000..198843d
 +
 +	tag="$(latest_tag)"
 +	if [ -z "$tag" ]; then
++		# Связи с GitHub нет — но установленную версию показать надо.
++		echo "installed=$INSTALLED"
++		echo "latest="
++		echo "available=no"
 +		echo "error=Не удалось получить список релизов (нет связи с GitHub?)"
 +		return 1
 +	fi
@@ -324,10 +328,10 @@ index 0000000..cb676de
 +0.0.0-dev
 diff --git a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
 new file mode 100644
-index 0000000..d6d580a
+index 0000000..c71bca3
 --- /dev/null
 +++ b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,181 @@
 +'use strict';
 +'require view';
 +'require fs';
@@ -459,6 +463,10 @@ index 0000000..d6d580a
 +
 +	render: function(res) {
 +		var d = kv(res && res.stdout);
++		var failed = !res || res.code != 0;
++		var status = failed
++			? _('Cannot reach the release server')
++			: (d.available == 'yes' ? _('Update available') : _('The installed version is up to date'));
 +		var btnCheck = E('button', {
 +			'class': 'cbi-button cbi-button-action',
 +			'id': 'pejir-ota-check',
@@ -487,7 +495,7 @@ index 0000000..d6d580a
 +					])
 +				]),
 +				E('div', { 'class': 'cbi-value-description', 'id': 'pejir-ota-status' },
-+					d.available == 'yes' ? _('Update available') : _('Checking…')),
++					status),
 +				E('div', { 'class': 'cbi-value' }, [
 +					btnCheck,
 +					' ',
