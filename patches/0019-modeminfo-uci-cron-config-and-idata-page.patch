@@ -1,0 +1,419 @@
+From f9041c7caca04688e245abac2f20b8320b790227 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 07:37:34 +0000
+Subject: [PATCH] =?UTF-8?q?luci:=20=D0=BD=D0=B0=D1=81=D1=82=D1=80=D0=BE?=
+ =?UTF-8?q?=D0=B9=D0=BA=D0=B0=20modeminfo,=20=D0=BA=D0=BE=D0=BD=D1=84?=
+ =?UTF-8?q?=D0=B8=D0=B3=20cron,=20=D1=81=D1=82=D1=80=D0=B0=D0=BD=D0=B8?=
+ =?UTF-8?q?=D1=86=D0=B0=20=D0=B7=D0=B0=D0=B2=D0=BE=D0=B4=D1=81=D0=BA=D0=B8?=
+ =?UTF-8?q?=D1=85=20=D0=B4=D0=B0=D0=BD=D0=BD=D1=8B=D1=85?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Аудит функций без веб-интерфейса в образе:
+
+- luci-app-modeminfo (раздел «Модем») показывал пустые страницы: в
+  /etc/config/modeminfo был только пустой раздел general, а скрипт
+  modeminfo читает modeminfo.@modeminfo[0].device. Добавлен init-скрипт
+  41-pejir-modem, который определяет AT-порт модема GM510 (305a:1415)
+  и прописывает его в конфиг.
+
+- mdm-at получил режим --port (печатает найденный AT-порт), общий с
+  40-pejir-sms, чтобы определение порта было в одном месте.
+
+- Для страницы «Система -> Планировщик задач» добавлен минимальный
+  /etc/config/cron. Сам crond (busybox) запускается только при
+  непустом /etc/crontabs, поэтому автообновлений не появляется.
+
+- Новая страница «Заводские данные (Perenio)»: показывает данные
+  раздела idata (штатные имя/пароль Wi-Fi, заводской пароль root,
+  серийный номер) и умеет перечитать их командой idata_load --force.
+---
+ package/luci-app-perenio/Makefile             |   6 +-
+ .../resources/view/perenio/idata.js           | 155 ++++++++++++++++++
+ package/luci-app-perenio/root/etc/config/cron |   2 +
+ .../share/luci/menu.d/luci-app-perenio.json   |   6 +
+ package/pejir-lte-base/Makefile               |   4 +-
+ .../root/etc/init.d/41-pejir-modem            |  33 ++++
+ package/pejir-lte-base/root/usr/bin/mdm-at    |  46 +++++-
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    |  22 +--
+ 8 files changed, 244 insertions(+), 30 deletions(-)
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
+ create mode 100644 package/luci-app-perenio/root/etc/config/cron
+ create mode 100644 package/pejir-lte-base/root/etc/init.d/41-pejir-modem
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index 3595f45..f33cfba 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=luci-app-perenio
+ PKG_VERSION:=1.0.0
+-PKG_RELEASE:=3
++PKG_RELEASE:=4
+ 
+ PKG_LICENSE:=Apache-2.0
+ 
+@@ -12,7 +12,7 @@ define Package/luci-app-perenio
+   SECTION:=luci
+   CATEGORY:=LuCI
+   SUBMENU:=3. Applications
+-  TITLE:=Perenio PEJIR01 battery and power status
++  TITLE:=Perenio PEJIR01 LuCI pages: battery, SMS, factory data
+   DEPENDS:=+luci-base +perenio-mcu
+ endef
+ 
+@@ -32,6 +32,8 @@ define Package/luci-app-perenio/install
+ 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+ 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-perenio.json \
+ 		$(1)/usr/share/rpcd/acl.d/luci-app-perenio.json
++	$(INSTALL_DIR) $(1)/etc/config
++	$(INSTALL_DATA) ./root/etc/config/cron $(1)/etc/config/cron
+ endef
+ 
+ $(eval $(call BuildPackage,luci-app-perenio))
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
+new file mode 100644
+index 0000000..34bb6a4
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
+@@ -0,0 +1,155 @@
++'use strict';
++'require view';
++'require fs';
++'require ui';
++'require poll';
++
++var CONF = '/etc/config/idata';
++var LOADER = '/usr/sbin/idata_load';
++
++/* Разбор конфига UCI в плоский список опций */
++function parseUci(txt) {
++	var section = '';
++	var out = [];
++
++	(txt || '').split('\n').forEach(function(line) {
++		line = line.trim();
++
++		if (!line || line.charAt(0) == '#')
++			return;
++
++		if (line.indexOf('config ') === 0) {
++			section = line.substring(7).replace(/^'(.*)'$/, '$1').split(' ')[0];
++			return;
++		}
++
++		if (line.indexOf('option ') === 0) {
++			var m = line.substring(7).match(/^(\S+)\s+'?([\s\S]*)'?$/);
++
++			if (m)
++				out.push({ section: section, key: m[1], value: m[2] });
++		}
++	});
++
++	return out;
++}
++
++/* Понятные названия для известных опций idata */
++var TITLES = {
++	'ssid24_name': _('Имя Wi-Fi 2.4 ГГц'),
++	'ssid24_pass': _('Пароль Wi-Fi 2.4 ГГц'),
++	'ssid24_cc': _('Страна Wi-Fi 2.4 ГГц'),
++	'ssid5_name': _('Имя Wi-Fi 5 ГГц'),
++	'ssid5_pass': _('Пароль Wi-Fi 5 ГГц'),
++	'ssid5_cc': _('Страна Wi-Fi 5 ГГц'),
++	'admin_pass': _('Заводской пароль root'),
++	'wps_pin': _('WPS PIN'),
++	'mac': _('MAC-адрес'),
++	'serial': _('Серийный номер'),
++	'hardware': _('Аппаратная версия'),
++	'fw_version': _('Версия стоковой прошивки')
++};
++
++function setText(id, s) {
++	var el = document.getElementById(id);
++
++	if (el)
++		el.textContent = s;
++}
++
++return view.extend({
++	render: function() {
++		var loadBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
++				_('Загрузить из idata'));
++
++		loadBtn.addEventListener('click', L.bind(this.handleLoad, this));
++
++		var body = E([
++			E('h2', {}, _('Заводские данные (Perenio)')),
++			E('div', { 'class': 'cbi-map' }, [
++				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'class': 'cbi-section-descr' },
++						_('Данные из заводского раздела idata: имя и пароль штатных Wi-Fi, ' +
++						  'заводской пароль администратора, серийный номер. При первом включении ' +
++						  'они уже применены к прошивке, здесь их можно посмотреть.'))
++				]),
++				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'id': 'idata-list' },
++						E('em', {}, _('Загрузка…')))
++				]),
++				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, ''),
++						E('div', { 'class': 'cbi-value-field' }, loadBtn)
++					]),
++					E('div', { 'class': 'cbi-value-description' },
++						E('span', { 'id': 'idata-status' }, ''))
++				])
++			])
++		]);
++
++		poll.add(L.bind(this.refresh, this), 20);
++
++		return body;
++	},
++
++	refresh: function() {
++		return fs.read(CONF).then(function(txt) {
++			var box = document.getElementById('idata-list');
++
++			if (!box)
++				return;
++
++			var items = parseUci(txt);
++
++			if (!items.length) {
++				box.innerHTML = '<em>' +
++					_('Раздел idata не загружен. Нажмите «Загрузить из idata».') + '</em>';
++				return;
++			}
++
++			var rows = items.map(function(it) {
++				return E('tr', { 'class': 'tr' }, [
++					E('td', { 'class': 'td', 'style': 'white-space:nowrap' },
++						TITLES[it.key] || it.key),
++					E('td', { 'class': 'td', 'style': 'white-space:pre-wrap' },
++						it.value || '—')
++				]);
++			});
++
++			box.innerHTML = '';
++			box.appendChild(E('table', { 'class': 'table' }, [
++				E('tr', { 'class': 'tr table-titles' }, [
++					E('th', { 'class': 'th' }, _('Параметр')),
++					E('th', { 'class': 'th' }, _('Значение'))
++				])
++			].concat(rows)));
++		}).catch(function() {
++			var box = document.getElementById('idata-list');
++
++			if (box)
++				box.innerHTML = '<em>' + _('Файл /etc/config/idata не найден') + '</em>';
++		});
++	},
++
++	handleLoad: function(ev) {
++		setText('idata-status', _('Читаем idata…'));
++
++		return fs.exec(LOADER, [ '--force' ]).then(function(res) {
++			if (res.code != 0) {
++				setText('idata-status',
++					_('Не удалось прочитать idata') + ': ' + (res.stderr || '').trim());
++				return;
++			}
++
++			setText('idata-status', _('Готово'));
++			return this.refresh();
++		}).catch(function(err) {
++			setText('idata-status', _('Ошибка: ') + (err && err.message ? err.message : err));
++		});
++	},
++
++	handleSaveApply: null,
++	handleSave: null,
++	handleReset: null
++});
+diff --git a/package/luci-app-perenio/root/etc/config/cron b/package/luci-app-perenio/root/etc/config/cron
+new file mode 100644
+index 0000000..d6ec34c
+--- /dev/null
++++ b/package/luci-app-perenio/root/etc/config/cron
+@@ -0,0 +1,2 @@
++config cron 'main'
++	option enabled '1'
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 2a31d31..4f746fa 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -10,5 +10,11 @@
+ 		"order": 66,
+ 		"action": { "type": "view", "path": "perenio/sms" },
+ 		"depends": { "fs": { "/usr/bin/smsd": "executable" } }
++	},
++	"admin/status/perenio-idata": {
++		"title": "Заводские данные (Perenio)",
++		"order": 67,
++		"action": { "type": "view", "path": "perenio/idata" },
++		"depends": { "fs": { "/usr/sbin/idata_getconf": "executable" } }
+ 	}
+ }
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index cd85332..38bef7d 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-lte-base
+ PKG_VERSION:=1
+-PKG_RELEASE:=1
++PKG_RELEASE:=2
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -30,6 +30,8 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/40-pejir-lte $(1)/etc/uci-defaults/40-pejir-lte
+ 	$(INSTALL_DIR) $(1)/usr/bin
+ 	$(INSTALL_BIN) ./root/usr/bin/mdm-at $(1)/usr/bin/mdm-at
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/41-pejir-modem $(1)/etc/init.d/41-pejir-modem
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-lte-base))
+diff --git a/package/pejir-lte-base/root/etc/init.d/41-pejir-modem b/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
+new file mode 100644
+index 0000000..23dc878
+--- /dev/null
++++ b/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
+@@ -0,0 +1,33 @@
++#!/bin/sh /etc/rc.common
++# Прописываем AT-порт LTE-модема GM510 для luci-app-modeminfo.
++#
++# Без этого раздел «Модем» в LuCI показывает пустые страницы: скрипт
++# modeminfo читает modeminfo.@modeminfo[0].device, а в стоковом
++# /etc/config/modeminfo задан только пустой раздел general.
++
++START=93
++STOP=0
++
++write_modeminfo() {
++	local port="$1"
++
++	# Свой конфиг пользователя не трогаем.
++	uci -q get modeminfo.@modeminfo[0].device >/dev/null 2>&1 && return 0
++
++	uci set modeminfo.modeminfo='modeminfo'
++	uci set modeminfo.modeminfo.device="$port"
++	uci commit modeminfo
++}
++
++start_service() {
++	local port
++
++	port="$(mdm-at --port 2>/dev/null)"
++	[ -n "$port" ] || port="/dev/ttyUSB0"
++
++	write_modeminfo "$port"
++}
++
++stop_service() {
++	return 0
++}
+diff --git a/package/pejir-lte-base/root/usr/bin/mdm-at b/package/pejir-lte-base/root/usr/bin/mdm-at
+index bf9854b..75f9f4a 100755
+--- a/package/pejir-lte-base/root/usr/bin/mdm-at
++++ b/package/pejir-lte-base/root/usr/bin/mdm-at
+@@ -1,15 +1,45 @@
+ #!/bin/sh
+-# GM510 AT helper. Usage: mdm-at "AT+CGDCONT=?" [tty]
++# GM510 AT helper.
++#
++#   mdm-at "AT+CGDCONT=?" [tty]  — выполнить AT-команду на порту
++#   mdm-at --port [tty]           — напечатать AT-порт модема (или "none")
++#
++# AT-порт ищется перебором ttyUSB*/ttyACM* с проверкой ответа "OK".
++
+ TTY=${2:-auto}
++
++detect_port() {
++	local p
++
++	for p in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB3 \
++	         /dev/ttyACM0 /dev/ttyACM1; do
++		[ -c "$p" ] || continue
++		printf 'AT\r' > "$p" 2>/dev/null
++		sleep 1
++		if head -c 64 "$p" 2>/dev/null | grep -q 'OK'; then
++			echo "$p"
++			return 0
++		fi
++	done
++
++	return 1
++}
++
++if [ "$1" = "--port" ]; then
++	if [ "$TTY" = auto ]; then
++		detect_port || echo none
++	else
++		[ -c "$TTY" ] && echo "$TTY" || echo none
++	fi
++	exit 0
++fi
++
+ if [ "$TTY" = auto ]; then
+-  for p in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2; do
+-    [ -c "$p" ] || continue
+-    echo -e "AT\r" > "$p" 2>/dev/null
+-    sleep 0.3
+-    if head -c 60 "$p" 2>/dev/null | grep -q OK; then TTY="$p"; break; fi
+-  done
++	TTY="$(detect_port)"
++	[ -n "$TTY" ] || { echo "no AT port found"; exit 1; }
+ fi
++
+ [ -c "$TTY" ] || { echo "no AT port found"; exit 1; }
+-echo -e "$1\r" > "$TTY"
++printf '%s\r' "$1" > "$TTY"
+ sleep 0.7
+ head -c 500 "$TTY" | strings
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index 22b3584..5a13c65 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -15,23 +15,6 @@ CONF="/etc/smsd.conf"
+ LOG="/var/log/smsd.log"
+ MARKER="# generated by 40-pejir-sms"
+ DEFAULT_PORT="/dev/ttyUSB0"
+-PROBE_PORTS="/dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB3"
+-
+-detect_port() {
+-	local p
+-
+-	for p in $PROBE_PORTS; do
+-		[ -c "$p" ] || continue
+-		printf 'AT\r' > "$p" 2>/dev/null
+-		sleep 1
+-		if head -c 64 "$p" 2>/dev/null | grep -q 'OK'; then
+-			echo "$p"
+-			return 0
+-		fi
+-	done
+-
+-	return 1
+-}
+ 
+ write_conf() {
+ 	local port="$1"
+@@ -76,8 +59,9 @@ start_service() {
+ 
+ 	# Модем может появиться в USB чуть позже, поэтому короткий перебор портов.
+ 	for i in 1 2 3; do
+-		port="$(detect_port)"
+-		[ -n "$port" ] && break
++		port="$(mdm-at --port 2>/dev/null)"
++		[ -n "$port" ] && [ "$port" != none ] && break
++		port=""
+ 		sleep 2
+ 	done
+ 
