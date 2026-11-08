@@ -51,7 +51,8 @@ WORKDIR="${WORKDIR:-$HOME/openwrt-pejir01-build}"
 JOBS="$(nproc)"
 STOCK_FW_URL="https://router-pejir-openwrt-firmware.s3.eu-central-1.amazonaws.com/ci/1487/pejir-9.0.4-po-jenkins-pejir-openwrt-1487-ramips-mt7621-pejir01-34-BA-squashfs-upgrade.swu"
 STOCK_SHA256="842f10d78d9d5d28063d72331bbf9b35d1983c713bebe24d9cabfb98a47c0c67"
-BLOBS_URL="https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/pejir-vendor-blobs-9.0.4.zip"
+BLOBS_URL="https://github.com/sergej19882906/openwrt-pejir01/releases/download/v25.12.6-pejir01.5/pejir-vendor-blobs-9.0.4.zip"
+BLOBS_URL_ALT="https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/pejir-vendor-blobs-9.0.4.zip"
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 step "1. Build dependencies (Debian/Ubuntu)"
@@ -138,10 +139,17 @@ if [ ! -f "$MCU_DIR/mcu" ]; then
          -o "$SW" "$STOCK_FW_URL" || rm -f "$SW"
   fi
 
-  # 4c. ассет релиза с уже распакованными блобами
+  # 4c. ассет релиза с уже распакованными блобами.
+  # Основной URL закреплён на конкретный релиз: ассет с блобами лежит
+  # только в v25.12.6-pejir01.5, а releases/latest отдаёт 404 — если
+  # публичный S3 Perenio однажды отвалится, сборка должна найти блобы
+  # на GitHub. Второй URL — на случай, если новый релиз снова будет
+  # нести такой ассет.
   ZIP="/tmp/pejir-vendor-blobs.zip"
   if [ ! -f "$SW" ] && [ ! -f "$ZIP" ]; then
-    curl -sfL -o "$ZIP" "$BLOBS_URL" || rm -f "$ZIP"
+    for u in "$BLOBS_URL" "$BLOBS_URL_ALT"; do
+      curl -sfL --retry 3 --retry-delay 2 -o "$ZIP" "$u" && break || rm -f "$ZIP"
+    done
   fi
 
   if [ -f "$ZIP" ]; then

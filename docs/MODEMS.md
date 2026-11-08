@@ -62,3 +62,13 @@ ECM/NCM, RNDIS, Huawei-NCM + usb-modeswitch + AT-инструменты.
 [modemfeed](https://github.com/koshev-msk/modemfeed) (koshev-msk, GPL) —
 вендорены: `atinout`, `qminfo`, `pingcontrol`, `xmm-modem`,
 `luci-app-atinout`, `luci-app-modeminfo`.
+
+Из этого набора **в образе** собраны `atinout`, `pingcontrol`,
+`luci-app-atinout` и `luci-app-modeminfo`. `qminfo` и `xmm-modem` в
+`build.sh` не выбраны, поэтому в образе их нет:
+
+- `qminfo` тянет за собой `libqmi` — нужен только для QMI-диагностики;
+  в образе есть `uqmi` (`/sbin/uqmi`), которого хватает для QMI-модемов
+  из таблицы выше;
+- `xmm-modem` — это протокол Fibocom L850/L860/FM350. Штатный модем
+  PEJIR01 — GM510 (Qualcomm), а Fibocom-подобные работают через QMI/UQMI.
