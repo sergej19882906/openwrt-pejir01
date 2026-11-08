@@ -33,7 +33,7 @@ logread | grep -i awg       # ошибки модуля
 
 На нашем роутере он тоже работает — поверх **Entware на extroot**:
 
-1. Настройте extroot (POSTINSTALL.md) и установите Entware в `/opt`
+1. Настройте extroot ([POSTINSTALL.sh](POSTINSTALL.sh)) и установите Entware в `/opt`
    (инсталлер Entware поддерживает mipsel/mipselsf).
 2. `wget -qO- http://repo.hoaxisr.ru/install.sh | sh`
 3. Панель: `http://192.168.1.1:2222`

@@ -32,7 +32,7 @@
 | **SMS** | ✅ страница «SMS (Perenio)» всегда видна: состояние smsd, AT-порты, журнал, входящие, отправка через `sendsms`; конфиг `smsd.conf` готовится при каждой загрузке ([changelog](docs/CHANGELOG.md)) |
 | **Миграция со стока** | ✅ `pejir-idata`: SSID/пароли Wi-Fi, страна, пароль root — из заводского раздела `idata` при первой загрузке. Пароль ставится только если он ещё не задан, в лог идёт предупреждение «смените его» |
 | **Обновление** | ✅ `sysupgrade` пишет **и ядро** (в оба слота `kernel0`/`kernel1`), и rootfs в UBI ([docs](docs/FLASH.md)) |
-| **OTA по кнопке** | ✅ Система → Firmware update: проверка релиза на GitHub, сверка sha256, `sysupgrade --test` и прошивка. Автообновления нет — только по нажатию ([docs](docs/OTA.md)) |
+| **OTA по кнопке** | ✅ Система → Обновление прошивки (PEJIR01): проверка релиза на GitHub, сверка sha256, `sysupgrade --test` и прошивка. Автообновления нет — только по нажатию ([docs](docs/OTA.md)) |
 | **Zigbee (EFR32)** | ✅ `uartmuxd` → `/dev/umxtty1`, координатор EZSP (HOMEd) — ставится на extroot одной командой |
 | **LXC-контейнеры** | ✅ LXC 7.0 + cgroup2 + kmod-veth, `/srv/lxc` на extroot ([docs](docs/LXC.md)) |
 | **AmneziaWG (AWG)** | ✅ kmod против нашего ядра + `awg` CLI + LuCI ([docs](docs/VPN_AWG.md)) |
@@ -125,7 +125,7 @@ git tag v25.12.6-pejir01.7 && git push origin v25.12.6-pejir01.7
 |---|---|
 | [docs/FLASH.md](docs/FLASH.md) | Бэкап, прошивка через U-Boot, recovery, калибровка |
 | [docs/OTA.md](docs/OTA.md) | Обновление прошивки кнопкой в LuCI (без автообновления) |
-| [docs/POSTINSTALL.md](docs/POSTINSTALL.md) | Extroot на USB-флешку |
+| [docs/POSTINSTALL.sh](docs/POSTINSTALL.sh) | Скрипт для роутера: extroot на USB-флешку |
 | [docs/ZIGBEE_SINGBOX.md](docs/ZIGBEE_SINGBOX.md) | HOMEd (EZSP), mosquitto, sing-box, LED-шпаргалка |
 | [docs/VPN_AWG.md](docs/VPN_AWG.md) | AmneziaWG, awg-manager (и почему он не портируется) |
 | [docs/LXC.md](docs/LXC.md) | Контейнеры, сеть, автостарт |

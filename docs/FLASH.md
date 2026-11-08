@@ -92,6 +92,8 @@ ls -l /dev/umxtty1                               # канал EFR32
 
 ## 4. Дальше
 
-- `01_POSTINSTALL.sh` — extroot на USB-флешку + HOMEd (Zigbee) + mosquitto + sing-box.
+- [docs/POSTINSTALL.sh](POSTINSTALL.sh) — скрипт для роутера: перенос overlay на
+  USB-флешку (extroot). Дальше — по шагам, каждый со своей командой.
+- HOMEd (Zigbee), mosquitto и sing-box — см. [docs/ZIGBEE_SINGBOX.md](ZIGBEE_SINGBOX.md).
 - TTL для раздачи (если нужно): `advanced`-настройки стока не переносятся;
   на OpenWrt: iptables/nftables TTL mangle или `option` в конфиге.

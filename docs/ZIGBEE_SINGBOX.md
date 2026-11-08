@@ -4,7 +4,7 @@
 sing-box 1.13). Фид HOMEd преднастроен (`pejir-homed-feed`): ключ
 `/etc/apk/keys/homed.pem` и запись в `repositories.d` создаются при первой
 загрузке — остаётся одна команда установки. Ставить на extroot
-(см. POSTINSTALL.md).
+(см. [POSTINSTALL.sh](POSTINSTALL.sh)).
 
 ## 1. MQTT-брокер (уже установлен)
 
