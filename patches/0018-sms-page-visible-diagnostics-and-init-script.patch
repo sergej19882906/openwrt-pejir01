@@ -1,0 +1,498 @@
+From 8edb0012b5cb68ff1cf7a27da8bcbb4e11f57911 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 07:33:51 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-perenio:=20=D1=81=D1=82=D1=80=D0=B0?=
+ =?UTF-8?q?=D0=BD=D0=B8=D1=86=D0=B0=20SMS=20=D0=B2=D1=81=D0=B5=D0=B3=D0=B4?=
+ =?UTF-8?q?=D0=B0=20=D0=B2=D0=B8=D0=B4=D0=BD=D0=B0=20+=20=D0=B4=D0=B8?=
+ =?UTF-8?q?=D0=B0=D0=B3=D0=BD=D0=BE=D1=81=D1=82=D0=B8=D0=BA=D0=B0=20=D0=B8?=
+ =?UTF-8?q?=20=D0=BE=D1=82=D0=BF=D1=80=D0=B0=D0=B2=D0=BA=D0=B0?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Пункт меню SMS был скрыт, пока не существует /var/spool/sms/incoming —
+то есть ровно тогда, когда SMS и не работает. Теперь зависимость от
+бинарника smsd, страница видна всегда.
+
+Страница показывает состояние smsd, найденные AT-порты, порт из
+smsd.conf и хвост журнала smsd, а также список входящих и форму
+отправки через sendsms.
+
+Конфигурация smsd теперь готовится init-скриптом 40-pejir-sms при
+каждой загрузке (раньше был uci-defaults, отрабатывавший только при
+первом включении — модем к тому моменту ещё не появлялся в USB).
+---
+ .../luci-static/resources/view/perenio/sms.js | 241 +++++++++++++++---
+ .../share/luci/menu.d/luci-app-perenio.json   |   2 +-
+ package/pejir-sms/Makefile                    |  13 +-
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    |  92 +++++++
+ .../root/etc/uci-defaults/41-pejir-sms        |  40 ---
+ 5 files changed, 301 insertions(+), 87 deletions(-)
+ create mode 100644 package/pejir-sms/root/etc/init.d/40-pejir-sms
+ delete mode 100755 package/pejir-sms/root/etc/uci-defaults/41-pejir-sms
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 57a5e57..1c750f1 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -5,65 +5,226 @@
+ 'require poll';
+ 
+ var DIR = '/var/spool/sms/incoming';
++var CONF = '/etc/smsd.conf';
++var LOG = '/var/log/smsd.log';
++
++function setText(id, s) {
++	var el = document.getElementById(id);
++
++	if (el)
++		el.textContent = s;
++}
++
++function tail(txt, n) {
++	var lines = (txt || '').split('\n').filter(function(l) { return l.trim() != ''; });
++
++	return lines.slice(-n).join('\n');
++}
++
++/* Последние строки журнала smsd */
++function readLog() {
++	return fs.read(LOG).then(function(t) {
++		return tail(t, 8);
++	}).catch(function() {
++		return fs.read('/var/log/smsd.log.1').then(function(t) {
++			return tail(t, 8);
++		}).catch(function() { return ''; });
++	});
++}
++
++/* Состояние демона, AT-порты и порт, прописанный в smsd.conf */
++function readStatus() {
++	return Promise.all([
++		fs.exec('/etc/init.d/smstools3', [ 'status' ])
++			.catch(function() { return { code: 1, stdout: '', stderr: '' }; }),
++		fs.list('/dev').catch(function() { return []; }),
++		fs.read(CONF).catch(function() { return ''; }),
++		readLog()
++	]).then(function(res) {
++		var svc = res[0], devs = res[1] || [], conf = res[2] || '', log = res[3];
++		var ports = devs.map(function(d) { return d.name; })
++			.filter(function(n) { return /^ttyUSB|^ttyACM/.test(n); });
++		var m = conf.match(/^[ \t]*device[ \t]*=[ \t]*(\S+)/m);
++		var out = (svc.stdout || '') + (svc.stderr || '');
++		var running = /running/i.test(out);
++
++		setText('sms-svc', running ? _('работает (smsd)') : _('не запущен'));
++		setText('sms-ports', ports.length ? ports.join(', ') : _('не найдено (ttyUSB/ttyACM)'));
++		setText('sms-device', m ? m[1] : _('не задан в smsd.conf'));
++		setText('sms-log', log || _('журнала нет'));
++	});
++}
++
++/* Приём входящих SMS из /var/spool/sms/incoming */
++function readInbox() {
++	return fs.list(DIR).catch(function() { return []; }).then(L.bind(function(list) {
++		var files = (list || []).filter(function(f) { return f.type == 'file'; });
++
++		files.sort(function(a, b) { return b.mtime - a.mtime; });
++		files = files.slice(0, 50);
++
++		return Promise.all(files.map(function(f) {
++			return fs.read(DIR + '/' + f.name).then(function(txt) {
++				var lines = (txt || '').split('\n');
++
++				return { name: f.name, mtime: f.mtime,
++					from: lines[0] || '', date: lines[1] || '',
++					text: lines.slice(2).join('\n').trim() };
++			}).catch(function() { return null; });
++		})).then(function(all) {
++			return all.filter(function(m) { return m != null; });
++		});
++	}, this)).then(function(msgs) {
++		var box = document.getElementById('sms-list');
++
++		if (!box)
++			return;
++
++		if (!msgs.length) {
++			box.innerHTML = '<em>' + _('Нет SMS') + '</em>';
++			return;
++		}
++
++		var rows = msgs.map(function(m) {
++			return E('tr', { 'class': 'tr' }, [
++				E('td', { 'class': 'td', 'style': 'white-space:nowrap' },
++					new Date(m.mtime * 1000).toLocaleString()),
++				E('td', { 'class': 'td' }, m.from),
++				E('td', { 'class': 'td', 'style': 'white-space:pre-wrap' }, m.text)
++			]);
++		});
++
++		box.innerHTML = '';
++		box.appendChild(E('table', { 'class': 'table' }, [
++			E('tr', { 'class': 'tr table-titles' }, [
++				E('th', { 'class': 'th' }, _('Время')),
++				E('th', { 'class': 'th' }, _('Отправитель')),
++				E('th', { 'class': 'th' }, _('Текст'))
++			])
++		].concat(rows)));
++	});
++}
+ 
+ return view.extend({
+ 	render: function() {
++		var sendBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
++				_('Отправить'));
++
++		sendBtn.addEventListener('click', L.bind(this.handleSend, this));
++
+ 		var body = E([
+-			E('h2', _('SMS (GM510)')),
++			E('h2', {}, _('SMS (GM510)')),
+ 			E('div', { 'class': 'cbi-map' }, [
+ 				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'class': 'cbi-section-descr' },
++						_('SMS-модем GM510 в LTE-модуле. Требуется активный SIM и работающий smsd.'))
++				]),
++				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'class': 'cbi-section-descr' },
++						_('Состояние сервиса')),
++
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('smsd')),
++						E('div', { 'class': 'cbi-value-field' },
++							E('span', { 'id': 'sms-svc' }, _('проверка…')))
++					]),
++
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('AT-порты')),
++						E('div', { 'class': 'cbi-value-field' },
++							E('span', { 'id': 'sms-ports' }, _('проверка…')))
++					]),
++
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('Порт в smsd.conf')),
++						E('div', { 'class': 'cbi-value-field' },
++							E('span', { 'id': 'sms-device' }, _('проверка…')))
++					]),
++
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('Журнал smsd')),
++						E('div', { 'class': 'cbi-value-field' },
++							E('pre', { 'id': 'sms-log', 'style': 'white-space:pre-wrap' }, ''))
++					])
++				]),
++				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'class': 'cbi-section-descr' },
++						_('Отправить SMS')),
++
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('Номер')),
++						E('div', { 'class': 'cbi-value-field' },
++							E('input', { 'type': 'tel', 'id': 'sms-to',
++								'style': 'width:100%', 'placeholder': '+7 900 000-00-00' }))
++					]),
++
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('Текст')),
++						E('div', { 'class': 'cbi-value-field' },
++							E('textarea', { 'id': 'sms-text', 'style': 'width:100%', 'rows': 3 }))
++					]),
++
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('Результат')),
++						E('div', { 'class': 'cbi-value-field' },
++							E('span', { 'id': 'sms-send-status' }, ''))
++					]),
++
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, ''),
++						E('div', { 'class': 'cbi-value-field' }, sendBtn)
++					])
++				]),
++				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'class': 'cbi-section-descr' },
++						_('Входящие SMS')),
++
+ 					E('div', { 'id': 'sms-list' },
+ 						E('em', {}, _('Загрузка…'))),
++
+ 					E('div', { 'class': 'cbi-value-description' },
+-						_('Входящие SMS из /var/spool/sms/incoming (smstools3). ' +
+-						  'Формат файла: 1-я строка — отправитель, 2-я — время, остальное — текст.'))
++						_('Файлы из /var/spool/sms/incoming (smstools3): первая строка — ' +
++						  'отправитель, вторая — время, дальше — текст.'))
+ 				])
+ 			])
+ 		]);
+ 
+ 		poll.add(L.bind(function() {
+-			return fs.list(DIR).catch(function() { return []; }).then(L.bind(function(list) {
+-				var files = (list || []).filter(function(f) { return f.type == 'file'; });
+-				files.sort(function(a, b) { return b.mtime - a.mtime; });
+-				files = files.slice(0, 50);
+-
+-				return Promise.all(files.map(function(f) {
+-					return fs.read(DIR + '/' + f.name).then(function(txt) {
+-						var lines = (txt || '').split('\n');
+-						return { name: f.name, mtime: f.mtime,
+-							from: lines[0] || '', date: lines[1] || '',
+-							text: lines.slice(2).join('\n').trim() };
+-					});
+-				}));
+-			}, this)).then(function(msgs) {
+-				var box = document.getElementById('sms-list');
+-				if (!box) return;
+-				if (!msgs.length) {
+-					box.innerHTML = '<em>' + _('SMS отсутствуют') + '</em>';
+-					return;
+-				}
+-				var rows = msgs.map(function(m) {
+-					return E('tr', { 'class': 'tr' }, [
+-						E('td', { 'class': 'td', 'style': 'white-space:nowrap' },
+-							new Date(m.mtime * 1000).toLocaleString()),
+-						E('td', { 'class': 'td' }, m.from),
+-						E('td', { 'class': 'td', 'style': 'white-space:pre-wrap' }, m.text)
+-					]);
+-				});
+-				box.innerHTML = '';
+-				box.appendChild(E('table', { 'class': 'table' }, [
+-					E('tr', { 'class': 'tr table-titles' }, [
+-						E('th', { 'class': 'th' }, _('Время')),
+-						E('th', { 'class': 'th' }, _('Отправитель')),
+-						E('th', { 'class': 'th' }, _('Текст'))
+-					])
+-				].concat(rows)));
+-			});
++			return Promise.all([ readStatus(), readInbox() ]);
+ 		}, this), 20);
+ 
+ 		return body;
+ 	},
+ 
++	handleSend: function(ev) {
++		var num = (document.getElementById('sms-to') || {}).value || '';
++		var txt = (document.getElementById('sms-text') || {}).value || '';
++
++		if (!num.trim()) {
++			setText('sms-send-status', _('Укажите номер получателя'));
++			return;
++		}
++
++		setText('sms-send-status', _('Отправка…'));
++
++		return fs.exec('/usr/bin/sendsms', [ num.trim(), txt ]).then(function(res) {
++			if (res.code != 0) {
++				setText('sms-send-status',
++					_('Не отправлено') + ': ' + (res.stderr || '').trim());
++				return;
++			}
++
++			setText('sms-send-status',
++				_('Поставлено в очередь отправки') + ' (' + num.trim() + ')');
++			var el = document.getElementById('sms-text');
++
++			if (el)
++				el.value = '';
++		}).catch(function(err) {
++			setText('sms-send-status', _('Ошибка: ') + (err && err.message ? err.message : err));
++		});
++	},
++
+ 	handleSaveApply: null,
+ 	handleSave: null,
+ 	handleReset: null
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index cb558f3..2a31d31 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -9,6 +9,6 @@
+ 		"title": "SMS (Perenio)",
+ 		"order": 66,
+ 		"action": { "type": "view", "path": "perenio/sms" },
+-		"depends": { "fs": { "/var/spool/sms/incoming": "directory" } }
++		"depends": { "fs": { "/usr/bin/smsd": "executable" } }
+ 	}
+ }
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+index 6ad2d61..ea82f6a 100644
+--- a/package/pejir-sms/Makefile
++++ b/package/pejir-sms/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-sms
+ PKG_VERSION:=1
+-PKG_RELEASE:=2
++PKG_RELEASE:=3
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -14,9 +14,10 @@ define Package/pejir-sms
+ endef
+ 
+ define Package/pejir-sms/description
+-  /etc/smsd.conf for GM510: first boot autodetects the AT port and
+-  writes device= into smsd.conf. Incoming SMS land in
+-  /var/spool/sms/incoming and are visible in LuCI (luci-app-perenio).
++  /etc/smsd.conf for GM510: at every boot the AT port is autodetected and
++  written into smsd.conf, the spool directories are created and smstools3
++  is enabled. Incoming SMS land in /var/spool/sms/incoming and are visible
++  in LuCI (luci-app-perenio).
+ endef
+ 
+ define Build/Prepare
+@@ -26,8 +27,8 @@ define Build/Compile
+ endef
+ 
+ define Package/pejir-sms/install
+-	$(INSTALL_DIR) $(1)/etc/uci-defaults
+-	$(INSTALL_BIN) ./root/etc/uci-defaults/41-pejir-sms $(1)/etc/uci-defaults/41-pejir-sms
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/40-pejir-sms $(1)/etc/init.d/40-pejir-sms
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-sms))
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+new file mode 100644
+index 0000000..22b3584
+--- /dev/null
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -0,0 +1,92 @@
++#!/bin/sh /etc/rc.common
++# Настройка smsd для LTE-модема GM510: находим AT-порт, пишем /etc/smsd.conf,
++# создаём каталоги очереди и включаем smstools3.
++#
++# Раньше это был uci-defaults: он отрабатывал только при первом включении и
++# успевал раньше, чем модем появился в USB, — порт определялся неверно (или
++# модема ещё не было), а страница SMS в LuCI была скрыта, пока smsd не
++# создавал /var/spool/sms/incoming. Теперь скрипт выполняется при каждой
++# загрузке, а пункт меню SMS виден всегда.
++
++START=92
++STOP=0
++
++CONF="/etc/smsd.conf"
++LOG="/var/log/smsd.log"
++MARKER="# generated by 40-pejir-sms"
++DEFAULT_PORT="/dev/ttyUSB0"
++PROBE_PORTS="/dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB3"
++
++detect_port() {
++	local p
++
++	for p in $PROBE_PORTS; do
++		[ -c "$p" ] || continue
++		printf 'AT\r' > "$p" 2>/dev/null
++		sleep 1
++		if head -c 64 "$p" 2>/dev/null | grep -q 'OK'; then
++			echo "$p"
++			return 0
++		fi
++	done
++
++	return 1
++}
++
++write_conf() {
++	local port="$1"
++
++	# Пользовательский конфиг не трогаем.
++	[ -f "$CONF" ] && ! grep -q "$MARKER" "$CONF" && return 0
++
++	cat > "$CONF" <<CONF
++#
++# Description: Main configuration file for the smsd
++#
++$MARKER
++
++devices = GM510
++incoming = /var/spool/sms/incoming
++outgoing = /var/spool/sms/outgoing
++checked = /var/spool/sms/checked
++failed = /var/spool/sms/failed
++sent = /var/spool/sms/sent
++receive_before_send = no
++autosplit = 3
++logfile = $LOG
++loglevel = 5
++
++[GM510]
++device = $port
++baudrate = 115200
++init = AT+CPMS="SM","SM","SM"
++init = AT+CMGF=1
++init = AT+CNMI=2,1,0,2,0
++incoming = yes
++outgoing = yes
++decode_unicode_text = yes
++CONF
++}
++
++start_service() {
++	local port=""
++
++	mkdir -p /var/spool/sms/incoming /var/spool/sms/outgoing \
++	         /var/spool/sms/sent /var/spool/sms/failed /var/spool/sms/checked
++
++	# Модем может появиться в USB чуть позже, поэтому короткий перебор портов.
++	for i in 1 2 3; do
++		port="$(detect_port)"
++		[ -n "$port" ] && break
++		sleep 2
++	done
++
++	[ -n "$port" ] || port="$DEFAULT_PORT"
++	write_conf "$port"
++
++	/etc/init.d/smstools3 enable >/dev/null 2>&1
++}
++
++stop_service() {
++	return 0
++}
+diff --git a/package/pejir-sms/root/etc/uci-defaults/41-pejir-sms b/package/pejir-sms/root/etc/uci-defaults/41-pejir-sms
+deleted file mode 100755
+index 3fb079a..0000000
+--- a/package/pejir-sms/root/etc/uci-defaults/41-pejir-sms
++++ /dev/null
+@@ -1,40 +0,0 @@
+-#!/bin/sh
+-# autodetect AT port, then write the full GM510 smsd.conf
+-PORT=""
+-for p in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB3; do
+-  [ -c "$p" ] || continue
+-  echo -e "AT\r" > "$p" 2>/dev/null
+-  sleep 0.3
+-  if head -c 60 "$p" 2>/dev/null | grep -q OK; then PORT="$p"; break; fi
+-done
+-[ -n "$PORT" ] || PORT="/dev/ttyUSB0"
+-
+-cat > /etc/smsd.conf <<CONF
+-# SMS Server Tools 3 - PEJIR01 / GM510 (generated at first boot)
+-devices = GM510
+-loglevel = notice
+-logfile = /var/log/smsd.log
+-pidfile = /var/run/smsd.pid
+-infofile = /var/run/smsd.working
+-outgoing = /var/spool/sms/outgoing
+-checked = /var/spool/sms/checked
+-failed = /var/spool/sms/failed
+-incoming = /var/spool/sms/incoming
+-sent = /var/spool/sms/sent
+-receive_before_send = no
+-
+-[GM510]
+-device = $PORT
+-baudrate = 115200
+-init = AT+CPMS="SM","SM","SM"
+-init = AT+CMGF=1
+-init = AT+CNMI=2,1,0,2,0
+-incoming = yes
+-outgoing = yes
+-decode_unicode_text = yes
+-CONF
+-
+-mkdir -p /var/spool/sms/incoming /var/spool/sms/outgoing \
+-         /var/spool/sms/sent /var/spool/sms/failed /var/spool/sms/checked
+-/etc/init.d/smstools3 enable 2>/dev/null || true
+-exit 0
