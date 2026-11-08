@@ -63,12 +63,11 @@ ECM/NCM, RNDIS, Huawei-NCM + usb-modeswitch + AT-инструменты.
 вендорены: `atinout`, `qminfo`, `pingcontrol`, `xmm-modem`,
 `luci-app-atinout`, `luci-app-modeminfo`.
 
-Из этого набора **в образе** собраны `atinout`, `pingcontrol`,
-`luci-app-atinout` и `luci-app-modeminfo`. `qminfo` и `xmm-modem` в
-`build.sh` не выбраны, поэтому в образе их нет:
+Из этого набора **в образе** собраны все шесть: `atinout`, `qminfo`,
+`pingcontrol`, `xmm-modem`, `luci-app-atinout` и `luci-app-modeminfo`.
 
-- `qminfo` тянет за собой `libqmi` — нужен только для QMI-диагностики;
-  в образе есть `uqmi` (`/sbin/uqmi`), которого хватает для QMI-модемов
-  из таблицы выше;
-- `xmm-modem` — это протокол Fibocom L850/L860/FM350. Штатный модем
-  PEJIR01 — GM510 (Qualcomm), а Fibocom-подобные работают через QMI/UQMI.
+- `qminfo` (`/usr/bin/qminfo`) — подробная диагностика QMI-модема:
+  оператор, сигнал, полосы, IMSI/ICCID. Тянет за собой `libqmi` и `glib2`.
+- `xmm-modem` — протокол Fibocom L850/L860/FM350: скрипты `gcom` в
+  `/etc/gcom/` и обработчик netifd `/lib/netifd/proto/xmm.sh`. Штатному
+  модему PEJIR01 (GM510, Qualcomm) он не нужен — лежит на случай замены.

@@ -348,6 +348,8 @@ CONFIG_PACKAGE_atinout=y
 CONFIG_PACKAGE_luci-app-atinout=y
 CONFIG_PACKAGE_luci-app-modeminfo=y
 CONFIG_PACKAGE_pingcontrol=y
+CONFIG_PACKAGE_qminfo=y
+CONFIG_PACKAGE_xmm-modem=y
 # theme
 CONFIG_PACKAGE_luci-theme-cyberpunk=y
 # dynamic DNS
@@ -446,6 +448,22 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  страницы LuCI, init-скрипты и uci-defaults порта: OK"
+
+        # Инструменты для модемов. qminfo и xmm-modem лежали в дереве
+        # пакетов, но без CONFIG_PACKAGE_*=y в образ не попадали, а у
+        # qminfo вдобавок не было Build/Prepare/Build/Compile — собрать
+        # его было нельзя. Проверяем явно.
+        MODEM_MISSING=""
+        for f in usr/bin/qminfo usr/bin/atinout usr/bin/pingcontrol \
+                 lib/netifd/proto/xmm.sh etc/gcom/xmm-connect.gcom; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || MODEM_MISSING="$MODEM_MISSING $f"
+        done
+        if [ -n "$MODEM_MISSING" ]; then
+          ann error "build.sh: Modem tools" "В образе нет модемных утилит:$MODEM_MISSING"
+          echo "ОШИБКА: модемные утилиты не попали в образ ($MODEM_MISSING)"
+          exit 1
+        fi
+        echo "  модемные утилиты (qminfo/atinout/pingcontrol/xmm-modem): OK"
       fi
     fi
   fi
