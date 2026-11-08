@@ -39,6 +39,15 @@
      заканчивается дефисом (`mipsel-openwrt-linux-musl-`), а исходный
      Makefile собирает имя компилятора как `$(CROSS_TRIPLE)-gcc` —
      получалось `...-musl--gcc`. Теперь передаётся тройка без дефиса.
+   - **Коллекция сообщений QMI.** `qminfo` использует сообщения
+     `DMS GET SOFTWARE_VERSION`, `DMS GET POWER_STATE` и
+     `NAS GET LTE_CPHY_CA_INFO`. В libqmi 1.36 они есть только в
+     коллекции `full` (файл `data/qmi-collection-basic.json` их не
+     содержит), а OpenWrt по умолчанию собирает libqmi с коллекцией
+     `basic` — собственный дефолт libqmi как раз `full`. Без этого
+     `qminfo` не компилировался:
+     `implicit declaration of function 'qmi_client_dms_get_software_version'`.
+     Теперь в конфиге сборки задано `CONFIG_LIBQMI_COLLECTION_FULL=y`.
 
 ### Технические изменения
 

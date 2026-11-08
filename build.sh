@@ -350,6 +350,13 @@ CONFIG_PACKAGE_luci-app-modeminfo=y
 CONFIG_PACKAGE_pingcontrol=y
 CONFIG_PACKAGE_qminfo=y
 CONFIG_PACKAGE_xmm-modem=y
+# qminfo использует сообщения QMI, которых нет в коллекции basic:
+# DMS GET SOFTWARE_VERSION, DMS GET POWER_STATE, NAS GET LTE_CPHY_CA_INFO.
+# В libqmi 1.36 они лежат только в коллекции full (data/qmi-collection-
+# basic.json), а OpenWrt по умолчанию собирает именно basic — свой
+# дефолт libqmi как раз full. Без этой строки qminfo не компилируется:
+# "implicit declaration of function 'qmi_client_dms_get_software_version'".
+CONFIG_LIBQMI_COLLECTION_FULL=y
 # theme
 CONFIG_PACKAGE_luci-theme-cyberpunk=y
 # dynamic DNS
