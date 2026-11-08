@@ -290,6 +290,20 @@ CONFIG_PACKAGE_luci-app-perenio=y
 # он приходит с пакетом luci-mod-network. Отдельного luci-mod-wireless в
 # фиде LuCI 25.12 больше нет, поэтому отдельной строки CONFIG_PACKAGE_* здесь
 # не нужно: luci-mod-network и так ставится (он нужен luci-mod-admin-full).
+# Русский интерфейс LuCI: переводы базовых модулей и всех приложений,
+# которые стоят в образе. Язык по умолчанию — русский (uci-defaults
+# 50-perenio-ru выставляет luci.core.lang=ru).
+CONFIG_PACKAGE_luci-i18n-base-ru=y
+CONFIG_PACKAGE_luci-i18n-firewall-ru=y
+CONFIG_PACKAGE_luci-i18n-package-manager-ru=y
+CONFIG_PACKAGE_luci-i18n-mwan3-ru=y
+CONFIG_PACKAGE_luci-i18n-sqm-ru=y
+CONFIG_PACKAGE_luci-i18n-statistics-ru=y
+CONFIG_PACKAGE_luci-i18n-nlbwmon-ru=y
+CONFIG_PACKAGE_luci-i18n-banip-ru=y
+CONFIG_PACKAGE_luci-i18n-ddns-ru=y
+CONFIG_PACKAGE_luci-i18n-vnstat2-ru=y
+CONFIG_PACKAGE_luci-i18n-lxc-ru=y
 # LuCI: веб-интерфейс LXC
 CONFIG_PACKAGE_luci-app-lxc=y
 # OTA: обновление прошивки кнопкой в LuCI (без автообновления)
