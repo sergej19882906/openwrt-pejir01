@@ -286,9 +286,10 @@ CONFIG_PACKAGE_pejir-homed-feed=y
 CONFIG_PACKAGE_pejir-idata=y
 # LuCI: battery/power status and SMS pages for PEJIR01
 CONFIG_PACKAGE_luci-app-perenio=y
-# LuCI: страница настройки Wi-Fi (radio) — без неё в образе нет раздела
-# «Беспроводная связь» вообще: ни одна зависимость этот модуль не тянет
-CONFIG_PACKAGE_luci-mod-wireless=y
+# Страница «Беспроводная связь» в LuCI 25.12 — это view/network/wireless.js,
+# он приходит с пакетом luci-mod-network. Отдельного luci-mod-wireless в
+# фиде LuCI 25.12 больше нет, поэтому отдельной строки CONFIG_PACKAGE_* здесь
+# не нужно: luci-mod-network и так ставится (он нужен luci-mod-admin-full).
 # LuCI: веб-интерфейс LXC
 CONFIG_PACKAGE_luci-app-lxc=y
 # OTA: обновление прошивки кнопкой в LuCI (без автообновления)
