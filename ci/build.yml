@@ -123,12 +123,22 @@ jobs:
           cd "$WORKDIR/openwrt/bin/targets/ramips/mt7621"
           sha256sum *.bin > sha256sums
           files=$(ls *.bin)
+          # Заметки релиза берём из docs/CHANGELOG.md (раздел текущего тега),
+          # чтобы в релизе было полное описание изменений, а не одна строка.
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          if [ -f "$GITHUB_WORKSPACE/docs/CHANGELOG.md" ]; then
+            awk -v s="^## ${TAG#v}" 'BEGIN{p=0} $0 ~ s {p=1; next} /^## /{p=0} p' \
+              "$GITHUB_WORKSPACE/docs/CHANGELOG.md" > "$notes_file"
+          else
+            : > "$notes_file"
+          fi
+          [ -s "$notes_file" ] || echo "Сборка из GitHub Actions." > "$notes_file"
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release upload "$TAG" $files sha256sums --clobber --repo "$REPO"
           else
             gh release create "$TAG" $files sha256sums --repo "$REPO" \
-              --title "Perenio Elegance PEJIR01 — OpenWrt 25.12.6" \
-              --notes "Сборка из GitHub Actions."
+              --title "Perenio Elegance PEJIR01 — OpenWrt 25.12.6 (${TAG#v})" \
+              --notes-file "$notes_file"
           fi
 
       - name: Verify image contents
