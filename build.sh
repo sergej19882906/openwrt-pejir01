@@ -412,6 +412,32 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  вендорные бинари и symlink'и libubox/libubus: OK"
+
+        # Файлы страниц LuCI порта, init-скриптов и uci-defaults.
+        #
+        # У пакетов с собственным рецептом install каталог root/ копируется
+        # поимённо, и любой забытый файл молча не попадает в образ. Так
+        # потерялся etc/uci-defaults/50-perenio-ru (русский язык по
+        # умолчанию): файл лежал в дереве пакета, но в образ не попал.
+        # Проверяем список явно, чтобы такой случай больше не уезжал
+        # в релиз тихо.
+        PERENIO_MISSING=""
+        for f in etc/uci-defaults/50-perenio-ru etc/uci-defaults/20-pejir-idata \
+                 etc/init.d/40-pejir-sms etc/init.d/41-pejir-modem \
+                 etc/config/cron \
+                 www/luci-static/resources/view/perenio/battery.js \
+                 www/luci-static/resources/view/perenio/sms.js \
+                 www/luci-static/resources/view/perenio/idata.js \
+                 usr/share/luci/menu.d/luci-app-perenio.json \
+                 usr/share/rpcd/acl.d/luci-app-perenio.json; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || PERENIO_MISSING="$PERENIO_MISSING $f"
+        done
+        if [ -n "$PERENIO_MISSING" ]; then
+          ann error "build.sh: Perenio LuCI" "В образе нет файлов порта:$PERENIO_MISSING"
+          echo "ОШИБКА: файлы страниц/init-скриптов LuCI порта не попали в образ ($PERENIO_MISSING)"
+          exit 1
+        fi
+        echo "  страницы LuCI, init-скрипты и uci-defaults порта: OK"
       fi
     fi
   fi
