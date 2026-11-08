@@ -1,6 +1,6 @@
 # Perenio Elegance PEJIR01 — кастомная OpenWrt 25.12.6
 
-Сборка: OpenWrt **v25.12.6** (ядро 6.12) + порт устройства + uartmuxd + perenio-mcu.
+Сборка: OpenWrt **v25.12.6** (ядро 6.12.112) + порт устройства + uartmuxd + perenio-mcu.
 
 ## Состав образа
 

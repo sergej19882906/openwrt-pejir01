@@ -1,6 +1,6 @@
 # OpenWrt 25.12 для Perenio Elegance (PEJIR01)
 
-Порт **OpenWrt v25.12.6** (ядро 6.12) на мультфункциональный IoT-роутер
+Порт **OpenWrt v25.12.6** (ядро 6.12.112) на мультфункциональный IoT-роутер
 **Perenio Elegance / A1 Elegance (PEJIR01)** — MediaTek MT7621A, 256 МБ RAM,
 128 МБ NAND, Wi-Fi 2.4+5 ГГц, гигабитные порты, LTE-модем, Zigbee.
 
