@@ -1,0 +1,99 @@
+From c670d696368dad7c1076c603db71cfb5d2f11d91 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 07:29:46 +0000
+Subject: [PATCH] =?UTF-8?q?packages:=20=D0=B2=D0=B5=D0=BD=D0=B4=D0=BE?=
+ =?UTF-8?q?=D1=80=D0=BD=D1=8B=D0=B5=20=D0=B1=D0=B8=D0=BD=D0=B0=D1=80=D0=B8?=
+ =?UTF-8?q?=20=D0=BD=D0=B5=20=D1=81=D1=82=D0=B0=D1=80=D1=82=D1=83=D1=8E?=
+ =?UTF-8?q?=D1=82=20+=20file.exec=20=D0=B2=20=D1=81=D0=B5=D0=BA=D1=86?=
+ =?UTF-8?q?=D0=B8=D0=B8=20write=20ACL?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Две поломки, обе ломали интерфейс:
+
+1. mcu/mcud/idata_*/uartmuxd не запускались с "Error while loading
+   shared libraries". Бинари ищут libubox.so/libubus.so по обычному
+   имени, а пакет клал в /usr/lib относительные symlink'и на
+   libubox.so.20260213/libubus.so.20251202. Настоящие библиотеки в
+   25.12 лежат в /lib, поэтому ссылка была висячей. Теперь путь к
+   библиотеке берётся из staging и подставляется абсолютным.
+
+2. Страницы LuCI, зовущие fs.exec(), получали "Access denied":
+   в LuCI 25.12 file.exec — операция write, а он был выдан в секции
+   read. Исправлены ACL luci-app-pejir-ota и luci-app-perenio
+   (батарея/SMS были сломаны так же).
+---
+ .../share/rpcd/acl.d/luci-app-perenio.json    |  7 ++++++-
+ .../share/rpcd/acl.d/luci-app-pejir-ota.json  |  7 ++++++-
+ package/perenio-mcu/Makefile                  | 21 +++++++++++++------
+ 3 files changed, 27 insertions(+), 8 deletions(-)
+
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index ad35be6..32af9a9 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -3,7 +3,12 @@
+ 		"description": "Grant access to Perenio STM32 status and SMS",
+ 		"read": {
+ 			"ubus": {
+-				"file": [ "exec", "list", "read" ]
++				"file": [ "list", "read" ]
++			}
++		},
++		"write": {
++			"ubus": {
++				"file": [ "exec" ]
+ 			}
+ 		}
+ 	}
+diff --git a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+index d7e6599..5d6464c 100644
+--- a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
++++ b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+@@ -3,7 +3,12 @@
+ 		"description": "Grant access to the PEJIR01 firmware update helper",
+ 		"read": {
+ 			"ubus": {
+-				"file": [ "exec", "list", "read" ]
++				"file": [ "list", "read" ]
++			}
++		},
++		"write": {
++			"ubus": {
++				"file": [ "exec" ]
+ 			}
+ 		}
+ 	}
+diff --git a/package/perenio-mcu/Makefile b/package/perenio-mcu/Makefile
+index c917262..27cedc8 100644
+--- a/package/perenio-mcu/Makefile
++++ b/package/perenio-mcu/Makefile
+@@ -55,12 +55,21 @@ define Package/perenio-mcu/install
+ 	[ -n "$$$$bv" ] || bv="libubox.so.$(LIBUBOX_ABI)"; \
+ 	uv=$$$$(grep -o 'libubus\.so\.[0-9]*' $(STAGING_DIR)/pkginfo/libubus.provides 2>/dev/null | head -n1); \
+ 	[ -n "$$$$uv" ] || uv="libubus.so.$(LIBUBUS_ABI)"; \
+-	[ -n "$$$$bv" ] && ln -sf $$$$bv $(1)/usr/lib/libubox.so; \
+-	[ -n "$$$$uv" ] && ln -sf $$$$uv $(1)/usr/lib/libubus.so; \
+-	[ -n "$$$$bv" ] && [ "$$$$bv" != "$(VENDOR_LIBUBOX_SONAME)" ] && \
+-		ln -sf $$$$bv $(1)/usr/lib/$(VENDOR_LIBUBOX_SONAME); \
+-	[ -n "$$$$uv" ] && [ "$$$$uv" != "$(VENDOR_LIBUBUS_SONAME)" ] && \
+-		ln -sf $$$$uv $(1)/usr/lib/$(VENDOR_LIBUBUS_SONAME); \
++	# Настоящие библиотеки в 25.12 лежат в /lib (а не в /usr/lib), а вендорные \
++	# бинари ищут libubox.so/libubus.so по обычному имени. Ссылка обязана \
++	# быть АБСОЛЮТНОЙ: относительная из /usr/lib вела бы в \
++	# /usr/lib/libubox.so.20260213, которого там нет, и бинари падали бы с \
++	# "Error while loading shared libraries". Путь берём из staging. \
++	bvp=$$$$(find $(STAGING_DIR)/lib $(STAGING_DIR)/usr/lib -maxdepth 1 -name "$$$$bv" 2>/dev/null | head -n1); \
++	bvp=$$$${bvp#$(STAGING_DIR)}; \
++	uvp=$$$$(find $(STAGING_DIR)/lib $(STAGING_DIR)/usr/lib -maxdepth 1 -name "$$$$uv" 2>/dev/null | head -n1); \
++	uvp=$$$${uvp#$(STAGING_DIR)}; \
++	[ -n "$$$$bvp" ] && ln -sf "$$$$bvp" $(1)/usr/lib/libubox.so; \
++	[ -n "$$$$uvp" ] && ln -sf "$$$$uvp" $(1)/usr/lib/libubus.so; \
++	[ -n "$$$$bvp" ] && [ "$$$$bv" != "$(VENDOR_LIBUBOX_SONAME)" ] && \
++		ln -sf "$$$$bvp" $(1)/usr/lib/$(VENDOR_LIBUBOX_SONAME); \
++	[ -n "$$$$uvp" ] && [ "$$$$uv" != "$(VENDOR_LIBUBUS_SONAME)" ] && \
++		ln -sf "$$$$uvp" $(1)/usr/lib/$(VENDOR_LIBUBUS_SONAME); \
+ 	true
+ endef
+ 
