@@ -8,6 +8,12 @@
 > Разделение прошивок A1/Perenio больше не требуется — один образ на оба бренда.
 > **Калибровка Wi-Fi и MAC не затрагиваются** (раздел `factory`/`idata` — read-only).
 
+**Актуальный релиз — `25.12.6-pejir01.17`**: русский интерфейс, рабочие страницы
+«SMS», «Батарея», «Обновление прошивки» и «Заводские данные», исправлены
+«Access denied» в LuCI и запуск вендорных `mcu`/`mcud`.
+Полный список изменений — [docs/CHANGELOG.md](docs/CHANGELOG.md).
+Обновляться можно сразу с `.12` на `.17`.
+
 ## Что работает
 
 | Компонент | Статус |
@@ -16,13 +22,14 @@
 | LAN1/LAN2/WAN гигабит (DSA) | ✅ MAC из MTD-раздела `idata` |
 | USB 2.0/3.0, extroot | ✅ block-mount + ext4 в комплекте; хост-контроллер `xhci` в dtsi включён по умолчанию, патч 0015 лишь фиксирует `status = "okay"` явно |
 | **LTE-автостарт** | ✅ `lte`/`lte6` (DHCP/DHCPv6) на `usb0` создаются сами, metric 20 и в зоне `wan` (NAT работает) ([docs](docs/LTE_IPV6.md)) |
-| LTE-модем GOSUNCN GM510 (ECM/NCM) | ✅ патч ядра `305a:1415` + `mdm-at` |
+| LTE-модем GOSUNCN GM510 (ECM/NCM) | ✅ патч ядра `305a:1415` + `mdm-at`; раздел «Модем» (luci-app-modeminfo) настроен на AT-порт GM510 |
 | **Другие модемы** | ✅ QMI/MBIM/RNDIS/Huawei-NCM/Sierra + AT-консоль и телеметрия в LuCI ([docs](docs/MODEMS.md)) |
 | Кнопка Reset | ✅ |
 | **LED-индикация (STM32)** | ✅ вендорные `mcu`/`mcud` из стока 9.0.4 |
 | **Значок АКБ в LuCI** | ✅ `luci-app-perenio`: SVG-заряд из `mcu getvolt`, события `pwroff/pr/paerr` ([docs](docs/STM32_BATTERY_SOUND.md)) |
+| **Заводские данные** | ✅ страница «Заводские данные (Perenio)»: штатные SSID/пароли Wi-Fi, пароль root, WPS PIN и серийный номер из раздела `idata` |
 | Звук (siren) | ⚠️ событие `mcud.mcu.siren` пробрасывается; ручной запуск — эксперимент ([docs](docs/STM32_BATTERY_SOUND.md)) |
-| **SMS** | ✅ smstools3 (автодетект AT-порта) + чтение в LuCI; отправка — файл в `/var/spool/sms/outgoing` |
+| **SMS** | ✅ страница «SMS (Perenio)» всегда видна: состояние smsd, AT-порты, журнал, входящие, отправка через `sendsms`; конфиг `smsd.conf` готовится при каждой загрузке ([changelog](docs/CHANGELOG.md)) |
 | **Миграция со стока** | ✅ `pejir-idata`: SSID/пароли Wi-Fi, страна, пароль root — из заводского раздела `idata` при первой загрузке. Пароль ставится только если он ещё не задан, в лог идёт предупреждение «смените его» |
 | **Обновление** | ✅ `sysupgrade` пишет **и ядро** (в оба слота `kernel0`/`kernel1`), и rootfs в UBI ([docs](docs/FLASH.md)) |
 | **OTA по кнопке** | ✅ Система → Firmware update: проверка релиза на GitHub, сверка sha256, `sysupgrade --test` и прошивка. Автообновления нет — только по нажатию ([docs](docs/OTA.md)) |
@@ -31,6 +38,7 @@
 | **AmneziaWG (AWG)** | ✅ kmod против нашего ядра + `awg` CLI + LuCI ([docs](docs/VPN_AWG.md)) |
 | mosquitto / sing-box | ✅ вшиты (sing-box выключен, конфиг вручную) ([docs](docs/ZIGBEE_SINGBOX.md)) |
 | **Мониторинг и сеть** | ✅ mwan3 (failover Ethernet↔LTE), sqm (QoS), collectd+графики, nlbwmon, banip, vnstat2 — с LuCI |
+| **Язык интерфейса** | ✅ русский по умолчанию: переводы LuCI для всех установленных приложений + собственные страницы порта |
 | **Диагностика** | ✅ picocom, usbutils, iperf3, tcpdump, htop |
 | **DynDNS** | ✅ ddns-scripts + LuCI (100+ провайдеров, IPv4/IPv6) — Сеть→Dynamic DNS |
 | **Тема** | ✅ Cyberpunk (тёмная OLED/HUD) по умолчанию |
@@ -68,13 +76,14 @@ build.sh берёт их из официальной прошивки 9.0.4 (п�
 файла прошивки: положите `pejir-9.0.4.swu` рядом с `build.sh` или укажите
 путь в `STOCK_FW=... ./build.sh`. Детали: [docs/BUILD.md](docs/BUILD.md).
 
-Серия патчей: `patches/0001..0013` (`git am` на чистый v25.12.6).
+Серия патчей: `patches/0001..0020` (`git am` на чистый v25.12.6).
 
 ### Сборка на GitHub
 
 В репозитории есть workflow [`.github/workflows/build.yml`](.github/workflows/build.yml):
 он собирает образ на `ubuntu-latest`, **проверяет содержимое собранного rootfs**
-(что `/etc/smsd.conf`, `luci-app-perenio` и `pejir-idata` реально попали в образ)
+(что OTA-модуль, `luci-app-perenio`, `pejir-idata`, вендорные `mcu`/`mcud` и
+symlink'и `libubox`/`libubus` реально попали в образ — иначе сборка падает)
 и отдаёт образы артефактом. При пуше тега `v*` образы дополнительно
 прикрепляются к Release.
 
@@ -124,6 +133,7 @@ git tag v25.12.6-pejir01.7 && git push origin v25.12.6-pejir01.7
 | [docs/STM32_BATTERY_SOUND.md](docs/STM32_BATTERY_SOUND.md) | Батарея, питание, сирена, команды `mcu` |
 | [docs/LTE_IPV6.md](docs/LTE_IPV6.md) | IPv6 через LTE (диагностика AT), проброс портов за CGNAT |
 | [docs/BUILD.md](docs/BUILD.md) | Сборка, состав патчей |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Что изменилось в каждом релизе (`.17` — все правки с `.12`) |
 
 ## Благодарности
 
