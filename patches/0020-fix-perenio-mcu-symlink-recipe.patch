@@ -1,0 +1,73 @@
+From 3a3667008a552319e578099a49bc222d3b108874 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 10:20:55 +0000
+Subject: [PATCH] =?UTF-8?q?perenio-mcu:=20symlink'=D0=B8=20libubox/libubus?=
+ =?UTF-8?q?=20=D0=B1=D0=BE=D0=BB=D1=8C=D1=88=D0=B5=20=D0=BD=D0=B5=20=D1=82?=
+ =?UTF-8?q?=D0=B5=D1=80=D1=8F=D0=BB=D0=B8=D1=81=D1=8C?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Рецепт install'а склеивается в одну команду, поэтому комментарии с '#'
+внутри него закомментировали всё до конца строки — symlink'и не создавались,
+пакет переставал предоставлять libubox.so/libubus.so, и сборка падала с
+"missing dependencies for the following libraries". Пояснения вынесены
+над define.
+
+Ссылка делается абсолютной (/usr/lib/libubox.so -> /lib/libubox.so.20260213):
+настоящие библиотеки в 25.12 лежат в /lib, что видно и в готовом rootfs,
+и в списке файлов пакета libubox20260213.
+---
+ package/perenio-mcu/Makefile | 32 +++++++++++++++++---------------
+ 1 file changed, 17 insertions(+), 15 deletions(-)
+
+diff --git a/package/perenio-mcu/Makefile b/package/perenio-mcu/Makefile
+index 27cedc8..c02af0c 100644
+--- a/package/perenio-mcu/Makefile
++++ b/package/perenio-mcu/Makefile
+@@ -43,6 +43,17 @@ endef
+ define Build/Compile
+ endef
+ 
++# ВНИМАНИЕ: в install-рецепте нельзя писать комментарии с '#'.
++# Рецепт склеивается в одну команду через backslash, и первый '#' закомментирует
++# всё до конца строки — рецепт молча перестанет выполняться (был такой баг:
++# symlink'и не создавались, и сборка падала с "missing dependencies").
++# Поэтому пояснения живут здесь, а не внутри define.
++#
++# Настоящие библиотеки в 25.12 лежат в /lib (а не в /usr/lib): это видно в
++# готовом rootfs (/lib/libubox.so.20260213) и в списке файлов пакета
++# libubox20260213. Поэтому ссылка абсолютная: /usr/lib/libubox.so ->
++# /lib/libubox.so.20260213. Относительный путь не годится: из /usr/lib
++# относительный '../lib' ведёт обратно в /usr/lib.
+ define Package/perenio-mcu/install
+ 	$(INSTALL_DIR) $(1)/usr/bin
+ 	$(INSTALL_BIN) ./files/mcu $(1)/usr/bin/mcu
+@@ -55,21 +66,12 @@ define Package/perenio-mcu/install
+ 	[ -n "$$$$bv" ] || bv="libubox.so.$(LIBUBOX_ABI)"; \
+ 	uv=$$$$(grep -o 'libubus\.so\.[0-9]*' $(STAGING_DIR)/pkginfo/libubus.provides 2>/dev/null | head -n1); \
+ 	[ -n "$$$$uv" ] || uv="libubus.so.$(LIBUBUS_ABI)"; \
+-	# Настоящие библиотеки в 25.12 лежат в /lib (а не в /usr/lib), а вендорные \
+-	# бинари ищут libubox.so/libubus.so по обычному имени. Ссылка обязана \
+-	# быть АБСОЛЮТНОЙ: относительная из /usr/lib вела бы в \
+-	# /usr/lib/libubox.so.20260213, которого там нет, и бинари падали бы с \
+-	# "Error while loading shared libraries". Путь берём из staging. \
+-	bvp=$$$$(find $(STAGING_DIR)/lib $(STAGING_DIR)/usr/lib -maxdepth 1 -name "$$$$bv" 2>/dev/null | head -n1); \
+-	bvp=$$$${bvp#$(STAGING_DIR)}; \
+-	uvp=$$$$(find $(STAGING_DIR)/lib $(STAGING_DIR)/usr/lib -maxdepth 1 -name "$$$$uv" 2>/dev/null | head -n1); \
+-	uvp=$$$${uvp#$(STAGING_DIR)}; \
+-	[ -n "$$$$bvp" ] && ln -sf "$$$$bvp" $(1)/usr/lib/libubox.so; \
+-	[ -n "$$$$uvp" ] && ln -sf "$$$$uvp" $(1)/usr/lib/libubus.so; \
+-	[ -n "$$$$bvp" ] && [ "$$$$bv" != "$(VENDOR_LIBUBOX_SONAME)" ] && \
+-		ln -sf "$$$$bvp" $(1)/usr/lib/$(VENDOR_LIBUBOX_SONAME); \
+-	[ -n "$$$$uvp" ] && [ "$$$$uv" != "$(VENDOR_LIBUBUS_SONAME)" ] && \
+-		ln -sf "$$$$uvp" $(1)/usr/lib/$(VENDOR_LIBUBUS_SONAME); \
++	[ -n "$$$$bv" ] && ln -sf /lib/$$$$bv $(1)/usr/lib/libubox.so; \
++	[ -n "$$$$uv" ] && ln -sf /lib/$$$$uv $(1)/usr/lib/libubus.so; \
++	[ -n "$$$$bv" ] && [ "$$$$bv" != "$(VENDOR_LIBUBOX_SONAME)" ] && \
++		ln -sf /lib/$$$$bv $(1)/usr/lib/$(VENDOR_LIBUBOX_SONAME); \
++	[ -n "$$$$uv" ] && [ "$$$$uv" != "$(VENDOR_LIBUBUS_SONAME)" ] && \
++		ln -sf /lib/$$$$uv $(1)/usr/lib/$(VENDOR_LIBUBUS_SONAME); \
+ 	true
+ endef
+ 

@@ -395,6 +395,23 @@ if [ -n "$SU" ]; then
         else
           echo "  OTA-модуль в образе: OK"
         fi
+
+        # Вендорные бинари mcu/mcud ищут libubox.so/libubus.so по обычному
+        # имени, поэтому в образе обязаны быть symlink'и на версионные
+        # библиотеки в /lib. Если рецепт install'а по какой-то причине не
+        # отработал (например, '#' в рецепте съедал остальные команды),
+        # пакет не пройдёт проверку зависимостей — но лишняя проверка не даст
+        # такому случаю уехать в релиз молча.
+        MCU_MISSING=""
+        for f in usr/bin/mcu usr/bin/mcud usr/lib/libubox.so usr/lib/libubus.so; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || MCU_MISSING="$MCU_MISSING $f"
+        done
+        if [ -n "$MCU_MISSING" ]; then
+          ann error "build.sh: MCU" "В образе нет вендорных файлов:$MCU_MISSING"
+          echo "ОШИБКА: вендорные бинари или symlink'и libubox/libubus не попали в образ ($MCU_MISSING)"
+          exit 1
+        fi
+        echo "  вендорные бинари и symlink'и libubox/libubus: OK"
       fi
     fi
   fi
