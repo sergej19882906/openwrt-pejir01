@@ -461,7 +461,9 @@ if [ -n "$SU" ]; then
         # qminfo вдобавок не было Build/Prepare/Build/Compile — собрать
         # его было нельзя. Проверяем явно.
         MODEM_MISSING=""
-        for f in usr/bin/qminfo usr/bin/atinout usr/bin/pingcontrol \
+        # pingcontrol ставится в /bin (в 25.12 /bin — настоящий каталог,
+        # а не ссылка на /usr/bin), поэтому путь именно bin/pingcontrol.
+        for f in usr/bin/qminfo usr/bin/atinout bin/pingcontrol \
                  lib/netifd/proto/xmm.sh etc/gcom/xmm-connect.gcom; do
           echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || MODEM_MISSING="$MODEM_MISSING $f"
         done
