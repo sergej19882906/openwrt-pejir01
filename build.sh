@@ -441,6 +441,7 @@ if [ -n "$SU" ]; then
         PERENIO_MISSING=""
         for f in etc/uci-defaults/50-perenio-ru etc/uci-defaults/20-pejir-idata \
                  etc/init.d/40-pejir-sms etc/init.d/41-pejir-modem \
+                 etc/init.d/47-pejir-lte \
                  etc/config/cron \
                  www/luci-static/resources/view/perenio/battery.js \
                  www/luci-static/resources/view/perenio/sms.js \

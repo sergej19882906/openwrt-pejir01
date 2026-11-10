@@ -1,0 +1,50 @@
+From 5a00335c08ab3666b18482e7b7b85ba7ae8eb7ca Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Tue, 10 Nov 2026 18:38:04 +0000
+Subject: [PATCH 3/3] =?UTF-8?q?luci-app-perenio:=20=D1=80=D0=B0=D1=81?=
+ =?UTF-8?q?=D1=88=D0=B8=D1=80=D0=B8=D1=82=D1=8C=20=D0=B4=D0=B8=D0=B0=D0=B3?=
+ =?UTF-8?q?=D0=BD=D0=BE=D1=81=D1=82=D0=B8=D0=BA=D1=83=20(=D0=BC=D0=BE?=
+ =?UTF-8?q?=D0=B4=D0=B5=D0=BB=D1=8C=20DT,=20=D1=83=D0=B7=D0=BB=D1=8B=20xhc?=
+ =?UTF-8?q?i/regulator,=20USB=20VID:PID)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Добавлено в сводку:
+  * cat /proc/device-tree/model — покажет, какой DTB в системе: наш
+    ("IoT Perenio Elegance PEJIR01") или загрузчика ("PEJIR01.34-BA");
+  * список дочерних узлов xhci (есть ли regulator-vbus/regulator-vusb33) и
+    узлы regulator* в device-tree;
+  * /proc/cmdline;
+  * перечисление USB-устройств как VID:PID + product;
+  * uci show modeminfo (какой tty выбран AT-портом).
+---
+ .../htdocs/luci-static/resources/view/perenio/diag.js    | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+index 7c63f7d..cfab1e2 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+@@ -12,14 +12,19 @@ var SCRIPT = [
+ 	'echo "=== Модель и DTB ==="',
+ 	'cat /proc/device-tree/model 2>/dev/null; echo',
+ 	'echo -n "узлы device-tree: "; ls /proc/device-tree/ 2>/dev/null | tr "\\n" " "; echo',
++	'echo -n "узлы regulator*: "; ls -d /proc/device-tree/regulator* 2>/dev/null | tr "\\n" " "; echo',
+ 	'echo -n "xhci status: "; cat /proc/device-tree/xhci@1e1c0000/status 2>/dev/null; echo',
++	'echo -n "xhci children: "; ls /proc/device-tree/xhci@1e1c0000/ 2>/dev/null | tr "\\n" " "; echo',
++	'echo -n "cmdline: "; cat /proc/cmdline 2>/dev/null; echo',
+ 	'echo "=== USB: сообщения ядра ==="',
+-	'dmesg 2>/dev/null | grep -iE "xhci|ehci|ohci|uhci|dwc|usb [0-9]|new .*USB device|option|cdc_ether|cdc_ncm|cdc_mbim|rndis|scsi|uas" | tail -40',
++	'dmesg 2>/dev/null | grep -iE "xhci|ehci|ohci|uhci|dwc|usb [0-9]|new .*USB device|option|cdc_ether|cdc_ncm|cdc_mbim|rndis|scsi|uas|regulator" | tail -40',
+ 	'echo "=== USB: устройства ==="',
+ 	'echo -n "sysfs: "; ls /sys/bus/usb/devices/ 2>/dev/null | tr "\\n" " "; echo',
+-	'cat /sys/bus/usb/devices/*/product 2>/dev/null',
++	'for d in /sys/bus/usb/devices/*/; do [ -f "$d/idVendor" ] && echo "$(basename $d) $(cat $d/idVendor 2>/dev/null):$(cat $d/idProduct 2>/dev/null) $(cat $d/product 2>/dev/null)"; done',
+ 	'echo "=== Модем, UART и мультиплексор ==="',
+ 	'ls -l /dev/ttyUSB* /dev/ttyACM* /dev/cdc-wdm* /dev/umxtty* /dev/ttyS* 2>&1',
++	'echo "--- modeminfo ---"',
++	'uci show modeminfo 2>/dev/null',
+ 	'echo "=== Сеть ==="',
+ 	'ip -o link show 2>/dev/null',
+ 	'echo "--- network.lte ---"',

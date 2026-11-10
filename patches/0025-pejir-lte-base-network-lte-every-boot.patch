@@ -1,0 +1,235 @@
+From 537b33faf296067c4ba708692f99853add0b16cd Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Tue, 10 Nov 2026 18:35:06 +0000
+Subject: [PATCH 1/3] =?UTF-8?q?pejir-lte-base:=20=D1=81=D0=BE=D0=B7=D0=B4?=
+ =?UTF-8?q?=D0=B0=D0=B2=D0=B0=D1=82=D1=8C=20=D0=B8=20=D0=BF=D0=BE=D0=B4?=
+ =?UTF-8?q?=D0=BD=D0=B8=D0=BC=D0=B0=D1=82=D1=8C=20network.lte=20=D0=BD?=
+ =?UTF-8?q?=D0=B0=20=D0=BA=D0=B0=D0=B6=D0=B4=D0=BE=D0=BC=20=D1=81=D1=82?=
+ =?UTF-8?q?=D0=B0=D1=80=D1=82=D0=B5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Секция network.lte в стоке Perenio создаётся uci-defaults (99_modem_setup),
+то есть только при первой загрузке. При прошивке "с сохранением настроек"
+секции не было — LuCI показывал "network not present".
+
+Новый init-скрипт 47-pejir-lte:
+  * находит USB-NIC модема по VID:PID (GM510 305a:1415 и др.) в sysfs;
+  * создаёт network.lte (proto=dhcp, metric=30) и network.lte6, если их нет;
+  * добавляет lte/lte6 в зону wan;
+  * синхронизирует APN (AT+CGDCONT) через atinout, если задан network.lte.apn;
+  * поднимает интерфейс (ifup lte), если proto != none.
+
+Зависимость пакета: +atinout (AT-транспорт вместо vendor-ubus-стека).
+---
+ package/pejir-lte-base/Makefile               |   5 +-
+ .../root/etc/init.d/47-pejir-lte              | 169 ++++++++++++++++++
+ 2 files changed, 172 insertions(+), 2 deletions(-)
+ create mode 100644 package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index 38bef7d..0b76825 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-lte-base
+ PKG_VERSION:=1
+-PKG_RELEASE:=2
++PKG_RELEASE:=3
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -10,7 +10,7 @@ define Package/pejir-lte-base
+   SECTION:=utils
+   CATEGORY:=Utilities
+   TITLE:=PEJIR01 LTE base: auto wan/wan6 on usb0 + AT helper
+-  DEPENDS:=+kmod-usb-net-cdc-ether +kmod-usb-net-cdc-ncm +kmod-usb-serial-option
++  DEPENDS:=+kmod-usb-net-cdc-ether +kmod-usb-net-cdc-ncm +kmod-usb-serial-option +atinout
+ endef
+ 
+ define Package/pejir-lte-base/description
+@@ -32,6 +32,7 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_BIN) ./root/usr/bin/mdm-at $(1)/usr/bin/mdm-at
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./root/etc/init.d/41-pejir-modem $(1)/etc/init.d/41-pejir-modem
++	$(INSTALL_BIN) ./root/etc/init.d/47-pejir-lte $(1)/etc/init.d/47-pejir-lte
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-lte-base))
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+new file mode 100644
+index 0000000..3ac2dc9
+--- /dev/null
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -0,0 +1,169 @@
++#!/bin/sh /etc/rc.common
++# PEJIR01: LTE-интерфейс модема GM510.
++#
++# Зачем этот скрипт:
++#   * секция network.lte в стоке Perenio создаётся в /etc/uci-defaults/99_modem_setup,
++#     то есть только при ПЕРВОЙ загрузке. При прошивке "с сохранением настроек"
++#     секции не было — LuCI показывал "network not present";
++#   * вендорский /etc/init.d/modem (START=80) поднимает lte при каждом старте и
++#     перед этим синхронизирует APN через AT-команду. Мы делаем то же, но без
++#     vendor-ubus-стека (AT -> modem -> mdm.sh): транспорт AT у нас уже есть
++#     (atinout из пакета atinout), модем умеет AT сам.
++#
++# Порядок: ждём USB-модем (не больше 20 c), создаём/поднимаем интерфейс.
++
++START=94
++STOP=0
++
++MODEM_USB_IDS="305a:1415 2c7c:0125 2c7c:6026 2dee:4d20 05c6:f601"
++
++log() {
++	logger -t pejir-lte "$*"
++}
++
++# Интерфейс USB-NIC модема (cdc_ether/cdc_ncm). В ядре 6.x он называется usb0,
++# в стоке на ядре 4.14 — eth1.
++detect_ifname() {
++	local net ifname devpath vid pid
++
++	for net in /sys/class/net/*; do
++		[ -e "$net" ] || continue
++		ifname="${net##*/}"
++		devpath="$(readlink -f "$net/device" 2>/dev/null)"
++		[ -n "$devpath" ] || continue
++		while [ "$devpath" != "/" ] && [ -n "$devpath" ]; do
++			if [ -f "$devpath/idVendor" ]; then
++				vid="$(cat "$devpath/idVendor" 2>/dev/null)"
++				pid="$(cat "$devpath/idProduct" 2>/dev/null)"
++				case " ${MODEM_USB_IDS} " in
++					*" ${vid}:${pid} "*)
++						echo "$ifname"
++						return 0
++						;;
++				esac
++				break
++			fi
++			devpath="$(dirname "$devpath")"
++		done
++	done
++
++	# запасной вариант: просто первый usb-интерфейс
++	for net in /sys/class/net/usb*; do
++		[ -e "$net" ] || continue
++		echo "${net##*/}"
++		return 0
++	done
++
++	return 1
++}
++
++# AT-порт модема: у GM510 это ttyUSB2, но нумерация зависит от композиции.
++# Проверяем порт настоящим AT-запросом (atinout умеет ждать ответа).
++detect_at_port() {
++	local p out script="/tmp/pejir-probe.$$"
++
++	printf 'AT\n' > "$script"
++
++	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 \
++	         /dev/ttyACM1 /dev/ttyACM0; do
++		[ -c "$p" ] || continue
++		out="$(atinout "$script" "$p" - 2>/dev/null)"
++		case "$out" in
++			*OK*) rm -f "$script"; echo "$p"; return 0 ;;
++		esac
++	done
++
++	rm -f "$script"
++	return 1
++}
++
++ensure_lte_section() {
++	local ifname="$1"
++
++	if ! uci -q get network.lte.type >/dev/null 2>&1; then
++		uci set network.lte=interface
++		uci set network.lte.proto=dhcp
++		uci set network.lte.device="$ifname"
++		uci set network.lte.metric=30
++		uci set network.lte.peerdns=0
++		log "создан network.lte (device=$ifname)"
++	fi
++
++	if ! uci -q get network.lte6.type >/dev/null 2>&1; then
++		uci set network.lte6=interface
++		uci set network.lte6.proto=dhcpv6
++		uci set network.lte6.device="$ifname"
++		uci set network.lte6.metric=30
++		uci set network.lte6.reqprefix=auto
++		uci set network.lte6.norelease=1
++		log "создан network.lte6 (device=$ifname)"
++	fi
++
++	uci commit network
++}
++
++ensure_firewall() {
++	local i n
++
++	for i in 0 1 2 3 4 5 6 7 8 9; do
++		[ "$(uci -q get firewall.@zone[$i].name)" = "wan" ] || continue
++		for n in lte lte6; do
++			uci -q get firewall.@zone[$i].network | tr ' ' '\n' | grep -qx "$n" || \
++				uci -q add_list firewall.@zone[$i].network "$n"
++		done
++		break
++	done
++	uci commit firewall
++}
++
++# APN модема: без него GM510 не поднимет PDP-сессию.
++sync_apn() {
++	local apn port script
++
++	apn="$(uci -q get network.lte.apn)"
++	[ -n "$apn" ] || return 0
++
++	port="$(detect_at_port)" || return 0
++	script="/tmp/pejir-apn.$$"
++	printf 'AT+CGDCONT=1,"IP","%s"\n' "$apn" > "$script"
++	atinout "$script" "$port" - >/dev/null 2>&1
++	rm -f "$script"
++	log "APN отправлен модему: $apn"
++}
++
++wait_for_modem() {
++	local i
++
++	for i in 1 2 3 4 5 6 7 8 9 10; do
++		[ -n "$(detect_at_port)" ] && return 0
++		sleep 2
++	done
++	return 1
++}
++
++start_service() {
++	local ifname proto
++
++	wait_for_modem || log "модем не появился (USB?)"
++
++	ifname="$(detect_ifname)" || ifname=""
++	if [ -z "$ifname" ]; then
++		log "USB-NIC модема не найден — интерфейс LTE не поднимаем"
++		return 0
++	fi
++
++	ensure_lte_section "$ifname"
++	ensure_firewall
++	sync_apn
++
++	proto="$(uci -q get network.lte.proto)"
++	if [ "$proto" != "none" ]; then
++		ifup lte >/dev/null 2>&1
++	fi
++}
++
++stop_service() {
++	if [ "$(uci -q get network.lte.proto)" != "none" ]; then
++		ifdown lte >/dev/null 2>&1
++	fi
++}

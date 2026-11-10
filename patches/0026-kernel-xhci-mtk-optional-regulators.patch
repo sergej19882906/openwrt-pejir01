@@ -1,0 +1,129 @@
+From c5b054de5de3afa525bfaf22520f35bba43153b4 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Tue, 10 Nov 2026 18:38:02 +0000
+Subject: [PATCH 2/3] =?UTF-8?q?kernel:=20xhci-mtk=20=E2=80=94=20=D0=BE?=
+ =?UTF-8?q?=D0=BF=D1=86=D0=B8=D0=BE=D0=BD=D0=B0=D0=BB=D1=8C=D0=BD=D1=8B?=
+ =?UTF-8?q?=D0=B5=20=D1=80=D0=B5=D0=B3=D1=83=D0=BB=D1=8F=D1=82=D0=BE=D1=80?=
+ =?UTF-8?q?=D1=8B=20xHCI?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Вендорский DTB, который отдаёт загрузчик, не описывает питание xHCI
+(supply vbus/vusb33 отсутствуют — есть только status/compatible/reg/clocks).
+В Linux 6.12 devm_regulator_bulk_get() на этом падает, xhci_mtk_probe()
+прерывается, и на машине не остаётся ни одного USB-контроллера: не видно
+ни флешки, ни LTE-модема.
+
+Берём питания как опциональные и пропускаем те, которых нет в DT.
+---
+ ...940-usb-xhci-mtk-optional-regulators.patch | 100 ++++++++++++++++++
+ 1 file changed, 100 insertions(+)
+ create mode 100644 target/linux/ramips/patches-6.12/940-usb-xhci-mtk-optional-regulators.patch
+
+diff --git a/target/linux/ramips/patches-6.12/940-usb-xhci-mtk-optional-regulators.patch b/target/linux/ramips/patches-6.12/940-usb-xhci-mtk-optional-regulators.patch
+new file mode 100644
+index 0000000..0927724
+--- /dev/null
++++ b/target/linux/ramips/patches-6.12/940-usb-xhci-mtk-optional-regulators.patch
+@@ -0,0 +1,100 @@
++From: Perenio PEJIR01 port <port@local>
++Date: Tue, 10 Nov 2026 18:40:00 +0000
++Subject: [PATCH] usb: xhci-mtk: make the xHCI regulators optional
++
++Boards like the Perenio PEJIR01 can be booted with a bootloader-provided
++device tree that does not describe the xHCI vbus/vusb33 supplies at all
++(the vendor DTB has only status/compatible/reg/clocks).  With Linux 6.12
++devm_regulator_bulk_get() then fails, xhci_mtk_probe() bails out and the
++machine ends up with no USB host controller at all: no mass storage and
++no LTE modem are detected.
++
++Take the supplies as optional and skip the ones the DT does not describe,
++so the controller probes and enumerates devices.
++
++--- a/drivers/usb/host/xhci-mtk.c
+++++ b/drivers/usb/host/xhci-mtk.c
++@@ -438,6 +438,38 @@
++ 	return devm_clk_bulk_get_optional(mtk->dev, BULK_CLKS_NUM, clks);
++ }
++ 
+++static int xhci_mtk_vregs_enable(struct xhci_hcd_mtk *mtk)
+++{
+++	int i, ret;
+++
+++	for (i = 0; i < BULK_VREGS_NUM; i++) {
+++		struct regulator *regulator = mtk->supplies[i].consumer;
+++
+++		if (!regulator)
+++			continue;
+++
+++		ret = regulator_enable(regulator);
+++		if (ret)
+++			return ret;
+++	}
+++
+++	return 0;
+++}
+++
+++static void xhci_mtk_vregs_disable(struct xhci_hcd_mtk *mtk)
+++{
+++	int i;
+++
+++	for (i = 0; i < BULK_VREGS_NUM; i++) {
+++		struct regulator *regulator = mtk->supplies[i].consumer;
+++
+++		if (!regulator)
+++			continue;
+++
+++		regulator_disable(regulator);
+++	}
+++}
+++
++ static int xhci_mtk_vregs_get(struct xhci_hcd_mtk *mtk)
++ {
++ 	struct regulator_bulk_data *supplies = mtk->supplies;
++@@ -445,7 +477,16 @@
++ 	supplies[0].supply = "vbus";
++ 	supplies[1].supply = "vusb33";
++ 
++-	return devm_regulator_bulk_get(mtk->dev, BULK_VREGS_NUM, supplies);
+++	/*
+++	 * Some boards are booted with a DTB that does not describe the xHCI
+++	 * regulators at all.  Requiring them would fail the whole probe and
+++	 * leave the machine without any USB host controller, so take the
+++	 * supplies as optional and skip the ones that are not described.
+++	 */
+++	supplies[0].consumer = devm_regulator_get_optional(mtk->dev, "vbus");
+++	supplies[1].consumer = devm_regulator_get_optional(mtk->dev, "vusb33");
+++
+++	return 0;
++ }
++ 
++ static void xhci_mtk_quirks(struct device *dev, struct xhci_hcd *xhci)
++@@ -575,7 +616,7 @@
++ 	pm_runtime_enable(dev);
++ 	pm_runtime_get_sync(dev);
++ 
++-	ret = regulator_bulk_enable(BULK_VREGS_NUM, mtk->supplies);
+++	ret = xhci_mtk_vregs_enable(mtk);
++ 	if (ret)
++ 		goto disable_pm;
++ 
++@@ -696,7 +737,7 @@
++ 	clk_bulk_disable_unprepare(BULK_CLKS_NUM, mtk->clks);
++ 
++ disable_ldos:
++-	regulator_bulk_disable(BULK_VREGS_NUM, mtk->supplies);
+++	xhci_mtk_vregs_disable(mtk);
++ 
++ disable_pm:
++ 	pm_runtime_put_noidle(dev);
++@@ -729,7 +770,7 @@
++ 	usb_put_hcd(hcd);
++ 	xhci_mtk_sch_exit(mtk);
++ 	clk_bulk_disable_unprepare(BULK_CLKS_NUM, mtk->clks);
++-	regulator_bulk_disable(BULK_VREGS_NUM, mtk->supplies);
+++	xhci_mtk_vregs_disable(mtk);
++ 
++ 	pm_runtime_disable(dev);
++ 	pm_runtime_put_noidle(dev);
