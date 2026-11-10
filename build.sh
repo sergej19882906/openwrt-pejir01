@@ -445,6 +445,7 @@ if [ -n "$SU" ]; then
                  www/luci-static/resources/view/perenio/battery.js \
                  www/luci-static/resources/view/perenio/sms.js \
                  www/luci-static/resources/view/perenio/idata.js \
+                 www/luci-static/resources/view/perenio/diag.js \
                  usr/share/luci/menu.d/luci-app-perenio.json \
                  usr/share/rpcd/acl.d/luci-app-perenio.json; do
           echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || PERENIO_MISSING="$PERENIO_MISSING $f"

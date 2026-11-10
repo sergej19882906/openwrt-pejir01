@@ -1,0 +1,208 @@
+From ee0a09cb92fae66e47b71d559fcd4e6678a56d83 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Tue, 10 Nov 2026 17:46:14 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-perenio:=20=D1=81=D1=82=D1=80=D0=B0?=
+ =?UTF-8?q?=D0=BD=D0=B8=D1=86=D0=B0=20=D0=B4=D0=B8=D0=B0=D0=B3=D0=BD=D0=BE?=
+ =?UTF-8?q?=D1=81=D1=82=D0=B8=D0=BA=D0=B8=20USB/LTE/=D0=B1=D0=B0=D1=82?=
+ =?UTF-8?q?=D0=B0=D1=80=D0=B5=D0=B8;=20uartmuxd:=20=D0=BA=D0=BE=D0=BC?=
+ =?UTF-8?q?=D0=B0=D0=BD=D0=B4=D0=B0=20on=20=D1=87=D0=B5=D1=80=D0=B5=D0=B7?=
+ =?UTF-8?q?=20=D0=BC=D1=83=D0=BB=D1=8C=D1=82=D0=B8=D0=BF=D0=BB=D0=B5=D0=BA?=
+ =?UTF-8?q?=D1=81=D0=BE=D1=80?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Диагностика (новая страница LuCI «Диагностика USB, LTE и батареи»):
+собирает одним вызовом fs.exec состояние DTB, сообщения ядра по USB,
+список USB-устройств, ttyUSB/cdc-wdm/umxtty, сетевые интерфейсы и
+секцию network.lte, список служб mcud/uartmuxd и вывод mcu
+getvolt/getsys/getver. Нужна, чтобы получить факты с устройства без
+SSH — LuCI 25.12 ограничивает fs.read белым списком путей, а exec нет.
+
+uartmuxd: стартовая команда «#0on 6» теперь уходит через
+мультиплексор (пишется в slave-конец /dev/umxtty0), а не сырыми
+байтами прямо в UART. Вендор делает ровно так же: его mcu_on пишет
+«on $1» в /dev/umxtty0, а модуль ядра uartmux.ko превращает это в
+кадр DLCI 0. Раньше команда уходила в UART мимо HASHMUX-кадрирования,
+канал оставался закрытым, и STM32 не отвечал — в том числе на
+запросы напряжения батареи.
+---
+ .../resources/view/perenio/diag.js            | 58 +++++++++++++++++++
+ .../share/luci/menu.d/luci-app-perenio.json   | 46 +++++++++++++--
+ package/uartmuxd/src/uartmuxd.c               | 24 ++++++--
+ 3 files changed, 116 insertions(+), 12 deletions(-)
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+new file mode 100644
+index 0000000..7c63f7d
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+@@ -0,0 +1,58 @@
++'use strict';
++'require view';
++'require fs';
++'require ui';
++
++/* Сводная диагностика: USB-контроллер и устройства, модем (ttyUSB/cdc-wdm),
++   интерфейс LTE, состояние служб STM32 и данные батареи.
++   Всё собирается одной командой через fs.exec — в LuCI 25.12 чтение
++   произвольных путей (fs.read) ограничено белым списком, а exec —
++   нет. Право file.exec есть в ACL luci-app-perenio (операция write). */
++var SCRIPT = [
++	'echo "=== Модель и DTB ==="',
++	'cat /proc/device-tree/model 2>/dev/null; echo',
++	'echo -n "узлы device-tree: "; ls /proc/device-tree/ 2>/dev/null | tr "\\n" " "; echo',
++	'echo -n "xhci status: "; cat /proc/device-tree/xhci@1e1c0000/status 2>/dev/null; echo',
++	'echo "=== USB: сообщения ядра ==="',
++	'dmesg 2>/dev/null | grep -iE "xhci|ehci|ohci|uhci|dwc|usb [0-9]|new .*USB device|option|cdc_ether|cdc_ncm|cdc_mbim|rndis|scsi|uas" | tail -40',
++	'echo "=== USB: устройства ==="',
++	'echo -n "sysfs: "; ls /sys/bus/usb/devices/ 2>/dev/null | tr "\\n" " "; echo',
++	'cat /sys/bus/usb/devices/*/product 2>/dev/null',
++	'echo "=== Модем, UART и мультиплексор ==="',
++	'ls -l /dev/ttyUSB* /dev/ttyACM* /dev/cdc-wdm* /dev/umxtty* /dev/ttyS* 2>&1',
++	'echo "=== Сеть ==="',
++	'ip -o link show 2>/dev/null',
++	'echo "--- network.lte ---"',
++	'uci show network 2>/dev/null | grep -E "lte|usb0|wan"',
++	'echo "=== Службы ==="',
++	'ps w 2>/dev/null | grep -E "mcud|uartmuxd|smsd|mcu" | grep -v grep',
++	'echo "=== Батарея: mcu ==="',
++	'/usr/bin/mcu getvolt 2>&1; echo',
++	'/usr/bin/mcu getsys 2>&1; echo',
++	'/usr/bin/mcu getver 2>&1; echo',
++	'echo "=== Журнал: usb/mcu/lte ==="',
++	'logread 2>/dev/null | grep -iE "mcu|uartmux|umxtty|usb|lte|modem|smsd" | tail -30'
++].join('; ') + '; true';
++
++return view.extend({
++	load: function() {
++		return fs.exec('/bin/sh', [ '-c', SCRIPT ]).then(function(txt) {
++			return [ txt || '' ];
++		}).catch(function(e) {
++			return [ _('Не удалось выполнить диагностику: ') + (e || '') ];
++		});
++	},
++
++	render: function(data) {
++		return E('div', { 'class': 'cbi-section' }, [
++			E('h2', _('Диагностика USB, LTE и батареи (PEJIR01)')),
++			E('p', { 'class': 'cbi-value-description' }, _('Сводка состояния: USB-контроллер и подключённые устройства, модем, интерфейс LTE, службы STM32 и данные батареи. Скопируйте содержимое блока ниже.')),
++			E('pre', { 'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:65vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
++				(data && data[0]) ? data[0] : _('(пусто)')),
++			E('button', {
++				'class': 'cbi-button cbi-button-neutral',
++				'click': ui.createHandlerFn(this, function() { window.location.reload(); })
++			}, _('Обновить'))
++		]);
++	}
++});
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 4f746fa..4ca117b 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -2,19 +2,53 @@
+ 	"admin/status/perenio-battery": {
+ 		"title": "Батарея (Perenio)",
+ 		"order": 65,
+-		"action": { "type": "view", "path": "perenio/battery" },
+-		"depends": { "fs": { "/usr/bin/mcu": "executable" } }
++		"action": {
++			"type": "view",
++			"path": "perenio/battery"
++		},
++		"depends": {
++			"fs": {
++				"/usr/bin/mcu": "executable"
++			}
++		}
+ 	},
+ 	"admin/status/perenio-sms": {
+ 		"title": "SMS (Perenio)",
+ 		"order": 66,
+-		"action": { "type": "view", "path": "perenio/sms" },
+-		"depends": { "fs": { "/usr/bin/smsd": "executable" } }
++		"action": {
++			"type": "view",
++			"path": "perenio/sms"
++		},
++		"depends": {
++			"fs": {
++				"/usr/bin/smsd": "executable"
++			}
++		}
+ 	},
+ 	"admin/status/perenio-idata": {
+ 		"title": "Заводские данные (Perenio)",
+ 		"order": 67,
+-		"action": { "type": "view", "path": "perenio/idata" },
+-		"depends": { "fs": { "/usr/sbin/idata_getconf": "executable" } }
++		"action": {
++			"type": "view",
++			"path": "perenio/idata"
++		},
++		"depends": {
++			"fs": {
++				"/usr/sbin/idata_getconf": "executable"
++			}
++		}
++	},
++	"admin/status/perenio-diag": {
++		"title": "Диагностика USB, LTE и батареи (Perenio)",
++		"order": 68,
++		"action": {
++			"type": "view",
++			"path": "perenio/diag"
++		},
++		"depends": {
++			"fs": {
++				"/usr/bin/mcu": "executable"
++			}
++		}
+ 	}
+ }
+diff --git a/package/uartmuxd/src/uartmuxd.c b/package/uartmuxd/src/uartmuxd.c
+index 0233707..954bb79 100644
+--- a/package/uartmuxd/src/uartmuxd.c
++++ b/package/uartmuxd/src/uartmuxd.c
+@@ -419,12 +419,6 @@ int main(int argc, char **argv) {
+         }
+     }
+ 
+-    if (send_startup_sequence(sfd, &cfg) < 0) {
+-        perror("startup-seq");
+-        close(sfd);
+-        return 1;
+-    }
+-
+     struct chan chans[MAX_DLCI];
+     memset(chans, 0, sizeof(chans));
+     for (int i = 0; i < MAX_DLCI; i++) chans[i].mfd = -1;
+@@ -441,6 +435,24 @@ int main(int argc, char **argv) {
+         fprintf(stderr, "umxtty%d -> %s (DLCI %d)\n", i, chans[i].pts, chans[i].dlci);
+     }
+ 
++    /* Стартовую команду ("on ...") отправляем ЧЕРЕЗ мультиплексор: пишем
++       её в slave-конец /dev/umxtty0 — ровно как это делает вендорская
++       функция mcu_on ("echo on $1 > /dev/umxtty0"). Раньше команда уходила
++       сырыми байтами прямо в UART мимо HASHMUX-кадрирования, поэтому STM32
++       её не видел: канал оставался закрытым, и данные (в т.ч. напряжение
++       батареи) не приходили. */
++    {
++        int onfd = open(chans[0].pts, O_WRONLY | O_NOCTTY | O_NONBLOCK);
++        if (onfd >= 0) {
++            if (send_startup_sequence(onfd, &cfg) < 0 && cfg.verbose) {
++                perror("startup-seq");
++            }
++            close(onfd);
++        } else if (cfg.verbose) {
++            perror("open umxtty0");
++        }
++    }
++
+     struct hashmux_state hm;
+     memset(&hm, 0, sizeof(hm));
+     hm.rx_addr = 0;
+-- 
+2.39.5
+
