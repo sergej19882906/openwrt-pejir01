@@ -1,0 +1,122 @@
+From 0cf5f8d7293b9ce2181bdf4929b623e0e994fdd8 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Fri, 20 Nov 2026 19:55:37 +0000
+Subject: [PATCH] =?UTF-8?q?luci:=20=D0=BF=D0=BE=D0=BD=D1=8F=D1=82=D0=BD?=
+ =?UTF-8?q?=D0=B0=D1=8F=20=D0=BE=D1=88=D0=B8=D0=B1=D0=BA=D0=B0=20=D0=BD?=
+ =?UTF-8?q?=D0=B0=20=D1=81=D1=82=D1=80=D0=B0=D0=BD=D0=B8=D1=86=D0=B5=20OTA?=
+ =?UTF-8?q?=20=D0=B8=20=D0=B2=D1=81=D0=B5=D0=B3=D0=B4=D0=B0=20=D0=B2=D0=B8?=
+ =?UTF-8?q?=D0=B4=D0=B8=D0=BC=D0=B0=D1=8F=20=D0=B4=D0=B8=D0=B0=D0=B3=D0=BD?=
+ =?UTF-8?q?=D0=BE=D1=81=D1=82=D0=B8=D0=BA=D0=B0?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+1) Страница «Обновление прошивки (PEJIR01)» при отказе ubus показывала
+   голое «Permission denied». Теперь выводится объяснение: в LuCI 25.12
+   file.exec — операция write, а в прошивках старше .17 ACL выдавал exec в
+   секции read, поэтому страница на них не работает в принципе; подсказка
+   — обновляться обычной страницей «Система → Обновление прошивки».
+   На страницу добавлена ссылка на обычную страницу обновления.
+
+2) Пункт меню «Диагностика USB, LTE и батареи (Perenio)» больше не зависит
+   от наличия /usr/bin/mcu: диагностика должна быть доступна и тогда, когда
+   mcu сломан или отсутствует (иначе страница исчезает из меню).
+---
+ .../share/luci/menu.d/luci-app-perenio.json   |  5 ---
+ .../luci-static/resources/view/perenio/ota.js | 32 ++++++++++++++++---
+ 2 files changed, 28 insertions(+), 9 deletions(-)
+
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 4ca117b..3782029 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -44,11 +44,6 @@
+ 		"action": {
+ 			"type": "view",
+ 			"path": "perenio/diag"
+-		},
+-		"depends": {
+-			"fs": {
+-				"/usr/bin/mcu": "executable"
+-			}
+ 		}
+ 	}
+ }
+diff --git a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+index d2ce92f..b48874e 100644
+--- a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
++++ b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+@@ -3,6 +3,7 @@
+ 'require fs';
+ 'require ui';
+ 'require poll';
++'require luci';
+ 
+ /* Разбор вывода pejir-ota вида "key=value" */
+ function kv(out) {
+@@ -18,6 +19,22 @@ function kv(out) {
+ 	return o;
+ }
+ 
++/* Понятное объяснение вместо голого "Permission denied" от ubus.
++   Такой ответ означает, что у сессии LuCI нет права file.exec — то есть
++   на устройстве прошивка старше .17 (там ACL выдавал exec в секции read,
++   а LuCI 25.12 требует операцию write). */
++function explain(err) {
++	var m = (err && err.message) ? err.message : String(err || '');
++
++	if (/denied|not permitted|Access/i.test(m))
++		return _('Нет прав на запуск помощника обновления: в этой прошивке ACL ' +
++			'выдан в секции read, а LuCI 25.12 требует write. Значит, у вас ' +
++			'релиз старше .17 — обновитесь обычной страницей ' +
++			'«Система → Обновление прошивки».');
++
++	return m || _('Неизвестная ошибка');
++}
++
+ function setText(id, s) {
+ 	var el = document.getElementById(id);
+ 
+@@ -57,7 +74,9 @@ function watchUpdate() {
+ return view.extend({
+ 	load: function() {
+ 		return fs.exec('/usr/bin/pejir-ota', [ 'check' ])
+-			.catch(function() { return { code: 1, stdout: '', stderr: '' }; });
++			.catch(function(e) {
++				return { code: 1, stdout: '', stderr: explain(e) };
++			});
+ 	},
+ 
+ 	handleCheck: function(ev) {
+@@ -86,7 +105,7 @@ return view.extend({
+ 			if (b)
+ 				b.disabled = (d.available != 'yes');
+ 		}).catch(function(e) {
+-			setText('pejir-ota-status', e.message);
++			setText('pejir-ota-status', explain(e));
+ 		}).finally(function() {
+ 			btn.disabled = false;
+ 		});
+@@ -131,7 +150,9 @@ return view.extend({
+ 		var d = kv(res && res.stdout);
+ 		var failed = !res || res.code != 0;
+ 		var status = failed
+-			? _('Не удалось связаться с сервером релизов')
++			? ((res && res.stderr && res.stderr.trim())
++				? res.stderr.trim()
++				: _('Не удалось связаться с сервером релизов'))
+ 			: (d.available == 'yes' ? _('Доступно обновление') : _('Установленная версия актуальна'));
+ 		var btnCheck = E('button', {
+ 			'class': 'cbi-button cbi-button-action',
+@@ -174,7 +195,10 @@ return view.extend({
+ 				E('div', { 'class': 'cbi-value-description' },
+ 					_('There is no automatic update: the new firmware is downloaded and installed ' +
+ 					  'only when you press "Install update". The router reboots by itself when ' +
+-					  'the installation is finished.'))
++					  'the installation is finished.')),
++				E('div', { 'class': 'cbi-value-description' },
++					E('a', { 'href': L.env.cgi_base + '/admin/system/upgrade' },
++						_('Обычная страница обновления прошивки (работает всегда)')))
+ 			])
+ 		]);
+ 	}
