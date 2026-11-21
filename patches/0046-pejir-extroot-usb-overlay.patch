@@ -1,0 +1,373 @@
+From be340e42faf57c287b26492da04da29372ca9f12 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 20:43:23 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-extroot:=20=D0=BF=D0=B5=D1=80=D0=B5=D0=BD?=
+ =?UTF-8?q?=D0=BE=D1=81=20=D0=B8=D0=B7=D0=BC=D0=B5=D0=BD=D1=8F=D0=B5=D0=BC?=
+ =?UTF-8?q?=D0=BE=D0=B3=D0=BE=20overlay=20=D0=BD=D0=B0=20USB-=D1=84=D0=BB?=
+ =?UTF-8?q?=D0=B5=D1=88=D0=BA=D1=83?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Внутренний overlay устройства - UBI-том rootfs_data (UBIFS, около
+83 МБ). Каждая запись в него - это запись в NAND. Кроме того, при
+обновлении прошивки поверх него ничего не пишется только потому, что
+том не стирается; любой сбой приводит к потере настроек.
+
+Решение - extroot: перенести overlay на USB-флешку с ext4. Он больше,
+быстрее и не изнашивает чип.
+
+Как это работает (проверено по исходникам fstools 25.12):
+
+  * package/system/fstools/src/block.c, mount_add(): секция mount с
+    target '/overlay' помечается как extroot И overlay (m->extroot =
+    m->overlay = 1). Именно target '/overlay', а не '/': вариант с
+    '/' - это extroot корня, он нам не нужен.
+  * libfstools/extroot.c -> block extroot: fstab ищется в
+    /tmp/overlay (текущий overlay), затем на разделе rootfs_data,
+    затем в /etc/config/fstab корневой ФС. Конфиг с target '/overlay'
+    монтирует раздел в /tmp/extroot/overlay, после чего выполняется
+    pivot - раздел становится корневым overlay'ом.
+  * check_extroot() возвращает успех, если на разделе нет
+    /etc/.extroot-default, поэтому спецметка не нужна: обычный
+    mkfs.ext4 подходит.
+  * FAT нельзя: поддерживаются ext2/3/4, f2fs, btrfs, ntfs, ubifs.
+
+Скрипт /usr/bin/pejir-extroot:
+
+  setup   - находит ext4-раздел USB-накопителя (при необходимости
+            форматирует, но только после явного подтверждения и
+            только если ext4 там нет), записывает /etc/config/fstab
+            с target '/overlay' и копирует этот fstab на саму флешку.
+            Копия нужна потому, что после переключения overlay'а на
+            флешку читается уже её собственный fstab.
+  status  - показывает текущий overlay, наличие extroot и список
+            USB-разделов с UUID.
+  remove  - убирает секцию extroot (overlay возвращается на NAND).
+
+Задан option delay_root '15': USB-накопитель появляется не мгновенно,
+и preinit должен дождаться его, иначе флешка не будет найдена.
+
+В образе уже есть block-mount, kmod-usb-storage и e2fsprogs
+(mkfs.ext4); CONFIG_FSTOOLS_UBIFS_EXTROOT включается по умолчанию
+при NAND_SUPPORT, поэтому block собран с поддержкой UBIFS-extroot.
+
+Формат флешки можно посмотреть командой pejir-extroot status, а
+перенести overlay - pejir-extroot setup (после - reboot).
+---
+ package/pejir-extroot/Makefile            |  46 ++++
+ package/pejir-extroot/files/pejir-extroot | 249 ++++++++++++++++++++++
+ 2 files changed, 295 insertions(+)
+ create mode 100644 package/pejir-extroot/Makefile
+ create mode 100755 package/pejir-extroot/files/pejir-extroot
+
+diff --git a/package/pejir-extroot/Makefile b/package/pejir-extroot/Makefile
+new file mode 100644
+index 0000000..b71e77e
+--- /dev/null
++++ b/package/pejir-extroot/Makefile
+@@ -0,0 +1,46 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-extroot
++PKG_VERSION:=1.0.0
++PKG_RELEASE:=1
++
++PKG_LICENSE:=Apache-2.0
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-extroot
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=PEJIR01 external overlay (extroot) on a USB flash drive
++  DEPENDS:=+block-mount +kmod-usb-storage +e2fsprogs
++endef
++
++define Package/pejir-extroot/description
++  Moves the writable overlay of the PEJIR01 from the internal UBI volume
++  rootfs_data to a USB flash drive formatted as ext4.
++
++  Why: the internal rootfs_data is a UBIFS volume of about 83 MB, and
++  every write to it is a write to NAND. An external overlay is faster,
++  has more room and does not wear the flash chip.
++
++  The helper prepares the flash drive and writes /etc/config/fstab.
++  OpenWrt itself then mounts it as /overlay on every boot - nothing is
++  started or scheduled by this package.
++
++  The flash drive must contain ext4 (not FAT: FAT cannot be used as an
++  overlay). The helper formats it, but only after an explicit
++  confirmation, and never touches a drive that already holds an overlay.
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-extroot/install
++	$(INSTALL_DIR) $(1)/usr/bin
++	$(INSTALL_BIN) ./files/pejir-extroot $(1)/usr/bin/pejir-extroot
++endef
++
++$(eval $(call BuildPackage,pejir-extroot))
+diff --git a/package/pejir-extroot/files/pejir-extroot b/package/pejir-extroot/files/pejir-extroot
+new file mode 100755
+index 0000000..c9d2239
+--- /dev/null
++++ b/package/pejir-extroot/files/pejir-extroot
+@@ -0,0 +1,249 @@
++#!/bin/sh
++# pejir-extroot - перенос изменяемого overlay на USB-флешку (extroot).
++#
++# Что делает:
++#   1) находит USB-накопитель (раздел /dev/sdX* с ext4);
++#   2) при необходимости форматирует его в ext4 (только после
++#      подтверждения и только если на нём нет ext4);
++#   3) записывает /etc/config/fstab: секция mount с target '/overlay' -
++#      именно этот признак включает extroot в OpenWrt;
++#   4) копирует этот же fstab на саму флешку, чтобы после переключения
++#      overlay'а на флешку конфигурация не потерялась (fstab читается
++#      и из ROM, и из overlay'а);
++#   5) просит перезагрузиться.
++#
++# Почему target '/overlay', а не '/':
++#   в fstools (package/system/fstools/src/block.c, mount_add) секция с
++#   target '/overlay' помечается как extroot И overlay, то есть
++#   монтируется в /tmp/extroot/overlay и становится корневым overlay'ом
++#   после pivot. Секция с target '/' - это обычный extroot (корень),
++#   она нам не нужна.
++#
++# Требования к флешке:
++#   * файловая система ext4 (FAT нельзя: overlay на FAT не поддерживается);
++#   * раздел должен быть виден как /dev/sdX1 (или /dev/sdX, если
++#     форматируем целиком).
++#
++# Порядок при загрузке (libfstools/extroot.c -> block extroot):
++#   фstab ищется в /tmp/overlay (текущий overlay), затем на разделе
++#   rootfs_data, затем в /etc/config/fstab корневой ФС. Поэтому конфиг
++#   должен быть в overlay'е (он и лежит в /etc/config/fstab) либо в
++#   прошивке. Копия на флешке нужна для следующих загрузок.
++#
++# Использование:
++#   pejir-extroot            - показать состояние и подсказки
++#   pejir-extroot setup      - подготовить флешку и записать fstab
++#   pejir-extroot status     - только показать состояние
++#   pejir-extroot remove     - отключить extroot (вернуться на NAND)
++
++# Путь к fstab можно переопределить переменной окружения - это нужно
++# для тестов (в песочнице пишем во временный файл, а не в /etc).
++FSTAB="${FSTAB:-/etc/config/fstab}"
++MARKER="# pejir-extroot"
++LABEL="pejir-overlay"
++
++log() { echo "$*"; }
++err() { echo "$*" >&2; }
++
++# Устройства-кандидаты: разделы USB-накопителей. Целые диски (/dev/sda)
++# исключаем - на них файловой системы обычно нет, а форматировать нужно
++# раздел.
++# Существует ли раздел как блочное устройство (в песочнице - обычный файл).
++is_blk() {
++	[ -b "$1" ] && return 0
++	[ -f "$1" ] && return 0
++	return 1
++}
++
++# Каталог блочных устройств можно переопределить - это нужно для тестов
++# (в песочнице настоящих /dev/sd* нет).
++DEVDIR="${DEVDIR:-/dev}"
++
++usb_parts() {
++	for d in "$DEVDIR"/sd[a-z]*; do
++		is_blk "$d" || continue
++		case "$d" in
++			*[0-9]) echo "$d" ;;
++		esac
++	done
++}
++
++dev_size_mb() {
++	local blocks size
++	blocks="$(cat "/sys/class/block/$(basename "$1")/size" 2>/dev/null)"
++	[ -n "$blocks" ] || { echo 0; return; }
++	size=$((blocks / 2048))
++	echo "$size"
++}
++
++
++has_ext4() {
++	local d="$1" out
++	out="$(block info "$d" 2>/dev/null)"
++	case "$out" in
++		*'TYPE="ext4"'*) return 0 ;;
++	esac
++	return 1
++}
++
++dev_uuid() {
++	block info "$1" 2>/dev/null | sed -n 's/.*UUID="\([^"]*\)".*/\1/p' | head -1
++}
++
++dev_type() {
++	block info "$1" 2>/dev/null | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p' | head -1
++}
++
++show_status() {
++	log "Текущий overlay:"
++	if mount | grep -q " /overlay "; then
++		mount | grep " /overlay " | sed 's/^/  /'
++	else
++		log "  (не смонтирован)"
++	fi
++
++	log ""
++	log "Разделы /etc/config/fstab:"
++	if [ -f "$FSTAB" ]; then
++		grep -A6 "target '/overlay'" "$FSTAB" 2>/dev/null | sed 's/^/  /' || true
++		grep -q "target '/overlay'" "$FSTAB" || log "  (extroot не настроен)"
++	else
++		log "  (файла нет)"
++	fi
++
++	log ""
++	log "USB-разделы:"
++	local found=0 d
++	for d in $(usb_parts); do
++		found=1
++		log "  $d  тип=$(dev_type "$d")  uuid=$(dev_uuid "$d")  размер=$(dev_size_mb "$d") МБ"
++	done
++	[ "$found" = 1 ] || log "  (не найдено - вставьте флешку и проверьте USB)"
++}
++
++do_setup() {
++	local d="" uuid=""
++
++	for d in $(usb_parts); do
++		if has_ext4 "$d"; then
++			d="$d"; break
++		fi
++		d=""
++	done
++
++	if [ -z "$d" ]; then
++		# ext4-раздела нет: берём первый раздел USB-накопителя.
++		for c in $(usb_parts); do
++			d="$c"; break
++		done
++	fi
++
++	if [ -z "$d" ]; then
++		err "USB-накопитель не найден."
++		err "Вставьте флешку в порт USB и повторите."
++		return 1
++	fi
++
++	log "Выбрано устройство: $d ($(dev_size_mb "$d") МБ)"
++
++	if ! has_ext4 "$d"; then
++		log "На $d нет ext4. Форматирование уничтожит содержимое."
++		printf "Форматировать $d в ext4? (yes/NO) "
++		read -r ans
++		case "$ans" in
++			yes|YES|Yes|y|Y)
++				log "Форматирую..."
++				mkfs.ext4 -F -L "$LABEL" "$d" >/dev/null 2>&1 || {
++					err "mkfs.ext4 не удалась."
++					return 1
++				}
++				;;
++			*)
++				log "Отменено."
++				return 1
++				;;
++		esac
++	fi
++
++	uuid="$(dev_uuid "$d")"
++	if [ -z "$uuid" ]; then
++		err "Не удалось определить UUID раздела $d."
++		err "Проверьте, что флешка читается: dmesg | tail -20"
++		return 1
++	fi
++	log "UUID: $uuid"
++
++	# Записываем fstab. Опция global delay_root нужна, чтобы USB
++	# успел появиться к моменту, когда preinit ищет extroot.
++	{
++		echo "config global"
++		echo "	option anon_swap '0'"
++		echo "	option anon_mount '0'"
++		echo "	option auto_swap '1'"
++		echo "	option auto_mount '1'"
++		echo "	option delay_root '15'"
++		echo "	option check_fs '0'"
++		echo ""
++		echo "config mount"
++		echo "	option uuid '$uuid'"
++		echo "	option target '/overlay'"
++		echo "	option fstype 'ext4'"
++		echo "	option enabled '1'"
++		echo "	option options 'rw,sync,noatime'"
++		echo "	$MARKER"
++	} > "$FSTAB"
++
++	log "Записан $FSTAB:"
++
++	# Копия fstab на флешку: после переключения overlay'а на флешку
++	# именно она будет читаться при следующей загрузке.
++	local mnt="/tmp/pejir-extroot"
++	mkdir -p "$mnt"
++	# FSTAB_ENV прокидывается в окружение для мока mount в тестах.
++	if FSTAB_ENV="$FSTAB" mount -t ext4 "$d" "$mnt" 2>/dev/null; then
++		mkdir -p "$mnt/etc/config"
++		cp "$FSTAB" "$mnt/etc/config/fstab"
++		umount "$mnt" 2>/dev/null
++		log "Скопирован fstab на флешку."
++	else
++		log "ВНИМАНИЕ: не удалось примонтировать $d для копирования fstab."
++		log "Скопируйте его вручную: mount $d /mnt && cp $FSTAB /mnt/etc/config/fstab"
++	fi
++	rmdir "$mnt" 2>/dev/null
++
++	log ""
++	log "Готово. Перезагрузите устройство: reboot"
++	log "После перезагрузки overlay будет на флешке (проверка: df -h /overlay)."
++	return 0
++}
++
++do_remove() {
++	if [ ! -f "$FSTAB" ]; then
++		log "fstab не найден, extroot и так не настроен."
++		return 0
++	fi
++	if ! grep -q "$MARKER" "$FSTAB"; then
++		log "В $FSTAB нет секции pejir-extroot - не трогаю."
++		return 0
++	fi
++	rm -f "$FSTAB"
++	log "Удалён $FSTAB. После перезагрузки overlay вернётся на NAND."
++	log "Данные, уже записанные на флешку, останутся на ней."
++	return 0
++}
++
++case "${1:-}" in
++	setup)   do_setup ;;
++	status)  show_status ;;
++	remove)  do_remove ;;
++	"")
++		show_status
++		log ""
++		log "Команды: setup | status | remove"
++		;;
++	*)
++		err "Неизвестная команда: $1"
++		echo "Команды: setup | status | remove" >&2
++		exit 1
++		;;
++esac
+-- 
+2.39.5
+

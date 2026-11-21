@@ -263,6 +263,7 @@ CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_uartmuxd=y
 CONFIG_PACKAGE_perenio-mcu=y
 CONFIG_PACKAGE_block-mount=y
+CONFIG_PACKAGE_pejir-extroot=y
 CONFIG_PACKAGE_kmod-fs-ext4=y
 CONFIG_PACKAGE_kmod-usb-storage=y
 CONFIG_PACKAGE_kmod-usb-storage-uas=y
@@ -536,6 +537,26 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  переводы темы Argon (argon-config.ru.lmo): OK"
+
+        # Русский перевод наших страниц порта: luci-app-perenio.ru.lmo.
+        # Без него страницы батареи/SMS/заводских данных остаются
+        # английскими даже при русском языке интерфейса.
+        if ! echo "$ROOTFS_LIST" | grep -q 'squashfs-root/usr/lib/lua/luci/i18n/luci-app-perenio\.ru\.lmo'; then
+          ann error "build.sh: LuCI i18n" "В образе нет перевода страниц порта"
+          echo "ОШИБКА: нет luci-app-perenio.ru.lmo (переводы страниц порта)"
+          exit 1
+        fi
+        echo "  переводы страниц порта (luci-app-perenio.ru.lmo): OK"
+
+        # Скрипт переноса overlay на флешку (extroot). Без него в образе
+        # нет /usr/bin/pejir-extroot, и перенести overlay на USB-флешку
+        # штатными средствами нечем.
+        if ! echo "$ROOTFS_LIST" | grep -q 'squashfs-root/usr/bin/pejir-extroot'; then
+          ann error "build.sh: extroot" "В образе нет /usr/bin/pejir-extroot"
+          echo "ОШИБКА: пакет pejir-extroot не попал в образ"
+          exit 1
+        fi
+        echo "  скрипт extroot (/usr/bin/pejir-extroot): OK"
 
         # ACL страниц порта. В LuCI 25.12 fs.read/fs.exec проверяются по
         # scope "file" с указанием пути (в rpcd/plugins/file.c вызов

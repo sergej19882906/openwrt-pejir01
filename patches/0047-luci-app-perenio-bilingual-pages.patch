@@ -1,0 +1,663 @@
+From c19b8cce2cc8399f4702bffe23187d65608e9b96 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 20:48:13 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-perenio:=20=D1=81=D1=82=D1=80=D0=B0?=
+ =?UTF-8?q?=D0=BD=D0=B8=D1=86=D1=8B=20=D0=BF=D0=BE=D1=80=D1=82=D0=B0=20?=
+ =?UTF-8?q?=D1=81=D0=BB=D0=B5=D0=B4=D1=83=D1=8E=D1=82=20=D1=8F=D0=B7=D1=8B?=
+ =?UTF-8?q?=D0=BA=D1=83=20=D0=B8=D0=BD=D1=82=D0=B5=D1=80=D1=84=D0=B5=D0=B9?=
+ =?UTF-8?q?=D1=81=D0=B0?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Требование: интерфейс должен быть и русским, и английским, причём
+русским по умолчанию.
+
+Основной интерфейс LuCI этому уже соответствует: исходные строки
+английские, русские переводы лежат в *.ru.lmo, а в списке языков
+страницы System -> Administration всегда есть "en" (в system.js
+список дополняется объектом { en: 'English' }), плюс "auto".
+
+Но наши собственные страницы (батарея, SMS, заводские данные,
+диагностика) использовали русский текст как msgid:
+
+    _('Напряжение')
+
+При таком подходе _() ищет в каталоге строку "Напряжение", не находит
+и возвращает её как есть - то есть в английском режиме интерфейса эти
+страницы остаются русскими.
+
+Теперь msgid - английский исходный текст:
+
+    _('Voltage')
+
+а русский перевод живёт в po/ru/luci-app-perenio.po и собирается в
+/usr/lib/lua/luci/i18n/luci-app-perenio.ru.lmo.
+
+Каталог собирается штатным po2lmo: его ставит luci-base как
+host-инструмент, и он доступен в PATH при установке пакетов - тем же
+путём, что и в include/luci.mk для пакетов luci-i18n-*-ru. Зависимость
++luci-base в пакете уже была.
+
+Переведены 67 вызовов _() на четырёх страницах, включая
+многострочные конкатенации. Проверено, что в msgid не осталось
+кириллицы, что на каждый msgid есть перевод, что собранный .lmo
+содержит все отличающиеся переводы, и что ни один msgid не
+конфликтует с базовым каталогом LuCI (все .lmo сливаются в общий
+window.TR, поэтому одинаковый msgid с разным переводом сломал бы
+чужую страницу).
+
+Заодно поправлен детект "smsd запущен": прежняя проверка
+/running/i считала строку "not running" работающей, потому что
+"not running" содержит "running". Теперь ищем "running" в начале
+строки.
+---
+ package/luci-app-perenio/Makefile             |  11 +-
+ .../resources/view/perenio/battery.js         |  11 +-
+ .../resources/view/perenio/diag.js            |  10 +-
+ .../resources/view/perenio/idata.js           |  50 ++---
+ .../luci-static/resources/view/perenio/sms.js |  59 +++--
+ .../po/ru/luci-app-perenio.po                 | 211 ++++++++++++++++++
+ 6 files changed, 284 insertions(+), 68 deletions(-)
+ create mode 100644 package/luci-app-perenio/po/ru/luci-app-perenio.po
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index 52a0dd7..c01094a 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=luci-app-perenio
+ PKG_VERSION:=1.0.0
+-PKG_RELEASE:=5
++PKG_RELEASE:=6
+ 
+ PKG_LICENSE:=Apache-2.0
+ 
+@@ -53,6 +53,15 @@ define Package/luci-app-perenio/install
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/perenio-diag \
+ 		$(1)/usr/libexec/perenio-diag
++	# Русский перевод наших страниц. Исходные строки в JS - английские,
++	# поэтому в английском режиме интерфейса страницы не остаются
++	# русскими. Каталог .lmo собираем из po/ru штатным po2lmo (его
++	# ставит luci-base как host-инструмент, он доступен в PATH при
++	# установке пакетов - так же, как это делает include/luci.mk для
++	# пакетов luci-i18n-*-ru).
++	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
++	po2lmo ./po/ru/luci-app-perenio.po \
++		$(1)/usr/lib/lua/luci/i18n/luci-app-perenio.ru.lmo
+ endef
+ 
+ $(eval $(call BuildPackage,luci-app-perenio))
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+index ae5faff..18d7caa 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+@@ -27,28 +27,27 @@ function battSvg(level, charging, txt) {
+ return view.extend({
+ 	render: function() {
+ 		var body = E([
+-			E('h2', _('Батарея и питание (Perenio STM32)')),
++			E('h2', _('Battery and power (Perenio STM32)')),
+ 			E('div', { 'class': 'cbi-map' }, [
+ 				E('div', { 'class': 'cbi-section' }, [
+ 					E('div', { 'id': 'batt-widget',
+ 						'style': 'display:flex; align-items:center; gap:12px; padding:12px' }),
+ 					E('table', { 'class': 'table' }, [
+ 						E('tr', { 'class': 'tr' }, [
+-							E('td', { 'class': 'td', 'width': '33%' }, _('Напряжение')),
++							E('td', { 'class': 'td', 'width': '33%' }, _('Voltage')),
+ 							E('td', { 'class': 'td', 'id': 'batt-volt' }, '…')
+ 						]),
+ 						E('tr', { 'class': 'tr' }, [
+-							E('td', { 'class': 'td' }, _('Состояние системы')),
++							E('td', { 'class': 'td' }, _('System state')),
+ 							E('td', { 'class': 'td', 'id': 'batt-sys' }, '…')
+ 						]),
+ 						E('tr', { 'class': 'tr' }, [
+-							E('td', { 'class': 'td' }, _('Прошивка STM32')),
++							E('td', { 'class': 'td' }, _('STM32 firmware')),
+ 							E('td', { 'class': 'td', 'id': 'batt-ver' }, '…')
+ 						])
+ 					]),
+ 					E('div', { 'class': 'cbi-value-description' },
+-						_('Данные STM32 через mcud: mcu getvolt / getsys / getver. ' +
+-						  'События питания (pwroff/pr/paerr) видны в logread.'))
++						_('STM32 data via mcud: mcu getvolt / getsys / getver. Power events (pwroff/pr/paerr) are visible in logread.'))
+ 				])
+ 			])
+ 		]);
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+index 0b3e3b5..94a490c 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+@@ -22,20 +22,20 @@ return view.extend({
+ 		return fs.exec(DIAG, []).then(function(txt) {
+ 			return [ txt || '' ];
+ 		}).catch(function(e) {
+-			return [ _('Не удалось выполнить диагностику: ') + (e || '') ];
++			return [ _('Failed to run diagnostics: ') + (e || '') ];
+ 		});
+ 	},
+ 
+ 	render: function(data) {
+ 		return E('div', { 'class': 'cbi-section' }, [
+-			E('h2', _('Диагностика USB, LTE и батареи (PEJIR01)')),
+-			E('p', { 'class': 'cbi-value-description' }, _('Сводка состояния: USB-контроллер и подключённые устройства, модем, интерфейс LTE, службы STM32 и данные батареи. Скопируйте содержимое блока ниже.')),
++			E('h2', _('USB, LTE and battery diagnostics (PEJIR01)')),
++			E('p', { 'class': 'cbi-value-description' }, _('Status summary: USB controller and connected devices, modem, LTE interface, STM32 services and battery data. Copy the contents of the block below.')),
+ 			E('pre', { 'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:65vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
+-				(data && data[0]) ? data[0] : _('(пусто)')),
++				(data && data[0]) ? data[0] : _('(empty)')),
+ 			E('button', {
+ 				'class': 'cbi-button cbi-button-neutral',
+ 				'click': ui.createHandlerFn(this, function() { window.location.reload(); })
+-			}, _('Обновить'))
++			}, _('Refresh'))
+ 		]);
+ 	}
+ });
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
+index 5822378..f7b11d7 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
+@@ -36,18 +36,18 @@ function parseUci(txt) {
+ 
+ /* Понятные названия для известных опций idata */
+ var TITLES = {
+-	'ssid24_name': _('Имя Wi-Fi 2.4 ГГц'),
+-	'ssid24_pass': _('Пароль Wi-Fi 2.4 ГГц'),
+-	'ssid24_cc': _('Страна Wi-Fi 2.4 ГГц'),
+-	'ssid5_name': _('Имя Wi-Fi 5 ГГц'),
+-	'ssid5_pass': _('Пароль Wi-Fi 5 ГГц'),
+-	'ssid5_cc': _('Страна Wi-Fi 5 ГГц'),
+-	'admin_pass': _('Заводской пароль root'),
++	'ssid24_name': _('2.4 GHz Wi-Fi name'),
++	'ssid24_pass': _('2.4 GHz Wi-Fi password'),
++	'ssid24_cc': _('2.4 GHz Wi-Fi country'),
++	'ssid5_name': _('5 GHz Wi-Fi name'),
++	'ssid5_pass': _('5 GHz Wi-Fi password'),
++	'ssid5_cc': _('5 GHz Wi-Fi country'),
++	'admin_pass': _('Factory root password'),
+ 	'wps_pin': _('WPS PIN'),
+-	'mac': _('MAC-адрес'),
+-	'serial': _('Серийный номер'),
+-	'hardware': _('Аппаратная версия'),
+-	'fw_version': _('Версия стоковой прошивки')
++	'mac': _('MAC address'),
++	'serial': _('Serial number'),
++	'hardware': _('Hardware version'),
++	'fw_version': _('Stock firmware version')
+ };
+ 
+ function setText(id, s) {
+@@ -60,22 +60,20 @@ function setText(id, s) {
+ return view.extend({
+ 	render: function() {
+ 		var loadBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
+-				_('Загрузить из idata'));
++				_('Load from idata'));
+ 
+ 		loadBtn.addEventListener('click', L.bind(this.handleLoad, this));
+ 
+ 		var body = E([
+-			E('h2', {}, _('Заводские данные (Perenio)')),
++			E('h2', {}, _('Factory data (Perenio)')),
+ 			E('div', { 'class': 'cbi-map' }, [
+ 				E('div', { 'class': 'cbi-section' }, [
+ 					E('div', { 'class': 'cbi-section-descr' },
+-						_('Данные из заводского раздела idata: имя и пароль штатных Wi-Fi, ' +
+-						  'заводской пароль администратора, серийный номер. При первом включении ' +
+-						  'они уже применены к прошивке, здесь их можно посмотреть.'))
++						_('Data from the factory idata section: stock Wi-Fi names and passwords, the factory administrator password and the serial number. They are already applied to the firmware at first boot; they can be viewed here.'))
+ 				]),
+ 				E('div', { 'class': 'cbi-section' }, [
+ 					E('div', { 'id': 'idata-list' },
+-						E('em', {}, _('Загрузка…')))
++						E('em', {}, _('Loading…')))
+ 				]),
+ 				E('div', { 'class': 'cbi-section' }, [
+ 					E('div', { 'class': 'cbi-value' }, [
+@@ -104,7 +102,7 @@ return view.extend({
+ 
+ 			if (!items.length) {
+ 				box.innerHTML = '<em>' +
+-					_('Раздел idata не загружен. Нажмите «Загрузить из idata».') + '</em>';
++					_('The idata section is not loaded. Press "Load from idata".') + '</em>';
+ 				return;
+ 			}
+ 
+@@ -120,8 +118,8 @@ return view.extend({
+ 			box.innerHTML = '';
+ 			box.appendChild(E('table', { 'class': 'table' }, [
+ 				E('tr', { 'class': 'tr table-titles' }, [
+-					E('th', { 'class': 'th' }, _('Параметр')),
+-					E('th', { 'class': 'th' }, _('Значение'))
++					E('th', { 'class': 'th' }, _('Parameter')),
++					E('th', { 'class': 'th' }, _('Value'))
+ 				])
+ 			].concat(rows)));
+ 		}).catch(function(e) {
+@@ -136,26 +134,26 @@ return view.extend({
+ 			var denied = (e && e.name == 'PermissionError');
+ 			box.innerHTML = '<em>' +
+ 				(denied
+-					? _('Нет доступа к /etc/config/idata (проверьте ACL luci-app-perenio)')
+-					: _('Файл /etc/config/idata не найден')) +
++					? _('No access to /etc/config/idata (check the luci-app-perenio ACL)')
++					: _('File /etc/config/idata not found')) +
+ 				'</em>';
+ 		});
+ 	},
+ 
+ 	handleLoad: function(ev) {
+-		setText('idata-status', _('Читаем idata…'));
++		setText('idata-status', _('Reading idata…'));
+ 
+ 		return fs.exec(LOADER, [ '--force' ]).then(function(res) {
+ 			if (res.code != 0) {
+ 				setText('idata-status',
+-					_('Не удалось прочитать idata') + ': ' + (res.stderr || '').trim());
++					_('Failed to read idata') + ': ' + (res.stderr || '').trim());
+ 				return;
+ 			}
+ 
+-			setText('idata-status', _('Готово'));
++			setText('idata-status', _('Done'));
+ 			return this.refresh();
+ 		}).catch(function(err) {
+-			setText('idata-status', _('Ошибка: ') + (err && err.message ? err.message : err));
++			setText('idata-status', _('Error: ') + (err && err.message ? err.message : err));
+ 		});
+ 	},
+ 
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index e5019e8..ccee47a 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -51,10 +51,10 @@ function readStatus() {
+ 		   smsd работающим. Теперь ищем именно "running" в начале строки. */
+ 		var running = /^\s*running\b/im.test(out);
+ 
+-		setText('sms-svc', running ? _('работает (smsd)') : _('не запущен'));
+-		setText('sms-ports', ports.length ? ports.join(', ') : _('не найдено (ttyUSB/ttyACM)'));
+-		setText('sms-device', m ? m[1] : _('не задан в smsd.conf'));
+-		setText('sms-log', log || _('журнала нет'));
++		setText('sms-svc', running ? _('running (smsd)') : _('not running'));
++		setText('sms-ports', ports.length ? ports.join(', ') : _('not found (ttyUSB/ttyACM)'));
++		setText('sms-device', m ? m[1] : _('not set in smsd.conf'));
++		setText('sms-log', log || _('no log'));
+ 	});
+ }
+ 
+@@ -84,7 +84,7 @@ function readInbox() {
+ 			return;
+ 
+ 		if (!msgs.length) {
+-			box.innerHTML = '<em>' + _('Нет SMS') + '</em>';
++			box.innerHTML = '<em>' + _('No SMS') + '</em>';
+ 			return;
+ 		}
+ 
+@@ -100,9 +100,9 @@ function readInbox() {
+ 		box.innerHTML = '';
+ 		box.appendChild(E('table', { 'class': 'table' }, [
+ 			E('tr', { 'class': 'tr table-titles' }, [
+-				E('th', { 'class': 'th' }, _('Время')),
+-				E('th', { 'class': 'th' }, _('Отправитель')),
+-				E('th', { 'class': 'th' }, _('Текст'))
++				E('th', { 'class': 'th' }, _('Time')),
++				E('th', { 'class': 'th' }, _('Sender')),
++				E('th', { 'class': 'th' }, _('Text'))
+ 			])
+ 		].concat(rows)));
+ 	});
+@@ -111,7 +111,7 @@ function readInbox() {
+ return view.extend({
+ 	render: function() {
+ 		var sendBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
+-				_('Отправить'));
++				_('Send'));
+ 
+ 		sendBtn.addEventListener('click', L.bind(this.handleSend, this));
+ 
+@@ -120,55 +120,55 @@ return view.extend({
+ 			E('div', { 'class': 'cbi-map' }, [
+ 				E('div', { 'class': 'cbi-section' }, [
+ 					E('div', { 'class': 'cbi-section-descr' },
+-						_('SMS-модем GM510 в LTE-модуле. Требуется активный SIM и работающий smsd.'))
++						_('GM510 SMS modem in the LTE module. An active SIM and a running smsd are required.'))
+ 				]),
+ 				E('div', { 'class': 'cbi-section' }, [
+ 					E('div', { 'class': 'cbi-section-descr' },
+-						_('Состояние сервиса')),
++						_('Service state')),
+ 
+ 					E('div', { 'class': 'cbi-value' }, [
+ 						E('div', { 'class': 'cbi-value-title' }, _('smsd')),
+ 						E('div', { 'class': 'cbi-value-field' },
+-							E('span', { 'id': 'sms-svc' }, _('проверка…')))
++							E('span', { 'id': 'sms-svc' }, _('checking…')))
+ 					]),
+ 
+ 					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('AT-порты')),
++						E('div', { 'class': 'cbi-value-title' }, _('AT ports')),
+ 						E('div', { 'class': 'cbi-value-field' },
+-							E('span', { 'id': 'sms-ports' }, _('проверка…')))
++							E('span', { 'id': 'sms-ports' }, _('checking…')))
+ 					]),
+ 
+ 					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Порт в smsd.conf')),
++						E('div', { 'class': 'cbi-value-title' }, _('Port in smsd.conf')),
+ 						E('div', { 'class': 'cbi-value-field' },
+-							E('span', { 'id': 'sms-device' }, _('проверка…')))
++							E('span', { 'id': 'sms-device' }, _('checking…')))
+ 					]),
+ 
+ 					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Журнал smsd')),
++						E('div', { 'class': 'cbi-value-title' }, _('smsd log')),
+ 						E('div', { 'class': 'cbi-value-field' },
+ 							E('pre', { 'id': 'sms-log', 'style': 'white-space:pre-wrap' }, ''))
+ 					])
+ 				]),
+ 				E('div', { 'class': 'cbi-section' }, [
+ 					E('div', { 'class': 'cbi-section-descr' },
+-						_('Отправить SMS')),
++						_('Send SMS')),
+ 
+ 					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Номер')),
++						E('div', { 'class': 'cbi-value-title' }, _('Number')),
+ 						E('div', { 'class': 'cbi-value-field' },
+ 							E('input', { 'type': 'tel', 'id': 'sms-to',
+ 								'style': 'width:100%', 'placeholder': '+7 900 000-00-00' }))
+ 					]),
+ 
+ 					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Текст')),
++						E('div', { 'class': 'cbi-value-title' }, _('Text')),
+ 						E('div', { 'class': 'cbi-value-field' },
+ 							E('textarea', { 'id': 'sms-text', 'style': 'width:100%', 'rows': 3 }))
+ 					]),
+ 
+ 					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Результат')),
++						E('div', { 'class': 'cbi-value-title' }, _('Result')),
+ 						E('div', { 'class': 'cbi-value-field' },
+ 							E('span', { 'id': 'sms-send-status' }, ''))
+ 					]),
+@@ -180,14 +180,13 @@ return view.extend({
+ 				]),
+ 				E('div', { 'class': 'cbi-section' }, [
+ 					E('div', { 'class': 'cbi-section-descr' },
+-						_('Входящие SMS')),
++						_('Incoming SMS')),
+ 
+ 					E('div', { 'id': 'sms-list' },
+-						E('em', {}, _('Загрузка…'))),
++						E('em', {}, _('Loading…'))),
+ 
+ 					E('div', { 'class': 'cbi-value-description' },
+-						_('Файлы из /var/spool/sms/incoming (smstools3): первая строка — ' +
+-						  'отправитель, вторая — время, дальше — текст.'))
++						_('Files from /var/spool/sms/incoming (smstools3): the first line is the sender, the second is the time, the rest is the message.'))
+ 				])
+ 			])
+ 		]);
+@@ -204,27 +203,27 @@ return view.extend({
+ 		var txt = (document.getElementById('sms-text') || {}).value || '';
+ 
+ 		if (!num.trim()) {
+-			setText('sms-send-status', _('Укажите номер получателя'));
++			setText('sms-send-status', _('Enter the recipient number'));
+ 			return;
+ 		}
+ 
+-		setText('sms-send-status', _('Отправка…'));
++		setText('sms-send-status', _('Sending…'));
+ 
+ 		return fs.exec('/usr/bin/sendsms', [ num.trim(), txt ]).then(function(res) {
+ 			if (res.code != 0) {
+ 				setText('sms-send-status',
+-					_('Не отправлено') + ': ' + (res.stderr || '').trim());
++					_('Not sent') + ': ' + (res.stderr || '').trim());
+ 				return;
+ 			}
+ 
+ 			setText('sms-send-status',
+-				_('Поставлено в очередь отправки') + ' (' + num.trim() + ')');
++				_('Queued for sending') + ' (' + num.trim() + ')');
+ 			var el = document.getElementById('sms-text');
+ 
+ 			if (el)
+ 				el.value = '';
+ 		}).catch(function(err) {
+-			setText('sms-send-status', _('Ошибка: ') + (err && err.message ? err.message : err));
++			setText('sms-send-status', _('Error: ') + (err && err.message ? err.message : err));
+ 		});
+ 	},
+ 
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+new file mode 100644
+index 0000000..4506fa7
+--- /dev/null
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -0,0 +1,211 @@
++# Russian translation for the PEJIR01 port pages (luci-app-perenio).
++#
++# The source strings are English; this file provides the Russian
++# version, so the port pages follow the interface language.
++#
++msgid ""
++msgstr ""
++"Content-Type: text/plain; charset=UTF-8\n"
++"Language: ru\n"
++"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
++
++msgid "Battery and power (Perenio STM32)"
++msgstr "Батарея и питание (Perenio STM32)"
++
++msgid "Voltage"
++msgstr "Напряжение"
++
++msgid "System state"
++msgstr "Состояние системы"
++
++msgid "STM32 firmware"
++msgstr "Прошивка STM32"
++
++msgid "STM32 data via mcud: mcu getvolt / getsys / getver. Power events "
++"(pwroff/pr/paerr) are visible in logread."
++msgstr "Данные STM32 через mcud: mcu getvolt / getsys / getver. События "
++"питания (pwroff/pr/paerr) видны в logread."
++
++msgid "Failed to run diagnostics: "
++msgstr "Не удалось выполнить диагностику: "
++
++msgid "USB, LTE and battery diagnostics (PEJIR01)"
++msgstr "Диагностика USB, LTE и батареи (PEJIR01)"
++
++msgid "Status summary: USB controller and connected devices, modem, LTE "
++"interface, STM32 services and battery data. Copy the contents of the "
++"block below."
++msgstr "Сводка состояния: USB-контроллер и подключённые устройства, модем, "
++"интерфейс LTE, службы STM32 и данные батареи. Скопируйте содержимое "
++"блока ниже."
++
++msgid "(empty)"
++msgstr "(пусто)"
++
++msgid "Refresh"
++msgstr "Обновить"
++
++msgid "2.4 GHz Wi-Fi name"
++msgstr "Имя Wi-Fi 2.4 ГГц"
++
++msgid "2.4 GHz Wi-Fi password"
++msgstr "Пароль Wi-Fi 2.4 ГГц"
++
++msgid "2.4 GHz Wi-Fi country"
++msgstr "Страна Wi-Fi 2.4 ГГц"
++
++msgid "5 GHz Wi-Fi name"
++msgstr "Имя Wi-Fi 5 ГГц"
++
++msgid "5 GHz Wi-Fi password"
++msgstr "Пароль Wi-Fi 5 ГГц"
++
++msgid "5 GHz Wi-Fi country"
++msgstr "Страна Wi-Fi 5 ГГц"
++
++msgid "Factory root password"
++msgstr "Заводской пароль root"
++
++msgid "WPS PIN"
++msgstr "WPS PIN"
++
++msgid "MAC address"
++msgstr "MAC-адрес"
++
++msgid "Serial number"
++msgstr "Серийный номер"
++
++msgid "Hardware version"
++msgstr "Аппаратная версия"
++
++msgid "Stock firmware version"
++msgstr "Версия стоковой прошивки"
++
++msgid "Load from idata"
++msgstr "Загрузить из idata"
++
++msgid "Factory data (Perenio)"
++msgstr "Заводские данные (Perenio)"
++
++msgid "Data from the factory idata section: stock Wi-Fi names and "
++"passwords, the factory administrator password and the serial number. "
++"They are already applied to the firmware at first boot; they can be "
++"viewed here."
++msgstr "Данные из заводского раздела idata: имя и пароль штатных Wi-Fi, "
++"заводской пароль администратора, серийный номер. При первом "
++"включении они уже применены к прошивке, здесь их можно посмотреть."
++
++msgid "Loading…"
++msgstr "Загрузка…"
++
++msgid "The idata section is not loaded. Press \"Load from idata\"."
++msgstr "Раздел idata не загружен. Нажмите «Загрузить из idata»."
++
++msgid "Parameter"
++msgstr "Параметр"
++
++msgid "Value"
++msgstr "Значение"
++
++msgid "No access to /etc/config/idata (check the luci-app-perenio ACL)"
++msgstr "Нет доступа к /etc/config/idata (проверьте ACL luci-app-perenio)"
++
++msgid "File /etc/config/idata not found"
++msgstr "Файл /etc/config/idata не найден"
++
++msgid "Reading idata…"
++msgstr "Читаем idata…"
++
++msgid "Failed to read idata"
++msgstr "Не удалось прочитать idata"
++
++msgid "Done"
++msgstr "Готово"
++
++msgid "Error: "
++msgstr "Ошибка: "
++
++msgid "running (smsd)"
++msgstr "работает (smsd)"
++
++msgid "not running"
++msgstr "не запущен"
++
++msgid "not found (ttyUSB/ttyACM)"
++msgstr "не найдено (ttyUSB/ttyACM)"
++
++msgid "not set in smsd.conf"
++msgstr "не задан в smsd.conf"
++
++msgid "no log"
++msgstr "журнала нет"
++
++msgid "No SMS"
++msgstr "Нет SMS"
++
++msgid "Time"
++msgstr "Время"
++
++msgid "Sender"
++msgstr "Отправитель"
++
++msgid "Text"
++msgstr "Текст"
++
++msgid "Send"
++msgstr "Отправить"
++
++msgid "SMS (GM510)"
++msgstr "SMS (GM510)"
++
++msgid "GM510 SMS modem in the LTE module. An active SIM and a running smsd "
++"are required."
++msgstr "SMS-модем GM510 в LTE-модуле. Требуется активный SIM и работающий "
++"smsd."
++
++msgid "Service state"
++msgstr "Состояние сервиса"
++
++msgid "smsd"
++msgstr "smsd"
++
++msgid "checking…"
++msgstr "проверка…"
++
++msgid "AT ports"
++msgstr "AT-порты"
++
++msgid "Port in smsd.conf"
++msgstr "Порт в smsd.conf"
++
++msgid "smsd log"
++msgstr "Журнал smsd"
++
++msgid "Send SMS"
++msgstr "Отправить SMS"
++
++msgid "Number"
++msgstr "Номер"
++
++msgid "Result"
++msgstr "Результат"
++
++msgid "Incoming SMS"
++msgstr "Входящие SMS"
++
++msgid "Files from /var/spool/sms/incoming (smstools3): the first line is "
++"the sender, the second is the time, the rest is the message."
++msgstr "Файлы из /var/spool/sms/incoming (smstools3): первая строка — "
++"отправитель, вторая — время, дальше — текст."
++
++msgid "Enter the recipient number"
++msgstr "Укажите номер получателя"
++
++msgid "Sending…"
++msgstr "Отправка…"
++
++msgid "Not sent"
++msgstr "Не отправлено"
++
++msgid "Queued for sending"
++msgstr "Поставлено в очередь отправки"
+-- 
+2.39.5
+
