@@ -14,9 +14,13 @@
 
 set -u
 
-LTE="${LTE:-/workspace/ow-test/package/pejir-lte-base/root/etc/init.d/47-pejir-lte}"
-SMS="${SMS:-/workspace/ow-test/package/pejir-sms/root/etc/init.d/40-pejir-sms}"
-MDMAT="${MDMAT:-/workspace/ow-test/package/pejir-lte-base/root/usr/bin/mdm-at}"
+# Корень дерева OpenWrt с применёнными патчами: в CI это $OW_TEST
+# (переменная выставляется workflow), локально - рабочее дерево.
+# Без этого тест искал бы файлы по жёстко зашитому пути и падал в CI.
+OW="${OW_TEST:-${OPENWRT_TREE:-/workspace/ow-test}}"
+LTE="${LTE:-$OW/package/pejir-lte-base/root/etc/init.d/47-pejir-lte}"
+SMS="${SMS:-$OW/package/pejir-sms/root/etc/init.d/40-pejir-sms}"
+MDMAT="${MDMAT:-$OW/package/pejir-lte-base/root/usr/bin/mdm-at}"
 
 FAILED=0
 ok()   { echo "OK: $1"; }
