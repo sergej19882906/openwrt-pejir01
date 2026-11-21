@@ -1,0 +1,106 @@
+From 8c7ad2892ea2cfa5a1cb26ba89bd00c4bcade400 Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Sat, 21 Nov 2026 11:17:03 +0000
+Subject: [PATCH] =?UTF-8?q?platform.sh:=20fw=5Fenv.config=20=D0=B8=20?=
+ =?UTF-8?q?=D0=B2=D1=8B=D1=81=D1=82=D0=B0=D0=B2=D0=BB=D0=B5=D0=BD=D0=B8?=
+ =?UTF-8?q?=D0=B5=20imgidx=20=D0=BF=D0=BE=D1=81=D0=BB=D0=B5=20=D0=BE=D0=B1?=
+ =?UTF-8?q?=D0=BD=D0=BE=D0=B2=D0=BB=D0=B5=D0=BD=D0=B8=D1=8F?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+* Окружение загрузчика лежит в разделе "Config" (mtd1), а не в "Bootloader"
+  (mtd0, там только значения по умолчанию). Без /etc/fw_env.config на
+  устройстве fw_printenv/fw_setenv не работают. Добавляем uci-defaults с
+  проверенным содержимым: /dev/mtd1 0x0 0x1000 (размер области подобран
+  опытным путём — с завышенным CRC не сходится).
+* Загрузчик сам переключает слот после успешной загрузки (imgidx), поэтому
+  после обновления выставляем ему тот слот, в котором теперь лежит наше
+  ядро, — иначе после перезагрузки поднимется старое ядро из другого слота.
+---
+ package/luci-app-perenio/Makefile             |  2 ++
+ .../root/etc/uci-defaults/50-perenio-fwenv    | 14 ++++++++++++++
+ .../mt7621/base-files/lib/upgrade/platform.sh | 19 +++++++++++++++++++
+ 3 files changed, 35 insertions(+)
+ create mode 100644 package/luci-app-perenio/root/etc/uci-defaults/50-perenio-fwenv
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index f4d64e4..1ec4c06 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -33,6 +33,8 @@ define Package/luci-app-perenio/install
+ 		$(1)/etc/uci-defaults/50-perenio-ru
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-wifi \
+ 		$(1)/etc/uci-defaults/50-perenio-wifi
++	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-fwenv \
++		$(1)/etc/uci-defaults/50-perenio-fwenv
+ 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+ 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-perenio.json \
+ 		$(1)/usr/share/luci/menu.d/luci-app-perenio.json
+diff --git a/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-fwenv b/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-fwenv
+new file mode 100644
+index 0000000..0d10b8a
+--- /dev/null
++++ b/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-fwenv
+@@ -0,0 +1,14 @@
++#!/bin/sh
++# Окружение загрузчика PEJIR01 лежит в разделе "Config" (mtd1), а не в
++# "Bootloader" (mtd0 — там только значения по умолчанию). Без этого файла
++# fw_printenv/fw_setenv на устройстве не работают, а обновление не может
++# переключить активный слот.
++#
++# Размер области 0x1000 подобран опытным путём: с ним CRC окружения
++# сходится ("Bad CRC" возникает при завышенном размере, т.к. CRC считается
++# по всей области).
++cat > /etc/fw_env.config <<EOF
++/dev/mtd1 0x0 0x1000
++EOF
++
++exit 0
+diff --git a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+index 8b71fcf..6c1b8a1 100644
+--- a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+@@ -103,6 +103,7 @@ perenio_do_upgrade() {
+ 	esac
+ 
+ 	kok=0
++	written=""
+ 	for part in $kernel_slots; do
+ 		idx="$(find_mtd_index "$part")"
+ 		[ -n "$idx" ] || continue
+@@ -110,6 +111,7 @@ perenio_do_upgrade() {
+ 		if $cmd < "$tar_file" | tar xOf - "$board_dir/kernel" | \
+ 			mtd write - "/dev/mtd$idx"; then
+ 			kok=$((kok + 1))
++			written="$written $part"
+ 			continue
+ 		fi
+ 		# Раздел может быть закрыт read-only — снимаем флаг и пробуем
+@@ -126,6 +128,23 @@ perenio_do_upgrade() {
+ 	fi
+ 	echo "Perenio: ядро записано в $kok слот(ов)"
+ 
++	# Загрузчик сам переключает слот после загрузки (imgidx), поэтому
++	# выставляем ему тот слот, в котором теперь лежит наше ядро: иначе
++	# после перезагрузки поднимется старое ядро из другого слота.
++	target_part=""
++	case "$imgidx" in
++		0) target_part="kernel0" ;;
++		*) target_part="kernel1" ;;
++	esac
++	case " $written " in
++		*" $target_part "*) ;;
++		*) target_part="$(echo $written | awk '{print $NF}')" ;;
++	esac
++	case "$target_part" in
++		kernel0) fw_setenv imgidx 0 2>/dev/null && echo "imgidx=0 (kernel0)" ;;
++		kernel1) fw_setenv imgidx 1 2>/dev/null && echo "imgidx=1 (kernel1)" ;;
++	esac
++
+ 	# Ядро кладём и в UBI-том "kernel" — на этом устройстве загрузчик
+ 	# его не читает (он берёт ядро из MTD kernel0/kernel1), но при смене
+ 	# загрузчика на OpenWrt-овский том окажется валидным.
+-- 
+2.39.5
+
