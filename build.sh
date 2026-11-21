@@ -390,6 +390,21 @@ if [ -n "$SU" ]; then
       OUT="$BINDIR/$(basename "$SU" -squashfs-sysupgrade.bin)-rootfs.squashfs"
       if cp "$R" "$OUT" 2>/dev/null; then
         echo "  rootfs для проверки: $OUT"
+
+        # Размер rootfs не должен превышать размер тома UBI "rootfs" на
+        # устройстве (23 998 464 байта). Именно из-за нехватки места OTA
+        # в релиз .25 не мог записать rootfs и обрывался на "Permission
+        # denied"/нехватке места. Сборка обязана падать здесь, а не
+        # выпускать образ, который на устройстве не влезает.
+        ROOTFS_MAX=23998464
+        RZ="$(stat -c%s "$R" 2>/dev/null || echo 0)"
+        if [ "$RZ" -gt "$ROOTFS_MAX" ]; then
+          ann error "build.sh: rootfs size" "rootfs $RZ байт больше тома UBI $ROOTFS_MAX байт"
+          echo "ОШИБКА: rootfs ($RZ байт) не влезает в том UBI rootfs ($ROOTFS_MAX байт)"
+          echo "ОШИБКА: OTA на устройстве запишет rootfs не полностью"
+          exit 1
+        fi
+        echo "  размер rootfs: $RZ байт (предел тома UBI $ROOTFS_MAX) - OK"
       fi
 
       # Проверяем, что OTA-модуль действительно попал в образ.
@@ -397,6 +412,28 @@ if [ -n "$SU" ]; then
       # поэтому код возврата здесь всегда 0.
       if command -v unsquashfs >/dev/null 2>&1; then
         ROOTFS_LIST="$(unsquashfs -l "$R" 2>/dev/null || true)"
+
+        # Пакеты, которые мы намеренно убрали из образа. Если они
+        # вернутся (зависимость от другого пакета, забытый CONFIG), то
+        # либо rootfs перестанет влезать в том UBI, либо появится
+        # нерабочее меню в веб-интерфейсе.
+        # Проверка по списку файлов - unsquashfs -l его отдаёт.
+        ABSENT_MISSING=""
+        for f in usr/bin/sing-box usr/sbin/sing-box \
+                 usr/bin/lxc-start usr/bin/lxc-create \
+                 usr/lib/liblxc.so.1.9.0 \
+                 usr/share/luci/menu.d/luci-app-lxc.json \
+                 etc/init.d/cgroup2; do
+          if echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f"; then
+            ABSENT_MISSING="$ABSENT_MISSING $f"
+          fi
+        done
+        if [ -n "$ABSENT_MISSING" ]; then
+          ann error "build.sh: extra packages" "в образе есть лишние пакеты:$ABSENT_MISSING"
+          echo "ОШИБКА: в образе есть пакеты, которые убраны намеренно:$ABSENT_MISSING"
+          exit 1
+        fi
+        echo "  sing-box и LXC в образе отсутствуют - OK"
         OTA_MISSING=""
         for f in usr/bin/pejir-ota usr/lib/pejir/version etc/config/pejir_ota \
                  www/luci-static/resources/view/perenio/ota.js \
