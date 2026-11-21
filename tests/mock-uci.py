@@ -66,9 +66,20 @@ def dump(data, prefix, only=None):
 def main():
     argv = sys.argv[1:]
     quiet = False
-    if argv and argv[0] == "-q":
-        quiet = True
-        argv = argv[1:]
+    confdir = STATE
+    # Поддержка "-c <dir>" — каталог конфигов (в реальном uci это
+    # "/etc/config" по умолчанию, см. uci --help).
+    while argv and argv[0].startswith("-"):
+        if argv[0] == "-q":
+            quiet = True
+            argv = argv[1:]
+        elif argv[0] == "-c":
+            if len(argv) < 2:
+                return 1
+            confdir = argv[1]
+            argv = argv[2:]
+        else:
+            argv = argv[1:]
     if not argv:
         return 1
     cmd = argv[0]
@@ -82,10 +93,31 @@ def main():
     else:
         pkg = args[0].split(".")[0] if args else ""
 
-    path = {"wireless": CFG, "network": NET}.get(pkg)
+    path = {"wireless": os.path.join(confdir, "wireless"),
+            "network": os.path.join(confdir, "network")}.get(pkg)
     if path is None:
         sys.stderr.write("uci: unknown package %s\n" % pkg)
         return 1
+
+    # ВАЖНО: если файла пакета нет, реальный uci отвечает "Entry not
+    # found" на ЛЮБУЮ операцию с этим пакетом (get/set/show/commit) —
+    # создать пакет из команд uci нельзя, файл надо создать руками.
+    # Проверено на uci 25.12:
+    #   $ uci set wireless.radio0=wifi-device   -> "Entry not found", exit 1
+    #   $ uci add wireless wifi-device          -> "Entry not found", exit 3
+    #   $ uci show wireless                     -> "Entry not found", exit 1
+    if not os.path.exists(path):
+        if cmd == "commit":
+            sys.stderr.write("uci: Entry not found\n")
+            return 1
+        if cmd == "get":
+            return 1
+        if cmd == "show":
+            return 1
+        if cmd == "set":
+            sys.stderr.write("uci: Entry not found\n")
+            return 1
+
     data = load(path)
 
     if cmd == "get":
@@ -111,15 +143,20 @@ def main():
             name, val = key.split("=", 1)
             parts = name.split(".")
             if len(parts) >= 3:
-                # установка опции: pkg.section.option=value
+                # Установка опции: pkg.section.option=value.
+                # ВАЖНО: реальный uci отвечает "Invalid argument" (exit 1),
+                # если такой секции нет — опцию нельзя создать "из ниоткуда".
+                # Проверено на uci 25.12.
                 sect, opt = parts[1], parts[2]
                 if sect not in data:
-                    data[sect] = {"type": "wifi-iface", "options": {}, "order": []}
+                    sys.stderr.write("uci: Invalid argument\n")
+                    return 1
                 if opt not in data[sect]["options"]:
                     data[sect]["order"].append(opt)
                 data[sect]["options"][opt] = val
             else:
-                # установка типа секции: pkg.section=type
+                # Установка типа секции: pkg.section=type. Так секция
+                # СОЗДАЁТСЯ (если файл пакета существует).
                 sect = parts[1]
                 if sect not in data:
                     data[sect] = {"type": val, "options": {}, "order": []}
@@ -130,7 +167,8 @@ def main():
             sect, opt = parts[1], parts[2]
             val = args[1] if len(args) > 1 else ""
             if sect not in data:
-                data[sect] = {"type": "wifi-iface", "options": {}, "order": []}
+                sys.stderr.write("uci: Invalid argument\n")
+                return 1
             if opt not in data[sect]["options"]:
                 data[sect]["order"].append(opt)
             data[sect]["options"][opt] = val

@@ -28,6 +28,10 @@ check() { # $1=описание $2=ожидание $3=факт
 setup() {
 	_state="$1"
 	_rootport="$2"
+	# Скрипт работает через "uci -c <каталог>": в песочнице это
+	# каталог состояния, на устройстве — /etc/config.
+	PEJIR_UCI_CONFDIR="$_state"
+	export PEJIR_UCI_CONFDIR
 	_mk_sysfs "$_state" "$_rootport"
 	_mk_uci "$_state"
 	_mk_script "$_state"

@@ -1,0 +1,116 @@
+From cc51c59b6315d65eb3528b0e97fd3251d08e78c1 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 19:42:48 +0000
+Subject: [PATCH] =?UTF-8?q?wifi-config:=20=D0=BA=D0=BE=D1=80=D1=80=D0=B5?=
+ =?UTF-8?q?=D0=BA=D1=82=D0=BD=D0=B0=D1=8F=20=D1=80=D0=B0=D0=B1=D0=BE=D1=82?=
+ =?UTF-8?q?=D0=B0=20=D1=81=20uci=20=D0=BF=D1=80=D0=B8=20=D0=BE=D1=82=D1=81?=
+ =?UTF-8?q?=D1=83=D1=82=D1=81=D1=82=D0=B2=D0=B8=D0=B8=20=D1=84=D0=B0=D0=B9?=
+ =?UTF-8?q?=D0=BB=D0=B0=20wireless?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Обнаружено при проверке на настоящем бинарнике uci 25.12 (собран из
+фида) — мок uci в тестах эти случаи моделировал неверно.
+
+1) uci set на пакет, файла которого нет, отвечает "Entry not found"
+   (exit 1). Файла /etc/config/wireless на устройстве нет: /sbin/wifi
+   config его создаёт, но только при наличии /etc/board.json, а в нашем
+   образе board.json отсутствует. Без явного создания файла любой
+   "uci set wireless.*" отвечал бы ошибкой, и Wi-Fi не поднялся бы.
+   Создаём файл заранее — так же поступает штатный "wifi config"
+   (touch /etc/config/wireless).
+
+2) uci set pkg.section.option=value для НЕСУЩЕСТВУЮЩЕЙ секции отвечает
+   "Invalid argument" (exit 1) — опцию нельзя создать "из ниоткуда".
+   Секцию надо создавать как "uci set pkg.section=<type>". Раньше для
+   wifi-device этого не делалось.
+
+3) Тип секции читается как "uci get pkg.section" (без ".type").
+   Опция "type" у wifi-device равна "mac80211", а тип самой секции —
+   "wifi-device". Прежняя проверка "uci get wireless.$r0.type" никогда
+   не была истинной, то есть секция создавалась лишний раз.
+
+4) Скрипт теперь работает через "uci -c <каталог>" (каталог по
+   умолчанию /etc/config, переопределяется переменной окружения) — так
+   его можно проверять в песочнице, не трогая реальный /etc/config.
+
+Модель uci в tests/mock-uci.py приведена в соответствие с настоящим
+поведением: "Entry not found" для отсутствующего файла пакета и
+"Invalid argument" для установки опции в несуществующую секцию.
+Прежняя модель молча создавала секции и тем маскировала эти ошибки.
+---
+ .../root/usr/share/pejir/wifi-config.sh       | 47 +++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+
+diff --git a/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh b/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh
+index f321ac5..2be7bf1 100644
+--- a/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh
++++ b/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh
+@@ -121,9 +121,42 @@ pejir_wifi_device_by_pci_addr() {
+ 		}'
+ }
+ 
++# Каталог конфигов UCI. По умолчанию /etc/config; переопределяется
++# переменной окружения — нужно для проверок в песочнице.
++pejir_uci_confdir() {
++	echo "${PEJIR_UCI_CONFDIR:-/etc/config}"
++}
++
++# Обёртка над uci: всегда с указанием каталога конфигов ("-c"), чтобы
++# скрипт работал и на устройстве, и в песочнице с подменённым путём.
++# Порядок опций проверен на uci 25.12: "uci -c <dir> -q <команда>".
++uci() {
++	command uci -c "$(pejir_uci_confdir)" "$@"
++}
++
++# Создаёт файл пакета wireless, если его нет. Без этого файла uci
++# отвечает "Entry not found" на любую операцию с пакетом wireless.
++pejir_wifi_ensure_config() {
++	local f
++	f="$(pejir_uci_confdir)/wireless"
++	[ -f "$f" ] && return 0
++	mkdir -p "$(pejir_uci_confdir)" 2>/dev/null
++	: > "$f" || return 1
++	chmod 600 "$f" 2>/dev/null
++	return 0
++}
++
+ pejir_wifi_apply() {
+ 	local path2g path5g addr2g addr5g r0 r1 i0 i1 ssid0 ssid1 key0 key1 enc0 enc1
+ 
++	# Файла /etc/config/wireless на устройстве может не быть: тогда и
++	# "uci show wireless", и "uci set" отвечают ошибкой ("Entry not
++	# found") — создать пакет командами uci нельзя, нужен сам файл.
++	# Создаём его заранее, как это делает штатный "wifi config"
++	# (touch /etc/config/wireless). Путь берём из UCI-каталога, чтобы
++	# скрипт можно было проверять в песочнице.
++	pejir_wifi_ensure_config
++
+ 	# --- находим радио по PCI device ID ---------------------------------
+ 	path2g="$(pejir_wifi_path_by_pci_id "$PEJIR_WIFI_PCI_ID_2G")" \
+ 		|| path2g="$PEJIR_WIFI_PATH_2G"
+@@ -149,6 +182,20 @@ pejir_wifi_apply() {
+ 	[ -n "$r1" ] || r1='radio1'
+ 
+ 	# --- создаём/обновляем wifi-device ----------------------------------
++	# Секцию нужно СОЗДАТЬ через "uci set wireless.X=wifi-device": установка
++	# опции в несуществующую секцию даёт "Invalid argument" (проверено на
++	# uci 25.12). И файла /etc/config/wireless может не быть вовсе (на
++	# устройстве его нет) — тогда "uci set" отвечает "Entry not found",
++	# поэтому файл создаём заранее (см. pejir_wifi_ensure_config).
++
++	# Тип секции читается как "uci get wireless.<sect>" — без ".type":
++	# опция "type" у wifi-device равна "mac80211", а тип самой секции —
++	# "wifi-device". Проверено на uci 25.12.
++	[ "$(uci -q get wireless.$r0)" = "wifi-device" ] || \
++		uci set wireless.$r0=wifi-device
++	[ "$(uci -q get wireless.$r1)" = "wifi-device" ] || \
++		uci set wireless.$r1=wifi-device
++
+ 	# path пишем только если он отличается от вычисленного: у уже
+ 	# настроенного устройства пользователь мог править путь руками.
+ 	[ "$(uci -q get wireless.$r0.path)" = "$path2g" ] || \
+-- 
+2.39.5
+
