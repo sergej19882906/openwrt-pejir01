@@ -1,69 +1,83 @@
-# LXC-контейнеры на PEJIR01
+# LXC-контейнеры на PEJIR01 — не поддерживаются
 
-В образ включён стек **LXC 7.0** (тот же механизм, что вендор Perenio использует
-для своих приложений в стоке — «LXC Execution Environment»). Контейнеры живут
-на extroot (`/srv/lxc`), cgroup2 монтируется автоматически (init-скрипт
-`cgroup2` из пакета `pejir-lxc-base`).
+> **Статус: LXC убран из образа (патч 0049, начиная с релиза `.28`).**
+> Документ остался, чтобы объяснить, почему пункта меню «LXC Container mgr»
+> в веб-интерфейсе больше нет.
 
-## Что в образе
+## Почему убрали
+
+Две независимые причины, каждая достаточна сама по себе.
+
+### 1. Нет готовых образов под нашу архитектуру
+
+PEJIR01 — это MediaTek MT7621, **MIPS 32-bit little-endian** (`mipsel`; в ELF
+готового образа `e_machine=8`, class 32-bit, endianness LE).
+
+В официальном репозитории образов `images.linuxcontainers.org` есть сборки
+только для пяти архитектур:
+
+```
+amd64  arm64  armhf  loong64  riscv64
+```
+
+Сборок под `mipsel` нет вообще — ни для Alpine, ни для Debian/Ubuntu.
+
+LuCI определяет целевую архитектуру через `uname -m` и фильтрует по ней
+индекс образов (`lxc_get_download_target()` в `ucode/controller/lxc.uc`).
+Для `mipsel` фильтр оставляет пустой список, и страница выдаёт:
+
+> There are no templates for your architecture available.
+> Please select another containers URL.
+
+Сменить «containers URL» не помогает: на зеркалах LXC образов под MIPS нет.
+
+### 2. Не хватит места
+
+Контроллер LuCI требует свободного места **≥100 000 КБ (~98 МБ)** одновременно
+в каталоге контейнеров и в `/tmp`:
+
+```ucode
+let min_space = int(ctx.get('lxc', 'lxc', 'min_space')) || 100000;
+let min_temp  = int(ctx.get('lxc', 'lxc', 'min_temp'))  || 100000;
+```
+
+У устройства 128 МБ RAM и 16 МБ NAND. Даже при переносе overlay на USB-флешку
+через extroot контейнер с полноценной ОС туда не помещается, а `/tmp` — это
+RAM.
+
+## Что было в образе
 
 - `lxc`, `lxc-auto`, `lxc-attach`, `lxc-create`, `lxc-templates`, `lxc-hooks`
+- `rpcd-mod-lxc` — ubus-объект `lxc` для страницы LuCI
+- `luci-app-lxc` — сама страница «LXC Container mgr»
 - `kmod-veth` — сеть контейнеров
-- `pejir-lxc-base` — монтирование cgroup2 + `/srv/lxc`
+- `pejir-lxc-base` — монтирование cgroup2 + каталог `/srv/lxc`
 
-## Перед использованием
+Всё это занимало **~1.3 МБ** флеша (`liblxc.so.1.9.0` — 1.19 МБ плюс
+`lxc-start`/`lxc-create`/`lxc-attach`/`lxc-console`). Теперь эти ~1.3 МБ
+свободны.
 
-1. Настройте **extroot** (см. [POSTINSTALL.sh](POSTINSTALL.sh)) — NAND на 128 МБ для контейнеров мало.
-2. Проверка:
+## Если контейнер всё-таки нужен
 
-```sh
-mount | grep cgroup2         # cgroup2 смонтирован
-lxc-create --version
-ls /srv/lxc                  # хранилище контейнеров
-```
-
-## Создание контейнера (Alpine, самый лёгкий)
+Единственный архитектурно-независимый путь — локальный шаблон `busybox`
+(берёт busybox с самого роутера) или `local` (свой tarball с ОС):
 
 ```sh
-lxc-create -n alpine -t alpine
-lxc-start -n alpine
-lxc-attach -n alpine
-lxc-stop -n alpine
+# вручную из SSH, если нужны именно эти пакеты:
+apk add lxc lxc-templates lxc-hooks kmod-veth
+mkdir -p /srv/lxc
+lxc-create -n busybox -t busybox
+lxc-start -n busybox
+lxc-attach -n busybox
 ```
 
-Для остальных дистрибутивов (Debian/Ubuntu) — шаблон `download`:
+Ограничения, которые при этом остаются:
 
-```sh
-lxc-create -n debian -t download -- --dist debian --release bookworm --arch armel
-```
+- контейнер не создаётся через веб-интерфейс — только из командной строки;
+- LuCI-контроллер всё равно откажет по месту (`min_space`/`min_temp`);
+- нужен extroot на флешке, и `/tmp` в RAM остаётся узким местом;
+- полноценная ОС (Alpine/Debian) под `mipsel` не существует в готовом виде —
+  собирать rootfs придётся самостоятельно.
 
-⚠️ 256 МБ RAM: лёгкие контейнеры (Alpine, mosquitto, мелкие сервисы) — да;
-тяжёлые (Home Assistant) — нет, для этого берите внешний хост.
-
-## Сеть контейнера
-
-Классический вариант на OpenWrt — veth в бридж `br-lan`:
-
-```sh
-# /var/lib/lxc/alpine/config
-lxc.net.0.type = veth
-lxc.net.0.link = br-lan
-lxc.net.0.flags = up
-```
-
-Контейнер получит адрес от DHCP роутера (или задайте статикой).
-
-## Автостарт (lxc-auto, UCI)
-
-```sh
-uci add lxc-auto container
-uci set lxc-auto.@container[-1].name='alpine'
-uci commit lxc-auto
-/etc/init.d/lxc-auto enable
-```
-
-## Отличие от стока Perenio
-
-В стоке контейнеры управляются закрытым «LXC EE» (зашифрованные пакеты из
-Developer Service, привязка к устройству). Здесь — стандартный открытый LXC:
-полный контроль, любые образы, свои приложения.
+Практически полезного сценария на этом устройстве нет, поэтому проще
+освободить флеш и не показывать нерабочее меню.

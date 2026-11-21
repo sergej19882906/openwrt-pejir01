@@ -63,7 +63,7 @@ denied»** (в ACL LuCI 25.12 не хватало раздела `file` — по
 | **Обновление** | ✅ `sysupgrade` пишет **и ядро** (в оба слота `kernel0`/`kernel1`), и rootfs в UBI ([docs](docs/FLASH.md)) |
 | **OTA по кнопке** | ✅ Система → Обновление прошивки (PEJIR01): проверка релиза на GitHub, сверка sha256, `sysupgrade --test` и прошивка. Автообновления нет — только по нажатию ([docs](docs/OTA.md)) |
 | **Zigbee (EFR32)** | ✅ `uartmuxd` → `/dev/umxtty1`, координатор EZSP (HOMEd) — ставится на extroot одной командой |
-| **LXC-контейнеры** | ✅ LXC 7.0 + cgroup2 + kmod-veth, `/srv/lxc` на extroot ([docs](docs/LXC.md)) |
+| **LXC-контейнеры** | ❌ убраны: в официальном репозитории образов (`images.linuxcontainers.org`) есть только amd64/arm64/armhf/loong64/riscv64, а PEJIR01 — MIPS 32-bit (mipsel). Плюс LuCI требует ~98 МБ свободного места, а здесь 128 МБ RAM и 16 МБ NAND ([docs](docs/LXC.md)) |
 | **AmneziaWG (AWG)** | ✅ kmod против нашего ядра + `awg` CLI + LuCI ([docs](docs/VPN_AWG.md)) |
 | mosquitto / sing-box | ✅ mosquitto вшит; sing-box убран из образа (экономит 50 МБ) — ставится из официального фида: `apk add sing-box` ([docs](docs/ZIGBEE_SINGBOX.md)) |
 | **Мониторинг и сеть** | ✅ mwan3 (failover Ethernet↔LTE), sqm (QoS), collectd+графики, nlbwmon, banip, vnstat2 — с LuCI |

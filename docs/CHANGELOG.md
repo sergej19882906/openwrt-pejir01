@@ -111,7 +111,20 @@
    ответил, просто пропускается. То же — в `detect_at_port()`
    (`47-pejir-lte`) и в `40-pejir-sms`.
 
-10. **Перенос overlay на USB-флешку (extroot)** (патч 0046).
+10. **LXC убран из образа** (патч 0049).
+    В официальном индексе `images.linuxcontainers.org` есть только
+    архитектуры `amd64`, `arm64`, `armhf`, `loong64`, `riscv64`.
+    PEJIR01 — MIPS 32-bit little-endian (`mipsel`, `e_machine=8` в ELF
+    готового образа), поэтому LuCI фильтрует индекс по цели `mipsel` и
+    получает пустой список: «There are no templates for your
+    architecture available». Второй блокер — контроллер LuCI требует
+    ≥100 000 КБ (~98 МБ) свободного места и в каталоге контейнеров, и
+    в `/tmp`, а у устройства 128 МБ RAM и 16 МБ NAND.
+    Убраны `luci-app-lxc`, `lxc`, `lxc-auto`, `lxc-create`,
+    `lxc-attach`, `lxc-templates`, `lxc-hooks`, `rpcd-mod-lxc`,
+    `pejir-lxc-base` и `kmod-veth` — освобождается ~1.3 МБ флеша.
+
+11. **Перенос overlay на USB-флешку (extroot)** (патч 0046).
    Внутренний overlay — UBI-том `rootfs_data` (UBIFS, около 83 МБ);
    каждая запись в него — запись в NAND. Скрипт `pejir-extroot`
    готовит флешку (ext4) и пишет `/etc/config/fstab` с
@@ -127,7 +140,7 @@
 
 ### Добавлено в сборку
 
-11. **Проверки в `build.sh`**, которые ловят именно эти дефекты:
+12. **Проверки в `build.sh`**, которые ловят именно эти дефекты:
    - наличие `argon-config.ru.lmo` (переводы **темы** Argon — общий
      перевод LuCI проверялся, а тема нет);
    - наличие ACL `luci-app-perenio.json` **и** раздела `file` в нём

@@ -1,0 +1,115 @@
+From 0a655ab7668a8dca88781c912cc0389e2183474f Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 22:01:35 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=A3=D0=B1=D1=80=D0=B0=D1=82=D1=8C=20LXC:=20?=
+ =?UTF-8?q?=D0=BD=D0=B0=20MIPS-32=20=D0=BD=D0=B5=D1=82=20=D0=BE=D0=B1?=
+ =?UTF-8?q?=D1=80=D0=B0=D0=B7=D0=BE=D0=B2,=20=D0=B8=20=D0=BC=D0=B5=D1=81?=
+ =?UTF-8?q?=D1=82=D0=B0=20=D0=B4=D0=BB=D1=8F=20=D0=BA=D0=BE=D0=BD=D1=82?=
+ =?UTF-8?q?=D0=B5=D0=B9=D0=BD=D0=B5=D1=80=D0=B0=20=D0=BD=D0=B5=D1=82?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Пакет pejir-lxc-base (cgroup2 + /srv/lxc) удалён, вместе с ним из
+образа уйдут lxc, lxc-auto, lxc-create, lxc-attach, lxc-templates,
+lxc-hooks, rpcd-mod-lxc, luci-app-lxc и kmod-veth.
+
+Почему:
+
+1) Нет образов под нашу архитектуру. В официальном индексе
+   images.linuxcontainers.org есть только amd64, arm64, armhf,
+   loong64 и riscv64. Наш роутер - MIPS 32-bit little-endian
+   (mipsel, e_machine=8 в ELF готового образа). LuCI определяет
+   цель как "mipsel", фильтрует индекс по ней и получает пустой
+   список: "There are no templates for your architecture
+   available". Через веб-интерфейс контейнер создать нельзя.
+
+2) Не хватит места. Контроллер LuCI требует свободного места
+   >= 100000 КБ (~98 МБ) и в каталоге контейнеров, и в /tmp. У
+   устройства 128 МБ RAM и 16 МБ NAND.
+
+3) Страница вводит в заблуждение: меню есть, а работать нечему.
+
+Освобождается около 1.3 МБ флеша (liblxc.so.1.9.0 - 1.19 МБ,
+плюс lxc-start/create/attach/console).
+---
+ package/pejir-lxc-base/Makefile           | 33 -----------------------
+ package/pejir-lxc-base/files/cgroup2.init | 15 -----------
+ package/pejir-lxc-base/files/lxc.defaults |  3 ---
+ 3 files changed, 51 deletions(-)
+ delete mode 100644 package/pejir-lxc-base/Makefile
+ delete mode 100644 package/pejir-lxc-base/files/cgroup2.init
+ delete mode 100644 package/pejir-lxc-base/files/lxc.defaults
+
+diff --git a/package/pejir-lxc-base/Makefile b/package/pejir-lxc-base/Makefile
+deleted file mode 100644
+index 627a620..0000000
+--- a/package/pejir-lxc-base/Makefile
++++ /dev/null
+@@ -1,33 +0,0 @@
+-include $(TOPDIR)/rules.mk
+-
+-PKG_NAME:=pejir-lxc-base
+-PKG_VERSION:=1
+-PKG_RELEASE:=3
+-
+-include $(INCLUDE_DIR)/package.mk
+-
+-define Package/pejir-lxc-base
+-  SECTION:=utils
+-  CATEGORY:=Utilities
+-  TITLE:=PEJIR01 LXC base: cgroup2 mount and /srv/lxc
+-  DEPENDS:=+kmod-veth +lxc-templates +lxc-configs +liblxc +libcap +libopenssl +libdbus +libseccomp
+-endef
+-
+-define Package/pejir-lxc-base/description
+-  Mounts cgroup2 for LXC and creates /srv/lxc storage dir.
+-endef
+-
+-define Build/Prepare
+-endef
+-
+-define Build/Compile
+-endef
+-
+-define Package/pejir-lxc-base/install
+-	$(INSTALL_DIR) $(1)/etc/init.d
+-	$(INSTALL_BIN) ./files/cgroup2.init $(1)/etc/init.d/cgroup2
+-	$(INSTALL_DIR) $(1)/etc/uci-defaults
+-	$(INSTALL_DATA) ./files/lxc.defaults $(1)/etc/uci-defaults/40-pejir-lxc
+-endef
+-
+-$(eval $(call BuildPackage,pejir-lxc-base))
+diff --git a/package/pejir-lxc-base/files/cgroup2.init b/package/pejir-lxc-base/files/cgroup2.init
+deleted file mode 100644
+index 374c83c..0000000
+--- a/package/pejir-lxc-base/files/cgroup2.init
++++ /dev/null
+@@ -1,15 +0,0 @@
+-#!/bin/sh /etc/rc.common
+-
+-START=12
+-STOP=90
+-
+-start() {
+-    if ! grep -q cgroup2 /proc/mounts; then
+-        mkdir -p /sys/fs/cgroup
+-        mount -t cgroup2 none /sys/fs/cgroup
+-    fi
+-}
+-
+-stop() {
+-    :
+-}
+diff --git a/package/pejir-lxc-base/files/lxc.defaults b/package/pejir-lxc-base/files/lxc.defaults
+deleted file mode 100644
+index 7061a1a..0000000
+--- a/package/pejir-lxc-base/files/lxc.defaults
++++ /dev/null
+@@ -1,3 +0,0 @@
+-#!/bin/sh
+-mkdir -p /srv/lxc
+-exit 0
+-- 
+2.39.5
+
