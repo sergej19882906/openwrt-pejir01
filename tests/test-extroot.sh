@@ -17,9 +17,15 @@ FAILED=0
 ok()   { echo "OK: $1"; }
 fail() { echo "FAIL: $1"; FAILED=$((FAILED+1)); }
 
+# --- чистое состояние -------------------------------------------------------
+# Тест обязан быть герметичным: результат не должен зависеть от файлов,
+# оставшихся от прошлого прогона (в CI состояние чистое, в песочнице - нет).
+rm -rf /tmp/extroot-test
+mkdir -p /tmp/extroot-test/bin /tmp/extroot-test/dev
+
 # --- мок block -------------------------------------------------------------
 # block info <dev> печатает: /dev/sda1: UUID="..." LABEL="..." TYPE="ext4"
-mkdir -p /tmp/extroot-test/bin
+
 cat > /tmp/extroot-test/bin/block <<'EOF'
 #!/bin/sh
 case "$1" in
@@ -81,7 +87,17 @@ mkdir -p /tmp/extroot-test/dev
 export DEVDIR=/tmp/extroot-test/dev
 export FSTAB_ENV=/tmp/extroot-test/fstab
 
-# --- тест 1: статус --------------------------------------------------------
+# --- тест 1a: статус при отсутствующем fstab --------------------------------
+# Файла /etc/config/fstab нет => extroot не настроен.
+out="$(FSTAB=/tmp/extroot-test/fstab sh "$SCRIPT" status 2>&1)"
+case "$out" in
+	*"файла нет"*) ok "status: fstab отсутствует (ожидаемо)" ;;
+	*) fail "status: нет сообщения об отсутствии fstab"; echo "$out" ;;
+esac
+
+# --- тест 1b: статус при чужом fstab без target '/overlay' ------------------
+# Файл есть, но extroot в нём не настроен.
+printf "config mount\n\toption target '/mnt/sda1'\n" > /tmp/extroot-test/fstab
 out="$(FSTAB=/tmp/extroot-test/fstab sh "$SCRIPT" status 2>&1)"
 case "$out" in
 	*"extroot не настроен"*) ok "status: extroot не настроен (ожидаемо)" ;;
