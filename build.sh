@@ -447,6 +447,9 @@ if [ -n "$SU" ]; then
         for f in etc/uci-defaults/50-perenio-ru etc/uci-defaults/20-pejir-idata \
                  etc/init.d/40-pejir-sms etc/init.d/41-pejir-modem \
                  etc/init.d/47-pejir-lte \
+                 etc/uci-defaults/51-pejir-wifi-dualband \
+                 etc/uci-defaults/52-perenio-ru-lang \
+                 usr/share/pejir/wifi-config.sh \
                  etc/config/cron \
                  www/luci-static/resources/view/perenio/battery.js \
                  www/luci-static/resources/view/perenio/sms.js \
