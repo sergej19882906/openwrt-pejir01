@@ -8,10 +8,10 @@ ECM/NCM, RNDIS, Huawei-NCM + usb-modeswitch + AT-инструменты.
 
 | Класс | Модемы | Драйвер (вшит) | Интерфейс в LuCI |
 |---|---|---|---|
-| ECM/NCM | GM510, EC25/EP06 в NCM, GM610 | `cdc-ether`/`cdc-ncm` | Сеть → Интерфейсы → DHCP на `usb0` (уже создано: `wan`/`wan6`) |
+| ECM/NCM | GM510, EC25/EP06 в NCM, GM610 | `cdc-ether`/`cdc-ncm` | Сеть → Интерфейсы → DHCP на интерфейсе модема (`eth1`; имя определяется автоматически) (уже создано: `wan`/`wan6`) |
 | QMI | EC25/EComm в QMI, EM7455, MC7421 | `kmod-usb-net-qmi-wwan` + `uqmi` | протокол **UQMI** (`/dev/cdc-wdm0`) |
 | MBIM | EC25 в MBIM, SIM7600 MBIM | `kmod-usb-net-cdc-mbim` + `umbim` | протокол **MBIM** |
-| RNDIS | GM610 (RNDIS-режим), телефоны по USB | `kmod-usb-net-rndis` | DHCP на `usb0` |
+| RNDIS | GM610 (RNDIS-режим), телефоны по USB | `kmod-usb-net-rndis` | DHCP на интерфейсе модема (`eth1`) |
 | Huawei-стиль | E3372 в NCM | `kmod-usb-net-huawei-cdc-ncm` | DHCP/NCM |
 | Serial-only | старые 3G-стики | `option` (вшит), `sierrawireless` | PPP (`comgt`) |
 
@@ -38,11 +38,11 @@ ECM/NCM, RNDIS, Huawei-NCM + usb-modeswitch + AT-инструменты.
 
 ### EC25/EP06 в NCM (проще всего)
 
-Ничего не настраивать: `wan` на `usb0` уже создан — DHCP поднимет.
+Ничего не настраивать: `wan` на интерфейсе модема (`eth1`) уже создан — DHCP поднимет.
 
 ### GM610 (Marvell, RNDIS)
 
-Переключить модем в RNDIS (AT или его веб-конфиг) → `usb0` поднимется
+Переключить модем в RNDIS (AT или его веб-конфиг) → интерфейс модема (`eth1`) поднимется
 в RNDIS, `wan` подхватит.
 
 ## Оговорки

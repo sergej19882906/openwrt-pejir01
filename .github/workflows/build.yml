@@ -99,6 +99,16 @@ jobs:
           chmod +x build.sh
           bash build.sh 2>&1 | tee build.log
 
+      # Тесты репозитория гоняем на ТОМ дереве, из которого собран образ
+      # (патчи уже применены build.sh). Если патч ломает логику uci или
+      # раскладку Wi-Fi — ловим это до релиза, а не на устройстве.
+      - name: Run repository tests
+        run: |
+          set -e
+          export OW_TEST="$WORKDIR/openwrt"
+          sh tests/test-wifi-config.sh
+          sh tests/test-lte-ifname.sh
+
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый
       # образ теряется вместе с раннером (и собирать его заново 2 часа).
@@ -235,6 +245,18 @@ jobs:
           check_pkg "pejir-sms"
           check_pkg "pejir-lte-base"
           check_pkg "perenio-mcu"
+
+          # sing-box убран из образа намеренно (релиз .26): пакет весит
+          # 50 МБ, из-за чего rootfs не помещался в UBI-том устройства
+          # и обновление по воздуху не работало. Если пакет вернётся в
+          # образ, OTA снова сломается - ловим это здесь.
+          if [ -s "$LIST" ] && grep -q "squashfs-root/usr/bin/sing-box" "$LIST"; then
+            echo "  FAIL rootfs: sing-box снова вшит в образ"
+            ann "sing-box снова вшит в образ (50 МБ) - rootfs не влезет в UBI-том"
+            fail=1
+          else
+            echo "  ok   rootfs: sing-box не вшит (ставится из фида)"
+          fi
 
           echo "== образы =="
           ls -la "$BIN"/*.bin || true

@@ -1,0 +1,74 @@
+From 49a483ce40f0222ec5e78b0b2b1553a43f64c7c1 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 18:00:58 +0000
+Subject: [PATCH] luci-app-perenio: fix the LuCI language key for 25.12
+
+LuCI 25.12 stores the interface language in section "main" of
+/etc/config/luci ("config core main"), and the dispatcher reads it with
+uci.get('luci', 'main', 'lang'). The old key luci.core.lang matched no
+section, so the interface language was never switched to Russian.
+
+The corrected key is set from a new uci-defaults script as well: scripts
+in /etc/uci-defaults run once and are removed afterwards, so 50-perenio-ru
+has already been executed on upgraded devices and editing it alone would
+not have taken effect.
+---
+ package/luci-app-perenio/Makefile               |  2 ++
+ .../root/etc/uci-defaults/50-perenio-ru         |  7 ++++++-
+ .../root/etc/uci-defaults/52-perenio-ru-lang    | 17 +++++++++++++++++
+ 3 files changed, 25 insertions(+), 1 deletion(-)
+ create mode 100755 package/luci-app-perenio/root/etc/uci-defaults/52-perenio-ru-lang
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index 7666e46..6b343da 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -31,6 +31,8 @@ define Package/luci-app-perenio/install
+ 	$(INSTALL_DIR) $(1)/etc/uci-defaults
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-ru \
+ 		$(1)/etc/uci-defaults/50-perenio-ru
++	$(INSTALL_BIN) ./root/etc/uci-defaults/52-perenio-ru-lang \
++		$(1)/etc/uci-defaults/52-perenio-ru-lang
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-wifi \
+ 		$(1)/etc/uci-defaults/50-perenio-wifi
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-fwenv \
+diff --git a/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-ru b/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-ru
+index 40bc6cb..4e9fd3a 100755
+--- a/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-ru
++++ b/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-ru
+@@ -4,6 +4,11 @@
+ # В /etc/config/luci опция lang стоит в "auto" — LuCI тогда берёт язык из
+ # заголовка Accept-Language браузера. Явно ставим "ru", чтобы интерфейс был
+ # русским независимо от настроек браузера.
+-uci set luci.core.lang='ru'
++#
++# Ключ — luci.main.lang: секция настроек LuCI 25.12 называется "main"
++# (в /etc/config/luci это "config core main"), и dispatcher читает
++# uci.get('luci', 'main', 'lang'). Прежний luci.core.lang не соответствовал
++# ни одной секции, поэтому язык не переключался.
++uci set luci.main.lang='ru'
+ uci commit luci
+ exit 0
+diff --git a/package/luci-app-perenio/root/etc/uci-defaults/52-perenio-ru-lang b/package/luci-app-perenio/root/etc/uci-defaults/52-perenio-ru-lang
+new file mode 100755
+index 0000000..7879393
+--- /dev/null
++++ b/package/luci-app-perenio/root/etc/uci-defaults/52-perenio-ru-lang
+@@ -0,0 +1,17 @@
++#!/bin/sh
++# Русский язык интерфейса LuCI по умолчанию.
++#
++# В LuCI 25.12 секция настроек называется "main" (в /etc/config/luci это
++# "config core main"), а не "core". Ключ языка читает dispatcher:
++#   uci.get('luci', 'main', 'lang')
++# Поэтому правильный ключ — luci.main.lang. Прежний luci.core.lang
++# не соответствовал ни одной секции и язык не переключался.
++#
++# Имя файла новое ("52-perenio-ru-lang"), потому что скрипты uci-defaults
++# выполняются один раз: после выполнения они удаляются, и повторно уже не
++# запускаются. Старый 50-perenio-ru на устройстве уже выполнен, поэтому
++# исправление ключа в нём самом не сработало бы — нужен отдельный скрипт.
++
++uci set luci.main.lang='ru'
++uci commit luci
++exit 0

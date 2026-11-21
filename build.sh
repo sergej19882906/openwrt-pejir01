@@ -299,18 +299,19 @@ CONFIG_PACKAGE_luci-app-perenio=y
 # не нужно: luci-mod-network и так ставится (он нужен luci-mod-admin-full).
 # Русский интерфейс LuCI: переводы базовых модулей и всех приложений,
 # которые стоят в образе. Язык по умолчанию — русский (uci-defaults
-# 50-perenio-ru выставляет luci.core.lang=ru).
-CONFIG_PACKAGE_luci-i18n-base-ru=y
-CONFIG_PACKAGE_luci-i18n-firewall-ru=y
-CONFIG_PACKAGE_luci-i18n-package-manager-ru=y
-CONFIG_PACKAGE_luci-i18n-mwan3-ru=y
-CONFIG_PACKAGE_luci-i18n-sqm-ru=y
-CONFIG_PACKAGE_luci-i18n-statistics-ru=y
-CONFIG_PACKAGE_luci-i18n-nlbwmon-ru=y
-CONFIG_PACKAGE_luci-i18n-banip-ru=y
-CONFIG_PACKAGE_luci-i18n-ddns-ru=y
-CONFIG_PACKAGE_luci-i18n-vnstat2-ru=y
-CONFIG_PACKAGE_luci-i18n-lxc-ru=y
+# 50-perenio-ru выставляет luci.main.lang=ru).
+#
+# ВАЖНО: пакеты luci-i18n-* в LuCI 25.12 объявлены HIDDEN:=1, то есть это
+# tristate-символы без prompt. Значение, заданное напрямую как
+# CONFIG_PACKAGE_luci-i18n-*-ru=y, сбрасывается командой "make defconfig"
+# ("# CONFIG_... is not set") — проверено экспериментом на kconfig из
+# OpenWrt 25.12. Переключатель другой: опция LUCI_LANG_ru в конфиге
+# luci-base (menu "Translations"). При CONFIG_LUCI_LANG_ru=y пакеты
+# luci-i18n-*-ru становятся "y" по умолчанию (DEFAULT:=LUCI_LANG_ru||(ALL&&m))
+# и собираются для всех модулей LuCI, присутствующих в образе.
+# Переводы кладутся в /usr/lib/lua/luci/i18n/<домен>.ru.lmo — туда же,
+# откуда их читает LuCI 25.12 (load_catalog в dispatcher.uc).
+CONFIG_LUCI_LANG_ru=y
 # LuCI: веб-интерфейс LXC
 CONFIG_PACKAGE_luci-app-lxc=y
 # OTA: обновление прошивки кнопкой в LuCI (без автообновления)
@@ -357,6 +358,11 @@ CONFIG_PACKAGE_xmm-modem=y
 # "implicit declaration of function 'qmi_client_dms_get_software_version'".
 CONFIG_LIBQMI_COLLECTION_FULL=y
 # theme
+# Argon — основная тема LuCI, ставится по умолчанию (uci-defaults
+# 35-pejir-theme-argon выставляет luci.main.mediaurlbase=/luci-static/argon).
+# Cyberpunk остаётся в образе как альтернатива: он виден в списке
+# "Design" на странице "Система" наряду с Argon.
+CONFIG_PACKAGE_luci-theme-argon=y
 CONFIG_PACKAGE_luci-theme-cyberpunk=y
 # dynamic DNS
 CONFIG_PACKAGE_ddns-scripts=y
@@ -474,6 +480,47 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  модемные утилиты (qminfo/atinout/pingcontrol/xmm-modem): OK"
+
+        # Тема Argon и русские переводы LuCI.
+        #
+        # Тема: вендорится в дерево как package/luci-theme-argon, поэтому
+        # проверяем и файлы темы, и uci-defaults, который переключает
+        # тему по умолчанию.
+        #
+        # Переводы: пакеты luci-i18n-*-ru объявлены HIDDEN в luci.mk
+        # (tristate без prompt), поэтому make defconfig сбрасывает
+        # заданное напрямую CONFIG_PACKAGE_luci-i18n-*-ru=y. Переключатель
+        # другой — CONFIG_LUCI_LANG_ru=y в build.sh. Проверяем, что
+        # каталоги переводов (.lmo) реально попали в образ: без них
+        # интерфейс LuCI остаётся английским, несмотря на lang=ru.
+        THEME_MISSING=""
+        for f in www/luci-static/argon/css/cascade.css \
+                 www/luci-static/resources/view/argon-config.js \
+                 www/luci-static/resources/argon-appearance.js \
+                 usr/share/ucode/luci/template/themes/argon/header.ut \
+                 usr/share/ucode/luci/template/themes/argon/footer.ut \
+                 etc/config/argon \
+                 etc/uci-defaults/35-pejir-theme-argon \
+                 usr/share/luci/menu.d/luci-app-argon-config.json \
+                 usr/share/rpcd/acl.d/luci-app-argon-config.json; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || THEME_MISSING="$THEME_MISSING $f"
+        done
+        if [ -n "$THEME_MISSING" ]; then
+          ann error "build.sh: Argon theme" "В образе нет файлов темы Argon:$THEME_MISSING"
+          echo "ОШИБКА: тема Argon не попала в образ ($THEME_MISSING)"
+          exit 1
+        fi
+        echo "  тема Argon: OK"
+
+        # Каталог русских переводов LuCI: /usr/lib/lua/luci/i18n/*.ru.lmo.
+        # Проверяем, что файлы есть и что их не один, а сколько-то.
+        I18N_COUNT="$(echo "$ROOTFS_LIST" | grep -c 'squashfs-root/usr/lib/lua/luci/i18n/.*\.ru\.lmo' || true)"
+        if [ "${I18N_COUNT:-0}" -lt 1 ]; then
+          ann error "build.sh: LuCI i18n" "В образе нет русских переводов LuCI (.ru.lmo)"
+          echo "ОШИБКА: русские переводы LuCI не попали в образ (CONFIG_LUCI_LANG_ru не сработал?)"
+          exit 1
+        fi
+        echo "  русских переводов LuCI (.ru.lmo): $I18N_COUNT"
       fi
     fi
   fi

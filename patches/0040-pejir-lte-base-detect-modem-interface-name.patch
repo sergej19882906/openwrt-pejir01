@@ -1,0 +1,226 @@
+From a49a8c792bbc35224cce4defc21b2095d245cf8e Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Sat, 21 Nov 2026 18:44:31 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-lte-base:=20=D0=BE=D0=BF=D1=80=D0=B5?=
+ =?UTF-8?q?=D0=B4=D0=B5=D0=BB=D1=8F=D1=82=D1=8C=20=D0=B8=D0=BC=D1=8F=20?=
+ =?UTF-8?q?=D0=B8=D0=BD=D1=82=D0=B5=D1=80=D1=84=D0=B5=D0=B9=D1=81=D0=B0=20?=
+ =?UTF-8?q?=D0=BC=D0=BE=D0=B4=D0=B5=D0=BC=D0=B0,=20=D0=B0=20=D0=BD=D0=B5?=
+ =?UTF-8?q?=20=D1=85=D0=B0=D1=80=D0=B4=D0=BA=D0=BE=D0=B4=D0=B8=D1=82=D1=8C?=
+ =?UTF-8?q?=20usb0?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Интерфейс CDC-Ethernet/NCM в ядре 6.12 называется не "usb0": драйвер
+usbnet переименовывает устройство с FLAG_ETHER в "eth%d", если у него
+ненулевой MAC (usbnet.c, ветка "somebody touched it" ->
+!is_zero_ether_addr(net->dev_addr)). Модем GM510 MAC отдаёт, поэтому
+на этой плате интерфейс называется eth1 — это же зафиксировано в
+CHANGELOG по живому устройству.
+
+Что изменено:
+  * 40-pejir-lte больше не задаёт device: имя определяется в runtime;
+  * detect_ifname() ищет интерфейс по VID:PID модема (основной путь),
+    а запасным путём — любой netdev с DEVTYPE=usb_interface (раньше
+    искался только шаблон /sys/class/net/usb*, который в ядре 6.12
+    не совпадает ни с одним интерфейсом);
+  * ensure_lte_section() подставляет обнаруженное имя, если записанное
+    в конфиге отсутствует в /sys/class/net — это чинит уже прошитые
+    устройства, где в /etc/config/network остался usb0;
+  * metric унифицирован на 30 (было 20 в uci-defaults и 30 в
+    init-скрипте; в README/CHANGELOG указан 30);
+  * комментарии и описание пакета приведены в соответствие с фактом.
+
+Попутно исправлена ошибка в проверке существования секции: она была
+вида "uci -q get network.lte.type". У секции "config interface" нет
+опции "type" (тип задаётся словом interface в строке config), поэтому
+такой запрос ВСЕГДА завершается ошибкой — проверка была всегда
+истинной, и блок создания выполнялся при каждом старте, затирая
+proto/metric/peerdns, заданные пользователем. Проверено на реальном
+бинарнике uci: "uci get network.lte" -> код 0 для существующей секции
+и 1 для отсутствующей, "uci get network.lte.type" -> всегда 1.
+Теперь проверка корректная, а device обновляется отдельно — только
+если записанного интерфейса нет в /sys/class/net.
+
+Симптом на устройстве до правки: из-за всегда-истинной проверки
+init-скрипт перезаписывал network.lte.device на обнаруженное имя при
+каждом старте, поэтому LTE как таковой поднимался; неверным было
+состояние в /etc/config/network между загрузками и затирание настроек
+пользователя.
+---
+ package/pejir-lte-base/Makefile               |  9 +--
+ .../root/etc/init.d/47-pejir-lte              | 57 +++++++++++++++----
+ .../root/etc/uci-defaults/40-pejir-lte        | 18 ++++--
+ 3 files changed, 64 insertions(+), 20 deletions(-)
+
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index 0b76825..e88601d 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -9,14 +9,15 @@ include $(INCLUDE_DIR)/package.mk
+ define Package/pejir-lte-base
+   SECTION:=utils
+   CATEGORY:=Utilities
+-  TITLE:=PEJIR01 LTE base: auto wan/wan6 on usb0 + AT helper
++  TITLE:=PEJIR01 LTE base: auto wan/wan6 on the modem NIC + AT helper
+   DEPENDS:=+kmod-usb-net-cdc-ether +kmod-usb-net-cdc-ncm +kmod-usb-serial-option +atinout
+ endef
+ 
+ define Package/pejir-lte-base/description
+-  Creates wan (DHCP) and wan6 (DHCPv6) interfaces on usb0 at first boot
+-  (metric 20, LTE wins only if ethernet is down) and ships mdm-at
+-  helper for GM510 AT commands (PDP type, APN, signal).
++  Creates wan (DHCP) and wan6 (DHCPv6) interfaces on the modem NIC at first
++  boot (metric 30, LTE wins only if ethernet is down) and ships mdm-at
++  helper for GM510 AT commands (PDP type, APN, signal). The modem
++  interface name is detected at runtime (the kernel calls it ethN, not usb0).
+ endef
+ 
+ define Build/Prepare
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 3ac2dc9..ebdb17a 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -11,6 +11,9 @@
+ #     (atinout из пакета atinout), модем умеет AT сам.
+ #
+ # Порядок: ждём USB-модем (не больше 20 c), создаём/поднимаем интерфейс.
++#
++# Имя интерфейса модема НЕ захардкожено: см. detect_ifname() — ядро
++# называет CDC-Ethernet/NCM "ethN" (eth1 на этой плате), а не "usb0".
+ 
+ START=94
+ STOP=0
+@@ -21,8 +24,14 @@ log() {
+ 	logger -t pejir-lte "$*"
+ }
+ 
+-# Интерфейс USB-NIC модема (cdc_ether/cdc_ncm). В ядре 6.x он называется usb0,
+-# в стоке на ядре 4.14 — eth1.
++# Интерфейс USB-NIC модема (cdc_ether/cdc_ncm).
++#
++# Имя интерфейса задаёт ядро, и оно НЕ обязано быть "usb0": в usbnet.c
++# (drivers/net/usb/usbnet.c) устройство с FLAG_ETHER переименовывается в
++# "eth%d", если у него ненулевой MAC ("somebody touched it" ->
++# !is_zero_ether_addr(net->dev_addr)). Модем GM510 MAC отдаёт, поэтому на
++# этой плате интерфейс называется eth1. Имя НЕ хардкодим — ищем по
++# VID:PID модема.
+ detect_ifname() {
+ 	local net ifname devpath vid pid
+ 
+@@ -47,11 +56,15 @@ detect_ifname() {
+ 		done
+ 	done
+ 
+-	# запасной вариант: просто первый usb-интерфейс
+-	for net in /sys/class/net/usb*; do
++	# Запасной вариант: любой сетевой интерфейс, висящий на USB.
++	# Раньше здесь искалось только "/sys/class/net/usb*", но ядро называет
++	# интерфейс модема ethN, поэтому этот шаблон ничего не находил.
++	for net in /sys/class/net/*; do
+ 		[ -e "$net" ] || continue
+-		echo "${net##*/}"
+-		return 0
++		if grep -q '^DEVTYPE=usb_interface$' "$net/device/uevent" 2>/dev/null; then
++			echo "${net##*/}"
++			return 0
++		fi
+ 	done
+ 
+ 	return 1
+@@ -78,18 +91,35 @@ detect_at_port() {
+ }
+ 
+ ensure_lte_section() {
+-	local ifname="$1"
+-
+-	if ! uci -q get network.lte.type >/dev/null 2>&1; then
++	local ifname="$1" cur
++
++	# Проверка существования секции — по ИМЕНИ секции.
++	# Вариант "uci -q get network.lte.type" не годится: у секции
++	# "config interface" нет опции "type" (тип задаётся словом interface),
++	# поэтому такой запрос всегда завершается ошибкой — проверка была
++	# всегда истинной, и скрипт перезаписывал proto/metric при каждом
++	# старте, затирая настройки пользователя.
++	if ! uci -q get network.lte >/dev/null 2>&1; then
+ 		uci set network.lte=interface
+ 		uci set network.lte.proto=dhcp
+ 		uci set network.lte.device="$ifname"
+ 		uci set network.lte.metric=30
+ 		uci set network.lte.peerdns=0
+ 		log "создан network.lte (device=$ifname)"
++	else
++		# Имя интерфейса модема могло устареть: в старой версии прошивки
++		# здесь был зашит "usb0", которого в системе нет (ядро называет
++		# интерфейс модема ethN). Если записанного интерфейса не
++		# существует — подставляем обнаруженный.
++		cur="$(uci -q get network.lte.device)"
++		if [ "$cur" != "$ifname" ] &&
++		   { [ -z "$cur" ] || [ ! -d "/sys/class/net/$cur" ]; }; then
++			uci set network.lte.device="$ifname"
++			log "network.lte.device: '$cur' -> '$ifname'"
++		fi
+ 	fi
+ 
+-	if ! uci -q get network.lte6.type >/dev/null 2>&1; then
++	if ! uci -q get network.lte6 >/dev/null 2>&1; then
+ 		uci set network.lte6=interface
+ 		uci set network.lte6.proto=dhcpv6
+ 		uci set network.lte6.device="$ifname"
+@@ -97,6 +127,13 @@ ensure_lte_section() {
+ 		uci set network.lte6.reqprefix=auto
+ 		uci set network.lte6.norelease=1
+ 		log "создан network.lte6 (device=$ifname)"
++	else
++		cur="$(uci -q get network.lte6.device)"
++		if [ "$cur" != "$ifname" ] &&
++		   { [ -z "$cur" ] || [ ! -d "/sys/class/net/$cur" ]; }; then
++			uci set network.lte6.device="$ifname"
++			log "network.lte6.device: '$cur' -> '$ifname'"
++		fi
+ 	fi
+ 
+ 	uci commit network
+diff --git a/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte b/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
+index ffb714c..5494310 100755
+--- a/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
++++ b/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
+@@ -1,25 +1,31 @@
+ #!/bin/sh
+-# wan over LTE (usb0 = GM510 ECM/NCM)
++# wan over LTE (GM510 ECM/NCM).
++#
++# Имя сетевого интерфейса модема НЕ задаём здесь: в ядре 6.12 драйвер
++# usbnet переименовывает CDC-Ethernet/NCM в "eth%d", если у устройства
++# задан ненулевой MAC (drivers/net/usb/usbnet.c: условие
++# "somebody touched it" -> !is_zero_ether_addr(net->dev_addr)).
++# Такой модем на этой плате называется eth1, а не usb0.
++# Реальное имя определяет /etc/init.d/47-pejir-lte (по VID:PID модема)
++# и подставляет его в network.lte/network.lte6 при каждом старте.
+ if ! uci -q get network.lte >/dev/null; then
+   uci set network.lte=interface
+-  uci set network.lte.device='usb0'
+   uci set network.lte.proto='dhcp'
+-  uci set network.lte.metric='20'
++  uci set network.lte.metric='30'
+   uci set network.lte.peerdns='0'
+ fi
+ # wan6 over LTE (if operator/modem provide IPv6)
+ if ! uci -q get network.lte6 >/dev/null; then
+   uci set network.lte6=interface
+-  uci set network.lte6.device='usb0'
+   uci set network.lte6.proto='dhcpv6'
+-  uci set network.lte6.metric='20'
++  uci set network.lte6.metric='30'
+   uci set network.lte6.reqprefix='auto'
+   uci set network.lte6.norelease='1'
+ fi
+ uci commit network
+ 
+ # LTE-интерфейсы обязаны быть в зоне wan: без этого для них нет ни NAT,
+-# ни форвардинга, и трафик через usb0 не пойдёт (интерфейс вне зоны).
++# ни форвардинга, и трафик через модем не пойдёт (интерфейс вне зоны).
+ for i in 0 1 2 3 4 5 6 7 8 9; do
+   [ "$(uci -q get firewall.@zone[$i].name)" = "wan" ] || continue
+   for n in lte lte6; do

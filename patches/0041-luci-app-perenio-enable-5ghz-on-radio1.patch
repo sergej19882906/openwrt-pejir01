@@ -1,0 +1,324 @@
+From d08f36faa920dcfd5c2c0800a8d6440619a3eb85 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Sat, 21 Nov 2026 19:04:24 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-perenio:=20=D0=B2=D0=BA=D0=BB=D1=8E?=
+ =?UTF-8?q?=D1=87=D0=B8=D1=82=D1=8C=205=20=D0=93=D0=93=D1=86=20=D0=BD?=
+ =?UTF-8?q?=D0=B0=20radio1=20(MT7612E)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+На плате два радио с РАЗНЫМИ диапазонами:
+  radio0 — 0000:01:00.0, MediaTek MT7603E (mt7603e) — только 2.4 ГГц
+  radio1 — 0000:02:00.0, MediaTek MT7612E (mt76x2e) — 2.4 + 5 ГГц,
+           802.11ac 2x2 (vht=true в mt76x2/pci_init.c)
+
+Раньше оба радио считались 2.4 ГГц, но вывод был сделан по
+"iw phy phy0 info" — это radio0 (MT7603E), который действительно
+однополосный. Про radio1 такого вывода не делали.
+
+Подтверждения, что radio1 тянет 5 ГГц:
+  * драйвер mt76x2 регистрирует чип с vht=true и умеет
+    NL80211_BAND_5GHZ (mt76/mac80211.c, mt76_init_sband_5g);
+  * разбор EEPROM mt76x02_eeprom_parse_hw_cap по умолчанию даёт
+    has_2ghz и has_5ghz;
+  * в заводских данных pejir-idata 5 ГГц был на radio1
+    (ssid2_4 -> radio0, ssid2_5 -> radio1);
+  * каналы 36-48 не требуют DFS: в regulatory.db снят флаг NO-IR
+    патчем package/firmware/wireless-regdb/patches/
+    500-world-regd-5GHz.patch, поэтому AP в 5 ГГц работает и без
+    явного указания страны.
+
+Что изменено:
+  * новая общая библиотека /usr/share/pejir/wifi-config.sh: полосы,
+    каналы и ширины канала выставляются ПО option path (путь PCI),
+    а не по имени секции — устойчиво к перепутанным или стоковым
+    именам radio0/radio1;
+  * radio0: band 2g, канал 1, HT20; radio1: band 5g, канал 36, VHT80;
+  * пользовательские SSID, ключ, шифрование и страна не затираются,
+    меняются только полоса/канал/htmode;
+  * одинаковый SSID в обоих диапазонах разводится суффиксом "-5G";
+  * 50-perenio-wifi переписан на делегирование общей логике;
+  * новый /etc/uci-defaults/51-pejir-wifi-dualband — с НОВЫМ именем,
+    чтобы сработать на уже прошитых устройствах (скрипты uci-defaults
+    выполняются один раз и удаляются, поэтому правка 50-perenio-wifi
+    на устройстве не применилась бы);
+  * install-рецепт дополнен новыми файлами.
+
+Радио определяется по option path, а не по имени: на уже прошитых
+устройствах имена секций могут быть другими.
+---
+ package/luci-app-perenio/Makefile             |   5 +
+ .../resources/view/perenio/diag.js            |   2 +-
+ .../root/etc/uci-defaults/50-perenio-wifi     |  65 ++-------
+ .../etc/uci-defaults/51-pejir-wifi-dualband   |  25 ++++
+ .../root/usr/share/pejir/wifi-config.sh       | 123 ++++++++++++++++++
+ 5 files changed, 162 insertions(+), 58 deletions(-)
+ create mode 100644 package/luci-app-perenio/root/etc/uci-defaults/51-pejir-wifi-dualband
+ create mode 100644 package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index 6b343da..fe4556c 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -35,6 +35,11 @@ define Package/luci-app-perenio/install
+ 		$(1)/etc/uci-defaults/52-perenio-ru-lang
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-wifi \
+ 		$(1)/etc/uci-defaults/50-perenio-wifi
++	$(INSTALL_BIN) ./root/etc/uci-defaults/51-pejir-wifi-dualband \
++		$(1)/etc/uci-defaults/51-pejir-wifi-dualband
++	$(INSTALL_DIR) $(1)/usr/share/pejir
++	$(INSTALL_BIN) ./root/usr/share/pejir/wifi-config.sh \
++		$(1)/usr/share/pejir/wifi-config.sh
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-fwenv \
+ 		$(1)/etc/uci-defaults/50-perenio-fwenv
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-network \
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+index abf14ce..7d2d78c 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+@@ -37,7 +37,7 @@ var SCRIPT = [
+ 	'echo "=== Сеть ==="',
+ 	'ip -o link show 2>/dev/null',
+ 	'echo "--- network.lte ---"',
+-	'uci show network 2>/dev/null | grep -E "lte|usb0|wan"',
++	'uci show network 2>/dev/null | grep -E "lte|eth[0-9]|usb[0-9]|wan"',
+ 	'echo "=== Службы ==="',
+ 	'ps w 2>/dev/null | grep -E "mcud|uartmuxd|smsd|mcu" | grep -v grep',
+ 	'echo "=== Батарея: mcu ==="',
+diff --git a/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-wifi b/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-wifi
+index c2c113f..266837b 100644
+--- a/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-wifi
++++ b/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-wifi
+@@ -1,63 +1,14 @@
+ #!/bin/sh
+-# Wi-Fi PEJIR01: на плате два радио, и оба — 2.4 ГГц:
+-#   0000:01:00.0 — MediaTek MT7603 (mt7603e), 2.4 ГГц, 3x3
+-#   0000:02:00.0 — MediaTek MT7612E (mt76x2e), 2.4 ГГц
+-# Проверено на живом устройстве: `iw phy phy0 info` показывает только
+-# Band 1 (2412-2484 МГц), второе радио тоже поднимается на 2.4 ГГц.
++# Wi-Fi PEJIR01: radio0 (MT7603E) — 2.4 ГГц, radio1 (MT7612E) — 5 ГГц.
+ #
+-# В заводском /etc/config/wireless полосы были перепутаны (radio0 с путём
+-# 0000:01:00.0 помечен как 5 ГГц), поэтому AP не поднимался: netifd
+-# повторял "Preparing interface: phy0-ap0" -> "Tearing down phy0".
++# Логика вынесена в /usr/share/pejir/wifi-config.sh, потому что её
++# выполняют два скрипта: этот (первая загрузка) и 51-pejir-wifi-dualband
++# (уже прошитые устройства — у них 50-perenio-wifi уже выполнен и
++# удалён, поэтому правки в нём самом не сработали бы).
+ #
+-# Здесь приводим конфиг к реальному железу: оба радио — 2.4 ГГц, разные
+-# каналы (1 и 6), один SSID. Ключ можно сменить в LuCI.
++# Подробности о железе и выборе канала — в wifi-config.sh.
+ 
+-RADIO0_PATH='1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
+-RADIO1_PATH='1e140000.pcie/pci0000:00/0000:00:01.0/0000:02:00.0'
+-SSID='Perenio PEJIR01'
+-KEY='pejir012345'
+-WIRELESS=/etc/config/wireless
+-
+-# Если конфиг уже верный — не трогаем (чтобы не затирать настройки юзера).
+-if [ "$(uci -q get wireless.radio0.band)" = "2g" ] &&
+-   [ "$(uci -q get wireless.radio1.band)" = "2g" ] &&
+-   [ "$(uci -q get wireless.default_radio0.disabled)" = "0" ] &&
+-   [ "$(uci -q get wireless.default_radio1.disabled)" = "0" ]; then
+-	exit 0
+-fi
+-
+-cat > "$WIRELESS" <<EOF
+-config wifi-device 'radio0'
+-	option type 'mac80211'
+-	option path '$RADIO0_PATH'
+-	option band '2g'
+-	option channel '1'
+-	option htmode 'HT20'
+-
+-config wifi-iface 'default_radio0'
+-	option device 'radio0'
+-	option network 'lan'
+-	option mode 'ap'
+-	option ssid '$SSID'
+-	option encryption 'psk2'
+-	option key '$KEY'
+-	option disabled '0'
+-
+-config wifi-device 'radio1'
+-	option type 'mac80211'
+-	option path '$RADIO1_PATH'
+-	option band '2g'
+-	option channel '6'
+-	option htmode 'HT20'
+-
+-config wifi-iface 'default_radio1'
+-	option device 'radio1'
+-	option network 'lan'
+-	option mode 'ap'
+-	option ssid '$SSID'
+-	option encryption 'psk2'
+-	option key '$KEY'
+-	option disabled '0'
+-EOF
++. /usr/share/pejir/wifi-config.sh
+ 
++pejir_wifi_apply
+ exit 0
+diff --git a/package/luci-app-perenio/root/etc/uci-defaults/51-pejir-wifi-dualband b/package/luci-app-perenio/root/etc/uci-defaults/51-pejir-wifi-dualband
+new file mode 100644
+index 0000000..b5e94b3
+--- /dev/null
++++ b/package/luci-app-perenio/root/etc/uci-defaults/51-pejir-wifi-dualband
+@@ -0,0 +1,25 @@
++#!/bin/sh
++# Wi-Fi PEJIR01: включить 5 ГГц на radio1 (MediaTek MT7612E, mt76x2e).
++#
++# На плате два радио с РАЗНЫМИ диапазонами:
++#   radio0 — 0000:01:00.0, MT7603E  — только 2.4 ГГц
++#   radio1 — 0000:02:00.0, MT7612E  — 2.4 + 5 ГГц, 802.11ac
++#
++# Раньше оба радио были помечены как 2.4 ГГц: вывод был сделан по
++# "iw phy phy0 info" — это radio0 (MT7603E), который действительно
++# однополосный. Про radio1 (MT7612E) такого вывода не делали, а в
++# заводском idata видно, что 5 ГГц вендор держал именно на radio1
++# (ssid2_4 -> radio0, ssid2_5 -> radio1). Драйвер mt76x2 регистрирует
++# чип с vht=true и умеет NL80211_BAND_5GHZ, EEPROM-разбор даёт
++# has_5ghz по умолчанию — то есть полоса 5 ГГц на radio1 доступна.
++#
++# Имя файла новое ("51-pejir-wifi-dualband"): скрипты uci-defaults
++# выполняются один раз и после выполнения удаляются, поэтому на уже
++# прошитом устройстве 50-perenio-wifi повторно не запустится.
++#
++# Логика — в /usr/share/pejir/wifi-config.sh (общая с 50-perenio-wifi).
++
++. /usr/share/pejir/wifi-config.sh
++
++pejir_wifi_apply
++exit 0
+diff --git a/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh b/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh
+new file mode 100644
+index 0000000..5fb228a
+--- /dev/null
++++ b/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh
+@@ -0,0 +1,123 @@
++#!/bin/sh
++# Общая логика настройки Wi-Fi для Perenio PEJIR01.
++#
++# Железо (два радио, разные диапазоны):
++#   0000:01:00.0 — MediaTek MT7603E (mt7603e)  — только 2.4 ГГц, 3x3
++#   0000:02:00.0 — MediaTek MT7612E (mt76x2e)  — 2.4 + 5 ГГц, 802.11ac
++#
++# Заводская прошивка держала radio0 (MT7603E) на 5 ГГц. Так нельзя: чип
++# однополосный, и netifd бесконечно повторял "Preparing interface:
++# phy0-ap0" -> "Tearing down phy0" — Wi-Fi не поднимался. В заводском
++# idata тоже два SSID: ssid2_4 -> radio0 и ssid2_5 -> radio1, то есть
++# 5 ГГц вендор тоже держал на radio1.
++#
++# Правильная раскладка:
++#   radio0 — 2.4 ГГц, канал 1, HT20
++#   radio1 — 5 ГГц,   канал 36, VHT80
++#
++# Канал 36 выбран потому, что он не требует DFS. Для country 00 у каналов
++# 36-48 в regulatory.db снят флаг NO-IR патчем
++# package/firmware/wireless-regdb/patches/500-world-regd-5GHz.patch,
++# поэтому AP в 5 ГГц работает и без явного указания страны.
++#
++# Файл вызывается из /etc/uci-defaults/50-perenio-wifi (первая загрузка)
++# и из /etc/uci-defaults/51-pejir-wifi-dualband (уже прошитые устройства).
++# Он идемпотентен и НЕ затирает настройки пользователя: SSID, ключ и
++# страна сохраняются, меняются только полоса/канал/ширина канала.
++
++PEJIR_WIFI_SSID_2G='Perenio PEJIR01'
++PEJIR_WIFI_SSID_5G='Perenio PEJIR01-5G'
++PEJIR_WIFI_KEY='pejir012345'
++
++PEJIR_WIFI_PATH_2G='1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
++PEJIR_WIFI_PATH_5G='1e140000.pcie/pci0000:00/0000:00:00.1/0000:02:00.0'
++
++# Найти секцию wifi-device по фрагменту пути PCI.
++pejir_wifi_device_by_path() {
++	uci -q show wireless 2>/dev/null \
++		| sed -n "s/^wireless\.\([^.=]*\)\.path='\(.*\)'$/\1|\2/p" \
++		| awk -F'|' -v p="$1" 'index($2, p) { print $1; exit }'
++}
++
++# Найти секцию wifi-iface по имени устройства (точное совпадение).
++pejir_wifi_iface_by_device() {
++	uci -q show wireless 2>/dev/null \
++		| sed -n "s/^wireless\.\([^.=]*\)\.device='\(.*\)'$/\1|\2/p" \
++		| awk -F'|' -v d="$1" '$2 == d { print $1; exit }'
++}
++
++pejir_wifi_apply() {
++	local r0 r1 i0 i1 ssid0 ssid1 key0 key1 enc0 enc1
++
++	r0="$(pejir_wifi_device_by_path '0000:01:00.0')"
++	r1="$(pejir_wifi_device_by_path '0000:02:00.0')"
++	[ -n "$r0" ] || r0='radio0'
++	[ -n "$r1" ] || r1='radio1'
++
++	# Раздела нет — создаём с путём PCI (первая загрузка, конфига нет).
++	if [ -z "$(uci -q get wireless.$r0.path)" ]; then
++		uci set wireless.$r0=wifi-device
++		uci set wireless.$r0.type='mac80211'
++		uci set wireless.$r0.path="$PEJIR_WIFI_PATH_2G"
++	fi
++	if [ -z "$(uci -q get wireless.$r1.path)" ]; then
++		uci set wireless.$r1=wifi-device
++		uci set wireless.$r1.type='mac80211'
++		uci set wireless.$r1.path="$PEJIR_WIFI_PATH_5G"
++	fi
++
++	# Полосы и каналы: MT7603E — только 2.4 ГГц, MT7612E — 5 ГГц.
++	uci set wireless.$r0.band='2g'
++	uci set wireless.$r0.channel='1'
++	uci set wireless.$r0.htmode='HT20'
++	uci set wireless.$r1.band='5g'
++	uci set wireless.$r1.channel='36'
++	uci set wireless.$r1.htmode='VHT80'
++
++	i0="$(pejir_wifi_iface_by_device "$r0")"
++	i1="$(pejir_wifi_iface_by_device "$r1")"
++	[ -n "$i0" ] || i0="default_$r0"
++	[ -n "$i1" ] || i1="default_$r1"
++
++	uci set wireless.$i0=wifi-iface
++	uci set wireless.$i0.device="$r0"
++	uci set wireless.$i1=wifi-iface
++	uci set wireless.$i1.device="$r1"
++
++	[ -n "$(uci -q get wireless.$i0.mode)" ] || uci set wireless.$i0.mode='ap'
++	[ -n "$(uci -q get wireless.$i0.network)" ] || uci set wireless.$i0.network='lan'
++	[ -n "$(uci -q get wireless.$i1.mode)" ] || uci set wireless.$i1.mode='ap'
++	[ -n "$(uci -q get wireless.$i1.network)" ] || uci set wireless.$i1.network='lan'
++
++	ssid0="$(uci -q get wireless.$i0.ssid)"
++	ssid1="$(uci -q get wireless.$i1.ssid)"
++	[ -n "$ssid0" ] || ssid0="$PEJIR_WIFI_SSID_2G"
++	[ -n "$ssid1" ] || ssid1="$ssid0"
++
++	# Одинаковый SSID в обоих диапазонах неудобен: с телефона не видно,
++# к какому диапазону подключились. Разводим их, добавив "-5G".
++	[ "$ssid1" = "$ssid0" ] && ssid1="$ssid0-5G"
++
++	key0="$(uci -q get wireless.$i0.key)"
++	key1="$(uci -q get wireless.$i1.key)"
++	enc0="$(uci -q get wireless.$i0.encryption)"
++	enc1="$(uci -q get wireless.$i1.encryption)"
++
++	[ -n "$enc0" ] || enc0='psk2'
++	[ -n "$key0" ] || key0="$PEJIR_WIFI_KEY"
++	[ -n "$enc1" ] || enc1="$enc0"
++	[ -n "$key1" ] || key1="$key0"
++
++	uci set wireless.$i0.ssid="$ssid0"
++	uci set wireless.$i0.encryption="$enc0"
++	uci set wireless.$i0.key="$key0"
++	uci set wireless.$i1.ssid="$ssid1"
++	uci set wireless.$i1.encryption="$enc1"
++	uci set wireless.$i1.key="$key1"
++
++	[ -n "$(uci -q get wireless.$i0.disabled)" ] || uci set wireless.$i0.disabled='0'
++	[ -n "$(uci -q get wireless.$i1.disabled)" ] || uci set wireless.$i1.disabled='0'
++
++	uci commit wireless
++	return 0
++}
