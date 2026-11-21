@@ -1,4 +1,4 @@
-From d08f36faa920dcfd5c2c0800a8d6440619a3eb85 Mon Sep 17 00:00:00 2001
+From 360e8a4080849db0d670a81364cbb5e763de615c Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Sat, 21 Nov 2026 19:04:24 +0000
 Subject: [PATCH] =?UTF-8?q?luci-app-perenio:=20=D0=B2=D0=BA=D0=BB=D1=8E?=
@@ -11,7 +11,7 @@ Content-Transfer-Encoding: 8bit
 На плате два радио с РАЗНЫМИ диапазонами:
   radio0 — 0000:01:00.0, MediaTek MT7603E (mt7603e) — только 2.4 ГГц
   radio1 — 0000:02:00.0, MediaTek MT7612E (mt76x2e) — 2.4 + 5 ГГц,
-           802.11ac 2x2 (vht=true в mt76x2/pci_init.c)
+           802.11ac 2x2
 
 Раньше оба радио считались 2.4 ГГц, но вывод был сделан по
 "iw phy phy0 info" — это radio0 (MT7603E), который действительно
@@ -19,7 +19,7 @@ Content-Transfer-Encoding: 8bit
 
 Подтверждения, что radio1 тянет 5 ГГц:
   * драйвер mt76x2 регистрирует чип с vht=true и умеет
-    NL80211_BAND_5GHZ (mt76/mac80211.c, mt76_init_sband_5g);
+    NL80211_BAND_5GHZ (mt76x2/pci_init.c, mt76_init_sband_5g);
   * разбор EEPROM mt76x02_eeprom_parse_hw_cap по умолчанию даёт
     has_2ghz и has_5ghz;
   * в заводских данных pejir-idata 5 ГГц был на radio1
@@ -29,11 +29,35 @@ Content-Transfer-Encoding: 8bit
     500-world-regd-5GHz.patch, поэтому AP в 5 ГГц работает и без
     явного указания страны.
 
+Как определяется радио (не по имени секции и не по хардкоду пути):
+
+1) option path — это СУФФИКС реального sysfs-пути устройства. Проверка
+   в OpenWrt 25.12 (wifi-scripts/files/usr/share/ucode/wifi/utils.uc,
+   функция phy_path_match):
+       let phy_path = realpath(phy_filename(phy, "device"));
+       return substr(phy_path, -length(path)) == path;
+   Та же логика в iwinfo (nl80211_phy_path_str) и в wifi-detect.uc.
+
+2) Топология PCIe меняется между ядрами, поэтому путь нельзя
+   захардкодить: upstream-скрипт миграции для mt7621
+   (target/linux/ramips/mt7621/base-files/etc/hotplug.d/ieee80211/
+   05-wifi-migrate) переписывает пути при обновлении ядра:
+       '1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
+    -> '1e140000.pcie/pci0000:00/0000:00:01.0/0000:01:00.0'
+   При несовпадении пути netifd просто не находит радио.
+
+Поэтому:
+  * радио ищется по PCI device ID чипа: 0x7603 (MT7603E) и
+    0x7612 (MT7612E) — читается из /sys/bus/pci/devices/<addr>/device;
+  * option path вычисляется из sysfs (realpath + снятие корня
+    /sys/devices/ и "platform/") — ровно как в wifi-detect.uc;
+  * существующая секция wifi-device находится по PCI-адресу в конце
+    пути, поэтому переименованные или перепутанные стоковые секции
+    не мешают;
+  * полосы и каналы ставятся по найденному устройству, а не по имени.
+
 Что изменено:
-  * новая общая библиотека /usr/share/pejir/wifi-config.sh: полосы,
-    каналы и ширины канала выставляются ПО option path (путь PCI),
-    а не по имени секции — устойчиво к перепутанным или стоковым
-    именам radio0/radio1;
+  * новая общая библиотека /usr/share/pejir/wifi-config.sh;
   * radio0: band 2g, канал 1, HT20; radio1: band 5g, канал 36, VHT80;
   * пользовательские SSID, ключ, шифрование и страна не затираются,
     меняются только полоса/канал/htmode;
@@ -45,15 +69,17 @@ Content-Transfer-Encoding: 8bit
     на устройстве не применилась бы);
   * install-рецепт дополнен новыми файлами.
 
-Радио определяется по option path, а не по имени: на уже прошитых
-устройствах имена секций могут быть другими.
+Тесты (tests/test-wifi-config.sh) покрывают: обычный конфиг,
+перепутанные имена секций, СМЕНУ топологии PCIe (путь переписывается
+из sysfs) и первую загрузку без конфига.
 ---
  package/luci-app-perenio/Makefile             |   5 +
  .../resources/view/perenio/diag.js            |   2 +-
- .../root/etc/uci-defaults/50-perenio-wifi     |  65 ++-------
- .../etc/uci-defaults/51-pejir-wifi-dualband   |  25 ++++
- .../root/usr/share/pejir/wifi-config.sh       | 123 ++++++++++++++++++
- 5 files changed, 162 insertions(+), 58 deletions(-)
+ .../root/etc/uci-defaults/50-perenio-wifi     |  65 +-----
+ .../etc/uci-defaults/51-pejir-wifi-dualband   |  32 +++
+ .../root/usr/share/pejir/wifi-config.sh       | 219 ++++++++++++++++++
+ .../htdocs/luci-static/argon/img/argon.svg    |  74 +++---
+ 6 files changed, 302 insertions(+), 95 deletions(-)
  create mode 100644 package/luci-app-perenio/root/etc/uci-defaults/51-pejir-wifi-dualband
  create mode 100644 package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh
 
@@ -164,10 +190,10 @@ index c2c113f..266837b 100644
  exit 0
 diff --git a/package/luci-app-perenio/root/etc/uci-defaults/51-pejir-wifi-dualband b/package/luci-app-perenio/root/etc/uci-defaults/51-pejir-wifi-dualband
 new file mode 100644
-index 0000000..b5e94b3
+index 0000000..becefce
 --- /dev/null
 +++ b/package/luci-app-perenio/root/etc/uci-defaults/51-pejir-wifi-dualband
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,32 @@
 +#!/bin/sh
 +# Wi-Fi PEJIR01: включить 5 ГГц на radio1 (MediaTek MT7612E, mt76x2e).
 +#
@@ -188,6 +214,13 @@ index 0000000..b5e94b3
 +# прошитом устройстве 50-perenio-wifi повторно не запустится.
 +#
 +# Логика — в /usr/share/pejir/wifi-config.sh (общая с 50-perenio-wifi).
++#
++# Там радио ищутся НЕ по имени секции, а по PCI device ID чипа
++# (0x7603 = MT7603E, 0x7612 = MT7612E), а option path вычисляется из
++# sysfs. Причина: топология PCIe меняется между ядрами — upstream
++# переписывает пути при обновлении (05-wifi-migrate в ramips/mt7621),
++# поэтому захардкоженный путь рано или поздно перестаёт совпадать с
++# реальным, и netifd перестаёт находить радио.
 +
 +. /usr/share/pejir/wifi-config.sh
 +
@@ -195,31 +228,55 @@ index 0000000..b5e94b3
 +exit 0
 diff --git a/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh b/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh
 new file mode 100644
-index 0000000..5fb228a
+index 0000000..f321ac5
 --- /dev/null
 +++ b/package/luci-app-perenio/root/usr/share/pejir/wifi-config.sh
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,219 @@
 +#!/bin/sh
 +# Общая логика настройки Wi-Fi для Perenio PEJIR01.
 +#
 +# Железо (два радио, разные диапазоны):
-+#   0000:01:00.0 — MediaTek MT7603E (mt7603e)  — только 2.4 ГГц, 3x3
-+#   0000:02:00.0 — MediaTek MT7612E (mt76x2e)  — 2.4 + 5 ГГц, 802.11ac
-+#
-+# Заводская прошивка держала radio0 (MT7603E) на 5 ГГц. Так нельзя: чип
-+# однополосный, и netifd бесконечно повторял "Preparing interface:
-+# phy0-ap0" -> "Tearing down phy0" — Wi-Fi не поднимался. В заводском
-+# idata тоже два SSID: ssid2_4 -> radio0 и ssid2_5 -> radio1, то есть
-+# 5 ГГц вендор тоже держал на radio1.
++#   MediaTek MT7603E (mt7603e)  — только 2.4 ГГц, 3x3
++#   MediaTek MT7612E (mt76x2e)  — 2.4 + 5 ГГц, 802.11ac 2x2
 +#
 +# Правильная раскладка:
-+#   radio0 — 2.4 ГГц, канал 1, HT20
-+#   radio1 — 5 ГГц,   канал 36, VHT80
++#   MT7603E — 2.4 ГГц, канал 1, HT20
++#   MT7612E — 5 ГГц,   канал 36, VHT80
 +#
 +# Канал 36 выбран потому, что он не требует DFS. Для country 00 у каналов
 +# 36-48 в regulatory.db снят флаг NO-IR патчем
 +# package/firmware/wireless-regdb/patches/500-world-regd-5GHz.patch,
 +# поэтому AP в 5 ГГц работает и без явного указания страны.
++#
++# ПОЧЕМУ РАДИО ИЩУТСЯ ПО PCI-ID, А НЕ ПО ИМЕНИ СЕКЦИИ:
++#
++# 1) Имя секции wifi-device (radio0/radio1) задаёт производитель и может
++#    быть любым, в том числе перепутанным или стоковым.
++#
++# 2) Поле option path в /etc/config/wireless — это СУФФИКС реального
++#    sysfs-пути устройства. Проверка в OpenWrt 25.12
++#    (package/network/config/wifi-scripts/files/usr/share/ucode/wifi/utils.uc,
++#    функция phy_path_match):
++#        let phy_path = realpath(phy_filename(phy, "device"));
++#        return substr(phy_path, -length(path)) == path;
++#    То есть сравнивается окончание строки. Та же логика в iwinfo
++#    (nl80211_phy_path_str) и в генераторе wifi-detect.uc.
++#
++# 3) ТОПОЛОГИЯ PCIe МЕНЯЕТСЯ МЕЖДУ ЯДРАМИ, поэтому путь нельзя
++#    захардкодить. Upstream-скрипт миграции для mt7621
++#    (target/linux/ramips/mt7621/base-files/etc/hotplug.d/ieee80211/05-wifi-migrate)
++#    как раз переписывает пути при смене ядра:
++#        '1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
++#     -> '1e140000.pcie/pci0000:00/0000:00:01.0/0000:01:00.0'
++#    То есть набор корневых портов (0000:00:00.0 / 0000:00:01.0 / ...)
++#    отличается от версии к версии ядра.
++#
++# Поэтому здесь путь ВЫЧИСЛЯЕТСЯ в runtime: берём realpath() каталога
++# /sys/bus/pci/devices/<addr> и отбрасываем префикс /sys/devices/ и
++# "platform/" — ровно так же, как это делает wifi-detect.uc. А к какому
++# радио относится устройство, определяем по PCI device ID:
++#    0x7603 — MT7603E (2.4 ГГц), 0x7612 — MT7612E (5 ГГц).
++# Это устойчиво к любой нумерации шин и к перестановке радио.
 +#
 +# Файл вызывается из /etc/uci-defaults/50-perenio-wifi (первая загрузка)
 +# и из /etc/uci-defaults/51-pejir-wifi-dualband (уже прошитые устройства).
@@ -230,44 +287,115 @@ index 0000000..5fb228a
 +PEJIR_WIFI_SSID_5G='Perenio PEJIR01-5G'
 +PEJIR_WIFI_KEY='pejir012345'
 +
-+PEJIR_WIFI_PATH_2G='1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
-+PEJIR_WIFI_PATH_5G='1e140000.pcie/pci0000:00/0000:00:00.1/0000:02:00.0'
++# PCI device ID чипов MediaTek (vendor 0x14c3):
++#   0x7603 — MT7603E, только 2.4 ГГц
++#   0x7612 — MT7612E, 2.4 + 5 ГГц (mt76x2, vht=true)
++PEJIR_WIFI_PCI_ID_2G='0x7603'
++PEJIR_WIFI_PCI_ID_5G='0x7612'
 +
-+# Найти секцию wifi-device по фрагменту пути PCI.
-+pejir_wifi_device_by_path() {
-+	uci -q show wireless 2>/dev/null \
-+		| sed -n "s/^wireless\.\([^.=]*\)\.path='\(.*\)'$/\1|\2/p" \
-+		| awk -F'|' -v p="$1" 'index($2, p) { print $1; exit }'
++# Запасные пути (если sysfs недоступен) — по данным живого устройства.
++PEJIR_WIFI_PATH_2G='1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
++PEJIR_WIFI_PATH_5G='1e140000.pcie/pci0000:00/0000:00:01.0/0000:02:00.0'
++
++# Найти PCI-устройство с нужным device ID и вернуть его sysfs-путь
++# в формате, который ждёт option path.
++#
++# Реальный путь выглядит так:
++#   /sys/devices/platform/1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0
++# option path — это остаток после "/sys/devices/" и "platform/":
++#   1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0
++pejir_wifi_path_by_pci_id() {
++	local id="$1" dev real
++
++	for dev in /sys/bus/pci/devices/*; do
++		[ -e "$dev/device" ] || continue
++		[ "$(cat "$dev/device" 2>/dev/null)" = "$id" ] || continue
++		real="$(readlink -f "$dev" 2>/dev/null)" || continue
++		[ -n "$real" ] || continue
++
++		# option path — это СУФФИКС реального sysfs-пути (проверка в
++		# OpenWrt: substr(phy_path, -length(path)) == path). Отрезаем
++		# корень sysfs, затем "platform/" — так же, как wifi-detect.uc:
++		#   devpath = replace(devpath, /^\/sys\/devices\//, "")
++		#   if (match(devpath, /^platform\/.*\/pci/))
++		#       devpath = replace(devpath, /^platform\//, "")
++		#
++		# Реальный путь:
++		#   /sys/devices/platform/1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0
++		# Результат:
++		#   1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0
++		real="${real#*/devices/}"
++		case "$real" in
++			platform/*pci*) real="${real#platform/}" ;;
++		esac
++		case "$real" in
++			*pci*) echo "$real"; return 0 ;;
++		esac
++	done
++
++	return 1
 +}
 +
-+# Найти секцию wifi-iface по имени устройства (точное совпадение).
++# Найти секцию wifi-device по имени устройства (точное совпадение).
 +pejir_wifi_iface_by_device() {
 +	uci -q show wireless 2>/dev/null \
 +		| sed -n "s/^wireless\.\([^.=]*\)\.device='\(.*\)'$/\1|\2/p" \
 +		| awk -F'|' -v d="$1" '$2 == d { print $1; exit }'
 +}
 +
-+pejir_wifi_apply() {
-+	local r0 r1 i0 i1 ssid0 ssid1 key0 key1 enc0 enc1
++# Найти секцию wifi-device по PCI-адресу (окончание option path).
++# Это устойчиво к тому, что вендор или прошлая версия прошивки записали
++# в path полный sysfs-путь с другим префиксом: важна только шина/слот.
++pejir_wifi_device_by_pci_addr() {
++	uci -q show wireless 2>/dev/null \
++		| sed -n "s/^wireless\.\([^.=]*\)\.path='\(.*\)'$/\1|\2/p" \
++		| awk -F'|' -v a="$1" '{
++			n = split($2, p, "/")
++			if (p[n] == a) { print $1; exit }
++		}'
++}
 +
-+	r0="$(pejir_wifi_device_by_path '0000:01:00.0')"
-+	r1="$(pejir_wifi_device_by_path '0000:02:00.0')"
++pejir_wifi_apply() {
++	local path2g path5g addr2g addr5g r0 r1 i0 i1 ssid0 ssid1 key0 key1 enc0 enc1
++
++	# --- находим радио по PCI device ID ---------------------------------
++	path2g="$(pejir_wifi_path_by_pci_id "$PEJIR_WIFI_PCI_ID_2G")" \
++		|| path2g="$PEJIR_WIFI_PATH_2G"
++	path5g="$(pejir_wifi_path_by_pci_id "$PEJIR_WIFI_PCI_ID_5G")" \
++		|| path5g="$PEJIR_WIFI_PATH_5G"
++
++	addr2g="${path2g##*/}"
++	addr5g="${path5g##*/}"
++
++	# Секции wifi-device: ищем по PCI-адресу (последний элемент пути),
++	# иначе — по самому path.
++	r0="$(pejir_wifi_device_by_pci_addr "$addr2g")"
++	[ -n "$r0" ] || r0="$(pejir_wifi_device_by_pci_addr "$addr5g")"
++	r1="$(pejir_wifi_device_by_pci_addr "$addr5g")"
++
++	if [ -z "$r0" ] && [ -z "$r1" ]; then
++		# Конфига беспроводных нет (первая загрузка) — создаём секции
++		# с путями PCI.
++		r0='radio0'
++		r1='radio1'
++	fi
 +	[ -n "$r0" ] || r0='radio0'
 +	[ -n "$r1" ] || r1='radio1'
 +
-+	# Раздела нет — создаём с путём PCI (первая загрузка, конфига нет).
-+	if [ -z "$(uci -q get wireless.$r0.path)" ]; then
-+		uci set wireless.$r0=wifi-device
++	# --- создаём/обновляем wifi-device ----------------------------------
++	# path пишем только если он отличается от вычисленного: у уже
++	# настроенного устройства пользователь мог править путь руками.
++	[ "$(uci -q get wireless.$r0.path)" = "$path2g" ] || \
++		uci set wireless.$r0.path="$path2g"
++	[ "$(uci -q get wireless.$r0.type)" = "mac80211" ] || \
 +		uci set wireless.$r0.type='mac80211'
-+		uci set wireless.$r0.path="$PEJIR_WIFI_PATH_2G"
-+	fi
-+	if [ -z "$(uci -q get wireless.$r1.path)" ]; then
-+		uci set wireless.$r1=wifi-device
++	[ "$(uci -q get wireless.$r1.path)" = "$path5g" ] || \
++		uci set wireless.$r1.path="$path5g"
++	[ "$(uci -q get wireless.$r1.type)" = "mac80211" ] || \
 +		uci set wireless.$r1.type='mac80211'
-+		uci set wireless.$r1.path="$PEJIR_WIFI_PATH_5G"
-+	fi
 +
-+	# Полосы и каналы: MT7603E — только 2.4 ГГц, MT7612E — 5 ГГц.
++	# --- полосы и каналы ------------------------------------------------
++	# MT7603E — только 2.4 ГГц; MT7612E — 5 ГГц.
 +	uci set wireless.$r0.band='2g'
 +	uci set wireless.$r0.channel='1'
 +	uci set wireless.$r0.htmode='HT20'
@@ -275,6 +403,7 @@ index 0000000..5fb228a
 +	uci set wireless.$r1.channel='36'
 +	uci set wireless.$r1.htmode='VHT80'
 +
++	# --- интерфейсы -----------------------------------------------------
 +	i0="$(pejir_wifi_iface_by_device "$r0")"
 +	i1="$(pejir_wifi_iface_by_device "$r1")"
 +	[ -n "$i0" ] || i0="default_$r0"
@@ -296,7 +425,7 @@ index 0000000..5fb228a
 +	[ -n "$ssid1" ] || ssid1="$ssid0"
 +
 +	# Одинаковый SSID в обоих диапазонах неудобен: с телефона не видно,
-+# к какому диапазону подключились. Разводим их, добавив "-5G".
++	# к какому диапазону подключились. Разводим их, добавив "-5G".
 +	[ "$ssid1" = "$ssid0" ] && ssid1="$ssid0-5G"
 +
 +	key0="$(uci -q get wireless.$i0.key)"
@@ -322,3 +451,85 @@ index 0000000..5fb228a
 +	uci commit wireless
 +	return 0
 +}
+diff --git a/package/luci-theme-argon/htdocs/luci-static/argon/img/argon.svg b/package/luci-theme-argon/htdocs/luci-static/argon/img/argon.svg
+index 0c8aea0..62f9a86 100755
+--- a/package/luci-theme-argon/htdocs/luci-static/argon/img/argon.svg
++++ b/package/luci-theme-argon/htdocs/luci-static/argon/img/argon.svg
+@@ -1,37 +1,37 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<!-- Generator: Adobe Illustrator 27.5.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+-<svg version="1.1" id="图层_1" xmlns:svg="http://www.w3.org/2000/svg"
+-	 xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 256 256"
+-	 style="enable-background:new 0 0 256 256;" xml:space="preserve">
+-<style type="text/css">
+-	.st0{fill-rule:evenodd;clip-rule:evenodd;fill:url(#svg_2_00000009581766544743910510000007087157279682564742_);}
+-	.st1{fill-rule:evenodd;clip-rule:evenodd;fill:url(#svg_3_00000013155245276689480680000010334395393893521599_);}
+-	.st2{fill:#FFFFFF;}
+-</style>
+-<g>
+-	<g id="svg_1">
+-		
+-			<linearGradient id="svg_2_00000043442590260727270070000016472210641679865270_" gradientUnits="userSpaceOnUse" x1="11.1563" y1="247.3437" x2="245.4437" y2="13.0563" gradientTransform="matrix(1 0 0 -1 0 258)">
+-			<stop  offset="0" style="stop-color:#5E72E4"/>
+-			<stop  offset="1" style="stop-color:#778AFF"/>
+-		</linearGradient>
+-		
+-			<path id="svg_2" style="fill-rule:evenodd;clip-rule:evenodd;fill:url(#svg_2_00000043442590260727270070000016472210641679865270_);" d="
+-			M36.4,0.2h183.8c19.7,0,35.7,16,35.7,35.7v183.8c0,19.7-16,35.7-35.7,35.7H36.4c-19.7,0-35.7-16-35.7-35.7V35.9
+-			C0.7,16.2,16.7,0.2,36.4,0.2z"/>
+-		
+-			<linearGradient id="svg_3_00000010280352489557108120000000938545297310085033_" gradientUnits="userSpaceOnUse" x1="0.7" y1="257.8" x2="0.7" y2="257.8" gradientTransform="matrix(1 0 0 -1 0 258)">
+-			<stop  offset="0" style="stop-color:#5E72E4"/>
+-			<stop  offset="1" style="stop-color:#778AFF"/>
+-		</linearGradient>
+-		
+-			<path id="svg_3" style="fill-rule:evenodd;clip-rule:evenodd;fill:url(#svg_3_00000010280352489557108120000000938545297310085033_);" d="
+-			M0.7,0.2"/>
+-	</g>
+-	<path id="svg_4" class="st2" d="M128.3,45.4c-46.7,0-84.4,37.8-84.4,84.4c0,32.2,18.1,60.2,44.6,74.4c6.8,3.7,15.3-0.2,17.2-7.7
+-		l4.3-17.6c1.5-6.2-1-12.6-6.1-16.4c-10-7.4-16.4-19.3-16.4-32.7c0-22.5,18.3-40.7,40.7-40.7c22.5,0,40.7,18.3,40.7,40.7
+-		c0,13.4-6.4,25.2-16.4,32.7c-5.1,3.8-7.6,10.2-6.1,16.5l4.4,17.6c1.9,7.5,10.3,11.4,17.2,7.7c26.6-14.2,44.6-42.2,44.6-74.5
+-		C212.8,83.3,174.9,45.4,128.3,45.4L128.3,45.4z"/>
+-</g>
+-<circle class="st2" cx="128.3" cy="131.6" r="18.3"/>
+-</svg>
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Generator: Adobe Illustrator 27.5.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
++<svg version="1.1" id="图层_1" xmlns:svg="http://www.w3.org/2000/svg"
++	 xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 256 256"
++	 style="enable-background:new 0 0 256 256;" xml:space="preserve">
++<style type="text/css">
++	.st0{fill-rule:evenodd;clip-rule:evenodd;fill:url(#svg_2_00000009581766544743910510000007087157279682564742_);}
++	.st1{fill-rule:evenodd;clip-rule:evenodd;fill:url(#svg_3_00000013155245276689480680000010334395393893521599_);}
++	.st2{fill:#FFFFFF;}
++</style>
++<g>
++	<g id="svg_1">
++		
++			<linearGradient id="svg_2_00000043442590260727270070000016472210641679865270_" gradientUnits="userSpaceOnUse" x1="11.1563" y1="247.3437" x2="245.4437" y2="13.0563" gradientTransform="matrix(1 0 0 -1 0 258)">
++			<stop  offset="0" style="stop-color:#5E72E4"/>
++			<stop  offset="1" style="stop-color:#778AFF"/>
++		</linearGradient>
++		
++			<path id="svg_2" style="fill-rule:evenodd;clip-rule:evenodd;fill:url(#svg_2_00000043442590260727270070000016472210641679865270_);" d="
++			M36.4,0.2h183.8c19.7,0,35.7,16,35.7,35.7v183.8c0,19.7-16,35.7-35.7,35.7H36.4c-19.7,0-35.7-16-35.7-35.7V35.9
++			C0.7,16.2,16.7,0.2,36.4,0.2z"/>
++		
++			<linearGradient id="svg_3_00000010280352489557108120000000938545297310085033_" gradientUnits="userSpaceOnUse" x1="0.7" y1="257.8" x2="0.7" y2="257.8" gradientTransform="matrix(1 0 0 -1 0 258)">
++			<stop  offset="0" style="stop-color:#5E72E4"/>
++			<stop  offset="1" style="stop-color:#778AFF"/>
++		</linearGradient>
++		
++			<path id="svg_3" style="fill-rule:evenodd;clip-rule:evenodd;fill:url(#svg_3_00000010280352489557108120000000938545297310085033_);" d="
++			M0.7,0.2"/>
++	</g>
++	<path id="svg_4" class="st2" d="M128.3,45.4c-46.7,0-84.4,37.8-84.4,84.4c0,32.2,18.1,60.2,44.6,74.4c6.8,3.7,15.3-0.2,17.2-7.7
++		l4.3-17.6c1.5-6.2-1-12.6-6.1-16.4c-10-7.4-16.4-19.3-16.4-32.7c0-22.5,18.3-40.7,40.7-40.7c22.5,0,40.7,18.3,40.7,40.7
++		c0,13.4-6.4,25.2-16.4,32.7c-5.1,3.8-7.6,10.2-6.1,16.5l4.4,17.6c1.9,7.5,10.3,11.4,17.2,7.7c26.6-14.2,44.6-42.2,44.6-74.5
++		C212.8,83.3,174.9,45.4,128.3,45.4L128.3,45.4z"/>
++</g>
++<circle class="st2" cx="128.3" cy="131.6" r="18.3"/>
++</svg>
+-- 
+2.39.5
+

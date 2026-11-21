@@ -224,3 +224,6 @@ index ffb714c..5494310 100755
  for i in 0 1 2 3 4 5 6 7 8 9; do
    [ "$(uci -q get firewall.@zone[$i].name)" = "wan" ] || continue
    for n in lte lte6; do
+-- 
+2.39.5
+

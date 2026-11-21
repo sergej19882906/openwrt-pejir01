@@ -72,3 +72,6 @@ index 0000000..7879393
 +uci set luci.main.lang='ru'
 +uci commit luci
 +exit 0
+-- 
+2.39.5
+
