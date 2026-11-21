@@ -110,6 +110,7 @@ jobs:
           sh tests/test-lte-ifname.sh
           sh tests/test-extroot.sh
           sh tests/test-i18n-pages.sh
+          sh tests/test-at-no-hang.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый

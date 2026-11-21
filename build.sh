@@ -264,6 +264,10 @@ CONFIG_PACKAGE_uartmuxd=y
 CONFIG_PACKAGE_perenio-mcu=y
 CONFIG_PACKAGE_block-mount=y
 CONFIG_PACKAGE_pejir-extroot=y
+# timeout нужен AT-скриптам: без ограничения времени чтение с
+# последовательного порта, на который модем не отвечает, висит вечно
+# и не даёт init-скриптам дойти до конца.
+CONFIG_PACKAGE_coreutils-timeout=y
 CONFIG_PACKAGE_kmod-fs-ext4=y
 CONFIG_PACKAGE_kmod-usb-storage=y
 CONFIG_PACKAGE_kmod-usb-storage-uas=y

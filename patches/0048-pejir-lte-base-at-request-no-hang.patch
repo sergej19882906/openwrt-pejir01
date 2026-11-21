@@ -1,0 +1,223 @@
+From ff5d8ca02a9f997cfabfcda73d24ad9d76412d36 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 20:54:50 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-lte-base,=20pejir-sms:=20AT-=D0=BE=D0=B1?=
+ =?UTF-8?q?=D0=BC=D0=B5=D0=BD=20=D1=81=20=D0=BC=D0=BE=D0=B4=D0=B5=D0=BC?=
+ =?UTF-8?q?=D0=BE=D0=BC=20=D0=BD=D0=B5=20=D0=B4=D0=BE=D0=BB=D0=B6=D0=B5?=
+ =?UTF-8?q?=D0=BD=20=D0=B2=D0=B8=D1=81=D0=B5=D1=82=D1=8C?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Скрипт mdm-at читал ответ модема так:
+
+    printf 'AT\r' > "$p"; sleep 1
+    head -c 64 "$p" | grep -q 'OK'
+
+На последовательном порту head ждёт, пока наберётся 64 байта. Модем на
+"AT" отвечает коротким "OK" и больше ничего не присылает, поэтому head
+зависал в read() навсегда. grep успевал найти "OK" и закрыть канал, но
+head к тому моменту уже снова стоял в read() на порту, и SIGPIPE до
+него не доходил - процесс не завершался.
+
+Это висело не только при поиске порта: та же конструкция стояла в
+командном пути mdm-at. А mdm-at --port вызывает init-скрипт
+41-pejir-modem (START=93). Пока он висел, не доходил до конца
+47-pejir-lte (START=94) - то есть LTE не поднимался, и модем в LuCI не
+определялся.
+
+Теперь ответ читается через atinout, который сам останавливается на
+"OK"/"ERROR", а каждый вызов обёрнут в timeout: порт, который не
+ответил вовсе, просто пропускается. То же сделано в detect_at_port()
+(47-pejir-lte) и в 40-pejir-sms - atinout тоже ждёт ответа без
+ограничения времени.
+
+Добавлена зависимость +coreutils-timeout (timeout в образе и так был,
+но теперь он гарантирован).
+
+mdm-at переведён на atinout целиком, поэтому больше нет и ручного
+stty raw -echo: atinout сам работает с портом как с терминалом.
+---
+ package/pejir-lte-base/Makefile               |  2 +-
+ .../root/etc/init.d/47-pejir-lte              | 13 +++--
+ package/pejir-lte-base/root/usr/bin/mdm-at    | 47 +++++++++++++------
+ package/pejir-sms/Makefile                    |  2 +-
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    |  9 +++-
+ 5 files changed, 53 insertions(+), 20 deletions(-)
+
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index e88601d..144a6e6 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -10,7 +10,7 @@ define Package/pejir-lte-base
+   SECTION:=utils
+   CATEGORY:=Utilities
+   TITLE:=PEJIR01 LTE base: auto wan/wan6 on the modem NIC + AT helper
+-  DEPENDS:=+kmod-usb-net-cdc-ether +kmod-usb-net-cdc-ncm +kmod-usb-serial-option +atinout
++  DEPENDS:=+kmod-usb-net-cdc-ether +kmod-usb-net-cdc-ncm +kmod-usb-serial-option +atinout +coreutils-timeout
+ endef
+ 
+ define Package/pejir-lte-base/description
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index e69d177..b756bde 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -72,6 +72,13 @@ detect_ifname() {
+ 
+ # AT-порт модема: у GM510 это ttyUSB2, но нумерация зависит от композиции.
+ # Проверяем порт настоящим AT-запросом (atinout умеет ждать ответа).
++#
++# atinout работает без ограничения времени: если порт не отвечает вовсе
++# (например, это не-AT интерфейс), он висит в read() бесконечно, и
++# init-скрипт не доходит до конца. Поэтому каждый вызов обёрнут в
++# timeout: порт, который не ответил, просто пропускаем.
++AT_TIMEOUT="${AT_TIMEOUT:-5}"
++
+ detect_at_port() {
+ 	local p out script="/tmp/pejir-probe.$$"
+ 
+@@ -80,7 +87,7 @@ detect_at_port() {
+ 	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 \
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
+-		out="$(atinout "$script" "$p" - 2>/dev/null)"
++		out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
+ 		case "$out" in
+ 			*OK*) rm -f "$script"; echo "$p"; return 0 ;;
+ 		esac
+@@ -163,7 +170,7 @@ sync_apn() {
+ 	port="$(detect_at_port)" || return 0
+ 	script="/tmp/pejir-apn.$$"
+ 	printf 'AT+CGDCONT=1,"IP","%s"\n' "$apn" > "$script"
+-	atinout "$script" "$port" - >/dev/null 2>&1
++	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "APN отправлен модему: $apn"
+ }
+@@ -191,7 +198,7 @@ ecm_call() {
+ 	printf 'AT+ZECMCALL=1\n' > "$script"
+ 	# Ошибку игнорируем: на модемах без ECM-поддержки вызов не нужен,
+ 	# а AT+CGDCONT уже отработал.
+-	atinout "$script" "$port" - >/dev/null 2>&1
++	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "ECM data call (AT+ZECMCALL=1) отправлен модему"
+ }
+diff --git a/package/pejir-lte-base/root/usr/bin/mdm-at b/package/pejir-lte-base/root/usr/bin/mdm-at
+index 53a5837..9031823 100755
+--- a/package/pejir-lte-base/root/usr/bin/mdm-at
++++ b/package/pejir-lte-base/root/usr/bin/mdm-at
+@@ -11,29 +11,51 @@
+ # платы занят не-AT интерфейсом. Раньше перебор шёл с ttyUSB0, и
+ # модем ошибочно считался "не найден".
+ #
+-# Порт открывается в raw-режиме без эха: иначе в буфер попадает
+-# введённая команда и проверка ответа "OK" даёт ложные срабатывания.
++# Чтение ответа - через atinout с ограничением по времени (timeout).
++# Раньше ответ читался так:  head -c 64 "$p" | grep -q 'OK'
++# На последовательном порту head ждёт, пока наберётся 64 байта, а модем
++# на команду AT отвечает коротким "OK" и больше ничего не присылает.
++# head зависал в read() навсегда, и скрипт - тем более init-скрипт
++# 41-pejir-modem (START=93) - никогда не завершался. Из-за этого не
++# запускался 47-pejir-lte (START=94), а модем в LuCI не определялся.
++# atinout умеет сам останавливаться на "OK"/"ERROR", timeout страхует
++# случай, когда модем не отвечает вовсе.
+ 
+ TTY=${2:-auto}
++PROBE_TIMEOUT="${MDM_AT_TIMEOUT:-5}"
+ 
+ detect_port() {
+-	local p
++	local p out script="/tmp/mdm-at-probe.$$"
++
++	printf 'AT\r' > "$script"
+ 
+ 	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyUSB3 \
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
+-		stty -F "$p" raw -echo 2>/dev/null || stty raw -echo < "$p" 2>/dev/null
+-		printf 'AT\r' > "$p" 2>/dev/null
+-		sleep 1
+-		if head -c 64 "$p" 2>/dev/null | grep -q 'OK'; then
+-			echo "$p"
+-			return 0
+-		fi
++		out="$(timeout "$PROBE_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
++		case "$out" in
++			*OK*)
++				rm -f "$script"
++				echo "$p"
++				return 0
++				;;
++		esac
+ 	done
+ 
++	rm -f "$script"
+ 	return 1
+ }
+ 
++run_command() {
++	local cmd="$1" dev="$2" out script="/tmp/mdm-at-cmd.$$"
++
++	printf '%s\r\n' "$cmd" > "$script"
++	out="$(timeout "$PROBE_TIMEOUT" atinout "$script" "$dev" - 2>/dev/null)"
++	rm -f "$script"
++
++	printf '%s\n' "$out"
++}
++
+ if [ "$1" = "--port" ]; then
+ 	if [ "$TTY" = auto ]; then
+ 		detect_port || echo none
+@@ -49,7 +71,4 @@ if [ "$TTY" = auto ]; then
+ fi
+ 
+ [ -c "$TTY" ] || { echo "no AT port found"; exit 1; }
+-stty -F "$TTY" raw -echo 2>/dev/null || stty raw -echo < "$TTY" 2>/dev/null
+-printf '%s\r' "$1" > "$TTY"
+-sleep 0.7
+-head -c 500 "$TTY" | strings
++run_command "$1" "$TTY"
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+index ea82f6a..0099f59 100644
+--- a/package/pejir-sms/Makefile
++++ b/package/pejir-sms/Makefile
+@@ -10,7 +10,7 @@ define Package/pejir-sms
+   SECTION:=utils
+   CATEGORY:=Utilities
+   TITLE:=PEJIR01 SMS: smstools3 config for GM510
+-  DEPENDS:=+smstools3 +pejir-lte-base
++  DEPENDS:=+smstools3 +pejir-lte-base +coreutils-timeout
+ endef
+ 
+ define Package/pejir-sms/description
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index 2582a6d..f746c26 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -38,6 +38,13 @@ DEFAULT_PORT="/dev/ttyUSB2"
+ # AT-порт модема: у GM510 это ttyUSB2, но нумерация зависит от композиции.
+ # Проверяем порт настоящим AT-запросом (atinout умеет ждать ответа).
+ # Тот же алгоритм, что в 47-pejir-lte.
++#
++# atinout ждёт ответа без ограничения времени: на порту, который не
++# отвечает, он висит в read() бесконечно. Поэтому каждый вызов обёрнут
++# в timeout - иначе init-скрипт (START=92) не дошёл бы до конца и
++# smsd не был бы запущен.
++AT_TIMEOUT="${AT_TIMEOUT:-5}"
++
+ detect_at_port() {
+ 	local p out script="/tmp/pejir-sms-probe.$$"
+ 
+@@ -46,7 +53,7 @@ detect_at_port() {
+ 	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 \
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
+-		out="$(atinout "$script" "$p" - 2>/dev/null)"
++		out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
+ 		case "$out" in
+ 			*OK*) rm -f "$script"; echo "$p"; return 0 ;;
+ 		esac
+-- 
+2.39.5
+
