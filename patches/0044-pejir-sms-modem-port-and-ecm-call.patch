@@ -1,0 +1,259 @@
+From b490f6d0d498b6fce53197e2a0140bfb8d93a3a4 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 20:25:01 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-sms,=20pejir-lte-base:=20=D0=BF=D0=BE?=
+ =?UTF-8?q?=D1=80=D1=82=20=D0=BC=D0=BE=D0=B4=D0=B5=D0=BC=D0=B0=20=D0=B4?=
+ =?UTF-8?q?=D0=BB=D1=8F=20smsd=20=D0=B8=20ECM=20data=20call?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+smsd не запускался, а LuCI показывала "порт не задан". Причины две.
+
+1) Предохранитель в 40-pejir-sms ("пользовательский конфиг не трогаем")
+срабатывал и на стоковом /etc/smsd.conf от пакета smstools3: файл
+существует, а нашего маркера в нём нет - значит, выходим, ничего не
+пишем. В итоге секция [GSM1] оставалась закомментированной, smsd
+падал с "There are no devices specified.".
+
+Теперь: наш конфиг (есть маркер) - правим device; стоковой - перезаписываем
+с сохранением копии в /etc/smsd.conf.user; ручной - не трогаем.
+
+2) AT-порт GM510 - это ttyUSB2, а прежний mdm-at перебирал порты начиная
+с ttyUSB0, который AT-портом не является. Дополнительно mdm-at работал
+без raw-режима, из-за чего в буфер попадала введённая команда и проверка
+"OK" давала ложные срабатывания.
+
+Порядок портов теперь ttyUSB2 -> ttyUSB1 -> ttyUSB0 -> ttyUSB3 ->
+ttyACM1 -> ttyACM0, режим raw без эха. В 40-pejir-sms порт ищется тем
+же алгоритмом, что в 47-pejir-lte (проверка ответа OK через atinout).
+
+Если AT-порт не найден, smsd не запускаем: без корректного device он
+всё равно падает, а пользователю полезнее видеть "порт не задан" в
+журнале, чем "No such device". Ожидание модема увеличено с 3x2 с до
+10x3 с.
+
+3) 47-pejir-lte: добавлен ECM data call AT+ZECMCALL=1.
+
+По GOSUNCN AT Command Reference (ME3630) команда AT+ZECMCALL=1 поднимает
+ECM-вызов и отвечает "+ZECMCALL: CONNECT", затем OK. Команда использует
+заданный ранее PDP-контекст, поэтому вызывается ПОСЛЕ AT+CGDCONT и ДО
+ifup lte. Ошибка игнорируется - если модем её не поддерживает, LTE
+поднимается как раньше.
+
+Отдельной AT-команды CONNECT в наборе GOSUNCN нет - это ответ на
+ZECMCALL; если её нужно послать отдельно, то ДО ZECMCALL, иначе модем
+ответит ERROR.
+
+Сам USB-состав модема ZECMCALL не меняет (это делает AT+ZSWITCH=L с
+перезагрузкой), поэтому нумерация ttyUSB* и имя ethN не меняются.
+---
+ .../root/etc/init.d/47-pejir-lte              | 29 +++++++
+ package/pejir-lte-base/root/usr/bin/mdm-at    | 14 +++-
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    | 81 ++++++++++++++++---
+ 3 files changed, 112 insertions(+), 12 deletions(-)
+
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index ebdb17a..e69d177 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -168,6 +168,34 @@ sync_apn() {
+ 	log "APN отправлен модему: $apn"
+ }
+ 
++# ECM data call на GM510.
++#
++# По GOSUNCN AT Command Reference (ME3630, "AT+ZECMCALL Make ECM data call"):
++# AT+ZECMCALL=1[,<APN>[,<PDP_type>...]] поднимает ECM-вызов и отвечает
++# "+ZECMCALL: CONNECT", затем OK. Команда использует заданный ранее
++# PDP-контекст, поэтому вызывается ПОСЛЕ AT+CGDCONT.
++#
++# Отдельной AT-команды CONNECT в наборе GOSUNCN нет - это ответ на
++# ZECMCALL. Если команду "CONNECT" всё же нужно послать отдельно, её
++# следует слать ДО ZECMCALL, иначе модем ответит ERROR.
++#
++# Сам USB-состав модема ZECMCALL не меняет (это делает AT+ZSWITCH=L с
++# перезагрузкой), поэтому нумерация ttyUSB* и имя ethN после вызова
++# прежние.
++ecm_call() {
++	local port script
++
++	port="$(detect_at_port)" || return 0
++
++	script="/tmp/pejir-ecm.$$"
++	printf 'AT+ZECMCALL=1\n' > "$script"
++	# Ошибку игнорируем: на модемах без ECM-поддержки вызов не нужен,
++	# а AT+CGDCONT уже отработал.
++	atinout "$script" "$port" - >/dev/null 2>&1
++	rm -f "$script"
++	log "ECM data call (AT+ZECMCALL=1) отправлен модему"
++}
++
+ wait_for_modem() {
+ 	local i
+ 
+@@ -192,6 +220,7 @@ start_service() {
+ 	ensure_lte_section "$ifname"
+ 	ensure_firewall
+ 	sync_apn
++	ecm_call
+ 
+ 	proto="$(uci -q get network.lte.proto)"
+ 	if [ "$proto" != "none" ]; then
+diff --git a/package/pejir-lte-base/root/usr/bin/mdm-at b/package/pejir-lte-base/root/usr/bin/mdm-at
+index 75f9f4a..53a5837 100755
+--- a/package/pejir-lte-base/root/usr/bin/mdm-at
++++ b/package/pejir-lte-base/root/usr/bin/mdm-at
+@@ -5,15 +5,24 @@
+ #   mdm-at --port [tty]           — напечатать AT-порт модема (или "none")
+ #
+ # AT-порт ищется перебором ttyUSB*/ttyACM* с проверкой ответа "OK".
++#
++# Порядок перебора: ttyUSB2 -> ttyUSB1 -> ttyUSB0. У GM510 AT-порт —
++# ttyUSB2 (см. detect_at_port() в 47-pejir-lte), а ttyUSB0 у этой же
++# платы занят не-AT интерфейсом. Раньше перебор шёл с ttyUSB0, и
++# модем ошибочно считался "не найден".
++#
++# Порт открывается в raw-режиме без эха: иначе в буфер попадает
++# введённая команда и проверка ответа "OK" даёт ложные срабатывания.
+ 
+ TTY=${2:-auto}
+ 
+ detect_port() {
+ 	local p
+ 
+-	for p in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB3 \
+-	         /dev/ttyACM0 /dev/ttyACM1; do
++	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyUSB3 \
++	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
++		stty -F "$p" raw -echo 2>/dev/null || stty raw -echo < "$p" 2>/dev/null
+ 		printf 'AT\r' > "$p" 2>/dev/null
+ 		sleep 1
+ 		if head -c 64 "$p" 2>/dev/null | grep -q 'OK'; then
+@@ -40,6 +49,7 @@ if [ "$TTY" = auto ]; then
+ fi
+ 
+ [ -c "$TTY" ] || { echo "no AT port found"; exit 1; }
++stty -F "$TTY" raw -echo 2>/dev/null || stty raw -echo < "$TTY" 2>/dev/null
+ printf '%s\r' "$1" > "$TTY"
+ sleep 0.7
+ head -c 500 "$TTY" | strings
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index 5a13c65..2582a6d 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -7,20 +7,73 @@
+ # модема ещё не было), а страница SMS в LuCI была скрыта, пока smsd не
+ # создавал /var/spool/sms/incoming. Теперь скрипт выполняется при каждой
+ # загрузке, а пункт меню SMS виден всегда.
++#
++# Что исправлено:
++#   * конфиг: стоковый /etc/smsd.conf (от пакета smstools3) больше не
++#     блокирует запись. Раньше скрипт видел файл без нашего маркера и
++#     выходил, не записав ничего, поэтому в конфиге оставалась
++#     закомментированная секция [GSM1], smsd падал с "There are no
++#     devices specified.", а порт в LuCI показывался как незаданный.
++#     Теперь: наш конфиг — обновляем device; чужой — перезаписываем,
++#     сохранив копию в /etc/smsd.conf.user.
++#   * порт: ищем AT-порт тем же алгоритмом, что и 47-pejir-lte
++#     (ttyUSB2 -> ttyUSB1 -> ttyUSB0, проверка ответа OK через atinout).
++#     Прежний mdm-at перебирал начиная с ttyUSB0, который у GM510
++#     AT-портом не является.
++#   * модем: ждём дольше (10 попыток по 3 с), раньше было 3 по 2 с, и
++#     модем, появившийся позже, считался "не найденным".
++#   * если AT-порт так и не найден, smsd НЕ запускаем: без корректного
++#     device он всё равно упадёт, а пользователю лучше видеть в LuCI
++#     "порт не задан", чем "smsd запущен и сразу умер".
+ 
+ START=92
+ STOP=0
+ 
+ CONF="/etc/smsd.conf"
++USER_CONF="/etc/smsd.conf.user"
+ LOG="/var/log/smsd.log"
+ MARKER="# generated by 40-pejir-sms"
+-DEFAULT_PORT="/dev/ttyUSB0"
++DEFAULT_PORT="/dev/ttyUSB2"
++
++# AT-порт модема: у GM510 это ttyUSB2, но нумерация зависит от композиции.
++# Проверяем порт настоящим AT-запросом (atinout умеет ждать ответа).
++# Тот же алгоритм, что в 47-pejir-lte.
++detect_at_port() {
++	local p out script="/tmp/pejir-sms-probe.$$"
++
++	printf 'AT\n' > "$script"
++
++	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 \
++	         /dev/ttyACM1 /dev/ttyACM0; do
++		[ -c "$p" ] || continue
++		out="$(atinout "$script" "$p" - 2>/dev/null)"
++		case "$out" in
++			*OK*) rm -f "$script"; echo "$p"; return 0 ;;
++		esac
++	done
++
++	rm -f "$script"
++	return 1
++}
+ 
+ write_conf() {
+ 	local port="$1"
+ 
+-	# Пользовательский конфиг не трогаем.
+-	[ -f "$CONF" ] && ! grep -q "$MARKER" "$CONF" && return 0
++	# Наш конфиг — обновляем только порт.
++	if [ -f "$CONF" ] && grep -q "$MARKER" "$CONF"; then
++		sed -i "s|^device = .*|device = $port|" "$CONF"
++		return 0
++	fi
++
++	# Чужой конфиг: стоковый от smstools3 (секция закомментирована, порта
++	# нет) перезаписываем, копию сохраняем. Конфиг, отредактированный
++	# пользователем вручную, не трогаем.
++	if [ -f "$CONF" ]; then
++		if grep -qE '^[[:space:]]*device[[:space:]]*=' "$CONF"; then
++			return 0
++		fi
++		[ -f "$USER_CONF" ] || cp "$CONF" "$USER_CONF"
++	fi
+ 
+ 	cat > "$CONF" <<CONF
+ #
+@@ -57,18 +110,26 @@ start_service() {
+ 	mkdir -p /var/spool/sms/incoming /var/spool/sms/outgoing \
+ 	         /var/spool/sms/sent /var/spool/sms/failed /var/spool/sms/checked
+ 
+-	# Модем может появиться в USB чуть позже, поэтому короткий перебор портов.
+-	for i in 1 2 3; do
+-		port="$(mdm-at --port 2>/dev/null)"
+-		[ -n "$port" ] && [ "$port" != none ] && break
+-		port=""
+-		sleep 2
++	# Модем может появиться в USB чуть позже, поэтому перебираем порты
++	# подольше, чем раньше (было 3 попытки по 2 с).
++	for i in 1 2 3 4 5 6 7 8 9 10; do
++		port="$(detect_at_port)"
++		[ -n "$port" ] && break
++		sleep 3
+ 	done
+ 
+-	[ -n "$port" ] || port="$DEFAULT_PORT"
++	if [ -z "$port" ]; then
++		# AT-порт не найден: конфиг не трогаем (чтобы не записать
++		# заведомо неверный порт), smsd не запускаем.
++		logger -t pejir-sms "AT-порт модема не найден, smsd не запущен"
++		return 0
++	fi
++
+ 	write_conf "$port"
+ 
++	# Конфиг изменился — перезапускаем smsd, чтобы он подхватил порт.
+ 	/etc/init.d/smstools3 enable >/dev/null 2>&1
++	/etc/init.d/smstools3 restart >/dev/null 2>&1
+ }
+ 
+ stop_service() {
+-- 
+2.39.5
+

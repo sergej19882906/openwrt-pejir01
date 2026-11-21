@@ -456,7 +456,8 @@ if [ -n "$SU" ]; then
                  www/luci-static/resources/view/perenio/idata.js \
                  www/luci-static/resources/view/perenio/diag.js \
                  usr/share/luci/menu.d/luci-app-perenio.json \
-                 usr/share/rpcd/acl.d/luci-app-perenio.json; do
+                 usr/share/rpcd/acl.d/luci-app-perenio.json \
+                 usr/libexec/perenio-diag; do
           echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || PERENIO_MISSING="$PERENIO_MISSING $f"
         done
         if [ -n "$PERENIO_MISSING" ]; then
@@ -524,6 +525,48 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  русских переводов LuCI (.ru.lmo): $I18N_COUNT"
+
+        # Переводы САМОЙ темы Argon. Домен = имя .po-файла, поэтому файл
+        # называется argon-config.ru.lmo (не argon.ru.lmo). Проверяем
+        # явно: без него интерфейс темы (страница настроек Argon) остаётся
+        # английским, хотя общий перевод LuCI уже есть.
+        if ! echo "$ROOTFS_LIST" | grep -q 'squashfs-root/usr/lib/lua/luci/i18n/argon-config\.ru\.lmo'; then
+          ann error "build.sh: Argon i18n" "В образе нет переводов темы Argon (argon-config.ru.lmo)"
+          echo "ОШИБКА: переводы темы Argon не попали в образ"
+          exit 1
+        fi
+        echo "  переводы темы Argon (argon-config.ru.lmo): OK"
+
+        # ACL страниц порта. В LuCI 25.12 fs.read/fs.exec проверяются по
+        # scope "file" с указанием пути (в rpcd/plugins/file.c вызов
+        # session_access(sid, "file", path, perm)). Одного "ubus": {"file":
+        # [...]} недостаточно - без раздела "file" все страницы порта
+        # (батарея, SMS, заводские данные, диагностика) отдают
+        # "Permission denied".
+        ACL_FILE="squashfs-root/usr/share/rpcd/acl.d/luci-app-perenio.json"
+        if ! echo "$ROOTFS_LIST" | grep -q "$ACL_FILE"; then
+          ann error "build.sh: Perenio ACL" "В образе нет ACL luci-app-perenio"
+          echo "ОШИБКА: ACL страниц порта не попал в образ"
+          exit 1
+        fi
+        # Содержимое ACL смотрим в самом squashfs: unsquashfs -l даёт
+        # только список файлов. Распаковываем один файл во временный
+        # каталог (unsquashfs -cat не требует root).
+        ACL_SRC=""
+        if command -v unsquashfs >/dev/null 2>&1; then
+          ACL_SRC="$(unsquashfs -cat "$R" "usr/share/rpcd/acl.d/luci-app-perenio.json" 2>/dev/null || true)"
+        fi
+        if [ -z "$ACL_SRC" ]; then
+          ann error "build.sh: Perenio ACL" "Не удалось прочитать ACL из rootfs"
+          echo "ОШИБКА: не удалось прочитать ACL luci-app-perenio из образа"
+          exit 1
+        fi
+        if ! echo "$ACL_SRC" | grep -q '"/usr/libexec/perenio-diag"'; then
+          ann error "build.sh: Perenio ACL" "В ACL нет scope file с путями"
+          echo "ОШИБКА: ACL luci-app-perenio без раздела file (fs.read/fs.exec будут запрещены)"
+          exit 1
+        fi
+        echo "  ACL страниц порта (scope file): OK"
       fi
     fi
   fi

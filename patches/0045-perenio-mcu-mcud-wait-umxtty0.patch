@@ -1,0 +1,72 @@
+From d07ba7a45723a99b7a3c4a89842344cd5c3c324d Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 20:25:04 +0000
+Subject: [PATCH] =?UTF-8?q?perenio-mcu:=20mcud=20=D0=B6=D0=B4=D1=91=D1=82?=
+ =?UTF-8?q?=20/dev/umxtty0=20=D0=B4=D0=BE=D0=BB=D1=8C=D1=88=D0=B5=20=D0=B8?=
+ =?UTF-8?q?=20=D0=BF=D0=B8=D1=88=D0=B5=D1=82=20=D0=BE=20=D0=BF=D1=80=D0=B8?=
+ =?UTF-8?q?=D1=87=D0=B8=D0=BD=D0=B5=20=D0=B2=20=D0=B6=D1=83=D1=80=D0=BD?=
+ =?UTF-8?q?=D0=B0=D0=BB?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mcud работает через UART-мультиплексор: /dev/umxtty0 создаёт uartmuxd
+(START=14, /dev/ttyS1 -> umxtty0/1/2), mcud стартует следом
+(START=15). Прежнего ожидания в 10 попыток по 0.5 с (всего 5 секунд)
+не хватало, если uartmuxd не успел подняться или был перезапущен
+procd'ом: mcud тихо выходил, и батарея/STM32 оставались недоступны -
+страница LuCI показывала "mcud не запущен" и напряжение n/a.
+
+Теперь ждём до 30 секунд. Если /dev/umxtty0 так и не появился, не
+выходим молча: пишем в logread (с указанием, запущен ли uartmuxd) и
+в /dev/kmsg, чтобы причина была видна, а не терялась.
+---
+ package/perenio-mcu/files/mcud.init | 24 +++++++++++++++++++++---
+ 1 file changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/package/perenio-mcu/files/mcud.init b/package/perenio-mcu/files/mcud.init
+index fd568b9..4267fef 100644
+--- a/package/perenio-mcu/files/mcud.init
++++ b/package/perenio-mcu/files/mcud.init
+@@ -1,17 +1,35 @@
+ #!/bin/sh /etc/rc.common
+ # Adapted from vendor Perenio 9.0.4 mcud init
++#
++# mcud работает через UART-мультиплексор: /dev/umxtty0 - это slave-конец
++# псевдотерминала, который создаёт uartmuxd (START=14, /dev/ttyS1 ->
++# umxtty0/1/2). Поэтому mcud (START=15) обязан дождаться появления
++# /dev/umxtty0.
++#
++# Раньше ожидание было 10 попыток по 0.5 с - всего 5 секунд. Если
++# uartmuxd к этому моменту не успел (или упал и был перезапущен
++# procd'ом), mcud тихо выходил, и батарея/STM32 оставались недоступны:
++# страница LuCI показывала "mcud не запущен", напряжение n/a.
++#
++# Теперь ждём до 30 секунд. Если /dev/umxtty0 так и не появился, не
++# выходим молча: пишем в журнал и в /dev/kmsg, чтобы причина была
++# видна в logread (а не "где-то потерялось").
+ START=15
+ STOP=95
+ USE_PROCD=1
+ PROG=/usr/bin/mcud
+ 
+ start_service() {
+-    echo "mcud starting..."
+-    local i=10
++    local i=60
++
+     while [ ! -c "/dev/umxtty0" ]; do
+         sleep 0.5
+         i=$((i-1))
+-        [ "$i" -eq 0 ] && { echo "Timeout - /dev/umxtty0 does not exist (uartmuxd running?)"; return 0; }
++        if [ "$i" -eq 0 ]; then
++            logger -t mcud "Timeout: /dev/umxtty0 не появился (uartmuxd запущен? $(pgrep -x uartmuxd >/dev/null && echo yes || echo no))"
++            echo "mcud: /dev/umxtty0 does not exist (uartmuxd running?)" > /dev/kmsg
++            return 0
++        fi
+     done
+ 
+     procd_open_instance
+-- 
+2.39.5
+

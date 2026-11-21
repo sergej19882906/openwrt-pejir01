@@ -1,0 +1,278 @@
+From 48ba2dce5f92e85884621d69a96c1bded02bd373 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 20:24:57 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-perenio:=20ACL=20=D1=81=D0=BE=20scope?=
+ =?UTF-8?q?=20"file"=20=D0=B8=20=D0=B4=D0=B8=D0=B0=D0=B3=D0=BD=D0=BE=D1=81?=
+ =?UTF-8?q?=D1=82=D0=B8=D0=BA=D0=B0=20=D0=BE=D1=82=D0=B4=D0=B5=D0=BB=D1=8C?=
+ =?UTF-8?q?=D0=BD=D1=8B=D0=BC=20=D1=84=D0=B0=D0=B9=D0=BB=D0=BE=D0=BC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Все страницы порта (заводские данные, диагностика, батарея, SMS) на
+живом устройстве отдавали "Permission denied".
+
+Причина в ACL, а не в самих страницах. В LuCI 25.12 вызовы fs.read()
+и fs.exec() проверяются по scope "file" с указанием пути: в
+rpcd/plugins/file.c это
+
+    rpc_file_access(sid, path, perm) -> session_access(sid, "file", path, perm)
+
+и право ищется по ACL-объекту, совпадающему с путём файла (fnmatch).
+В нашем ACL был только "ubus": {"file": [...]} - он разрешает лишь сам
+вызов метода ubus, но не даёт доступа к конкретному файлу. Раздела
+"file" не было вовсе, поэтому любой fs.read()/fs.exec() упирался в
+EACCES.
+
+ACL приведён к виду как в luci-app-mwan3: перечислены конкретные пути
+и операции (read/list/exec) для каждого используемого файла.
+
+Заодно диагностика перенесена из fs.exec('/bin/sh', ['-c', SCRIPT]) в
+отдельный файл /usr/libexec/perenio-diag. Прежний вариант не мог
+работать по двум причинам:
+
+  * длина командной строки в rpcd ограничена 1024 байтами
+    (RPC_CMDLINE_MAX_SIZE), а наш скрипт - 2186 байт, поэтому вызов
+    отклонялся всегда;
+  * "/bin/sh" - симлинок на busybox, а rpcd резолвит симлинки и требует
+    права на ЦЕЛЕВОЙ путь ("/bin/busybox"), то есть пришлось бы
+    выдавать exec и на сам busybox.
+
+Теперь вызов - fs.exec('/usr/libexec/perenio-diag', []).
+
+Исправлены две мелочи на страницах:
+
+  * определение "smsd запущен": procd печатает "not running" для
+    упавшего сервиса, а прежняя проверка /running/i считала такую
+    строку работающей. Теперь ищем "running" в начале строки;
+  * страница idata различает "нет файла" и "нет доступа" - прежде
+    для ЛЮБОЙ ошибки показывалось "файл не найден", из-за чего отказ
+    в доступе выглядел как отсутствие файла.
+---
+ package/luci-app-perenio/Makefile             |  5 +-
+ .../resources/view/perenio/diag.js            | 55 ++++---------------
+ .../resources/view/perenio/idata.js           | 16 +++++-
+ .../luci-static/resources/view/perenio/sms.js |  5 +-
+ .../root/usr/libexec/perenio-diag             | 38 +++++++++++++
+ .../share/rpcd/acl.d/luci-app-perenio.json    | 18 ++++++
+ 6 files changed, 89 insertions(+), 48 deletions(-)
+ create mode 100755 package/luci-app-perenio/root/usr/libexec/perenio-diag
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index fe4556c..52a0dd7 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=luci-app-perenio
+ PKG_VERSION:=1.0.0
+-PKG_RELEASE:=4
++PKG_RELEASE:=5
+ 
+ PKG_LICENSE:=Apache-2.0
+ 
+@@ -50,6 +50,9 @@ define Package/luci-app-perenio/install
+ 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+ 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-perenio.json \
+ 		$(1)/usr/share/rpcd/acl.d/luci-app-perenio.json
++	$(INSTALL_DIR) $(1)/usr/libexec
++	$(INSTALL_BIN) ./root/usr/libexec/perenio-diag \
++		$(1)/usr/libexec/perenio-diag
+ endef
+ 
+ $(eval $(call BuildPackage,luci-app-perenio))
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+index 7d2d78c..0b3e3b5 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+@@ -5,52 +5,21 @@
+ 
+ /* Сводная диагностика: USB-контроллер и устройства, модем (ttyUSB/cdc-wdm),
+    интерфейс LTE, состояние служб STM32 и данные батареи.
+-   Всё собирается одной командой через fs.exec — в LuCI 25.12 чтение
+-   произвольных путей (fs.read) ограничено белым списком, а exec —
+-   нет. Право file.exec есть в ACL luci-app-perenio (операция write). */
+-var SCRIPT = [
+-	'echo "=== Модель и DTB ==="',
+-	'cat /proc/device-tree/model 2>/dev/null; echo',
+-	'echo -n "узлы device-tree: "; ls /proc/device-tree/ 2>/dev/null | tr "\\n" " "; echo',
+-	'echo -n "узлы regulator*: "; ls -d /proc/device-tree/regulator* 2>/dev/null | tr "\\n" " "; echo',
+-	'echo -n "xhci status: "; cat /proc/device-tree/xhci@1e1c0000/status 2>/dev/null; echo',
+-	'echo -n "xhci children: "; ls /proc/device-tree/xhci@1e1c0000/ 2>/dev/null | tr "\\n" " "; echo',
+-	'echo -n "cmdline: "; cat /proc/cmdline 2>/dev/null; echo',
+-	'echo "=== USB: сообщения ядра ==="',
+-	'dmesg 2>/dev/null | grep -iE "xhci|ehci|ohci|uhci|dwc|usb [0-9]|new .*USB device|option|cdc_ether|cdc_ncm|cdc_mbim|rndis|scsi|uas|regulator" | tail -40',
+-	'echo "=== USB: устройства ==="',
+-	'echo -n "sysfs: "; ls /sys/bus/usb/devices/ 2>/dev/null | tr "\\n" " "; echo',
+-	'for d in /sys/bus/usb/devices/*/; do [ -f "$d/idVendor" ] && echo "$(basename $d) $(cat $d/idVendor 2>/dev/null):$(cat $d/idProduct 2>/dev/null) $(cat $d/product 2>/dev/null)"; done',
+-	'echo "=== Модем, UART и мультиплексор ==="',
+-	'ls -l /dev/ttyUSB* /dev/ttyACM* /dev/cdc-wdm* /dev/umxtty* /dev/ttyS* 2>&1',
+-	'echo "--- modeminfo ---"',
+-	'uci show modeminfo 2>/dev/null',
+-	'echo "=== Разметка памяти: MTD и UBI ==="',
+-	'cat /proc/mtd 2>/dev/null',
+-	'echo -n "тома UBI: "; for u in /sys/class/ubi/ubi*_*; do [ -f "$u/name" ] && echo -n "$(basename $u)=$(cat $u/name) "; done; echo',
+-	'echo -n "imgidx: "; fw_printenv -n imgidx 2>/dev/null; echo',
+-	'echo "=== Wi-Fi ==="',
+-	'iw dev 2>/dev/null',
+-	'grep -E "option (ssid|disabled|country|channel|htmode)" /etc/config/wireless 2>/dev/null',
+-	'dmesg 2>/dev/null | grep -iE "mt76|mt7603|mt7612|wiphy|ieee80211|firmware|calib" | tail -25',
+-	'echo -n "firmware mt76: "; ls /lib/firmware/ 2>/dev/null | grep -i mt76 | tr "\n" " "; echo',
+-	'echo "=== Сеть ==="',
+-	'ip -o link show 2>/dev/null',
+-	'echo "--- network.lte ---"',
+-	'uci show network 2>/dev/null | grep -E "lte|eth[0-9]|usb[0-9]|wan"',
+-	'echo "=== Службы ==="',
+-	'ps w 2>/dev/null | grep -E "mcud|uartmuxd|smsd|mcu" | grep -v grep',
+-	'echo "=== Батарея: mcu ==="',
+-	'/usr/bin/mcu getvolt 2>&1; echo',
+-	'/usr/bin/mcu getsys 2>&1; echo',
+-	'/usr/bin/mcu getver 2>&1; echo',
+-	'echo "=== Журнал: usb/mcu/lte ==="',
+-	'logread 2>/dev/null | grep -iE "mcu|uartmux|umxtty|usb|lte|modem|smsd" | tail -30'
+-].join('; ') + '; true';
++   Всё собирается одной командой, но сам скрипт лежит в файле
++   /usr/libexec/perenio-diag, а не передаётся аргументом "sh -c".
++
++   Почему не "sh -c <текст>": в LuCI 25.12 вызов идёт через rpcd, где длина
++   командной строки ограничена 1024 байтами (RPC_CMDLINE_MAX_SIZE в
++   rpcd/plugins/file.c), а наш скрипт диагностики вдвое длиннее. Кроме
++   того, "/bin/sh" - симлинок на busybox, а rpcd резолвит симлинки и
++   требует права на ЦЕЛЕВОЙ путь ("/bin/busybox"), то есть разрешение
++   пришлось бы выдавать и на сам busybox. Отдельный файл обходит обе
++   проблемы: аргументов нет, путь один и известный. */
++var DIAG = '/usr/libexec/perenio-diag';
+ 
+ return view.extend({
+ 	load: function() {
+-		return fs.exec('/bin/sh', [ '-c', SCRIPT ]).then(function(txt) {
++		return fs.exec(DIAG, []).then(function(txt) {
+ 			return [ txt || '' ];
+ 		}).catch(function(e) {
+ 			return [ _('Не удалось выполнить диагностику: ') + (e || '') ];
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
+index 34bb6a4..5822378 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
+@@ -124,11 +124,21 @@ return view.extend({
+ 					E('th', { 'class': 'th' }, _('Значение'))
+ 				])
+ 			].concat(rows)));
+-		}).catch(function() {
++		}).catch(function(e) {
+ 			var box = document.getElementById('idata-list');
+ 
+-			if (box)
+-				box.innerHTML = '<em>' + _('Файл /etc/config/idata не найден') + '</em>';
++			if (!box)
++				return;
++
++			/* Раньше здесь для ЛЮБОЙ ошибки показывалось "файл не найден",
++			   из-за чего отказ в доступе (Permission denied) выглядел как
++			   отсутствие файла. Различаем эти случаи. */
++			var denied = (e && e.name == 'PermissionError');
++			box.innerHTML = '<em>' +
++				(denied
++					? _('Нет доступа к /etc/config/idata (проверьте ACL luci-app-perenio)')
++					: _('Файл /etc/config/idata не найден')) +
++				'</em>';
+ 		});
+ 	},
+ 
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 1c750f1..e5019e8 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -46,7 +46,10 @@ function readStatus() {
+ 			.filter(function(n) { return /^ttyUSB|^ttyACM/.test(n); });
+ 		var m = conf.match(/^[ \t]*device[ \t]*=[ \t]*(\S+)/m);
+ 		var out = (svc.stdout || '') + (svc.stderr || '');
+-		var running = /running/i.test(out);
++		/* procd печатает "not running" для упавшего сервиса, а эта строка
++		   содержит "running" - прежняя проверка /running/i считала упавший
++		   smsd работающим. Теперь ищем именно "running" в начале строки. */
++		var running = /^\s*running\b/im.test(out);
+ 
+ 		setText('sms-svc', running ? _('работает (smsd)') : _('не запущен'));
+ 		setText('sms-ports', ports.length ? ports.join(', ') : _('не найдено (ttyUSB/ttyACM)'));
+diff --git a/package/luci-app-perenio/root/usr/libexec/perenio-diag b/package/luci-app-perenio/root/usr/libexec/perenio-diag
+new file mode 100755
+index 0000000..75e943b
+--- /dev/null
++++ b/package/luci-app-perenio/root/usr/libexec/perenio-diag
+@@ -0,0 +1,38 @@
++#!/bin/sh
++echo "=== Модель и DTB ==="
++cat /proc/device-tree/model 2>/dev/null; echo
++echo -n "узлы device-tree: "; ls /proc/device-tree/ 2>/dev/null | tr "\n" " "; echo
++echo -n "узлы regulator*: "; ls -d /proc/device-tree/regulator* 2>/dev/null | tr "\n" " "; echo
++echo -n "xhci status: "; cat /proc/device-tree/xhci@1e1c0000/status 2>/dev/null; echo
++echo -n "xhci children: "; ls /proc/device-tree/xhci@1e1c0000/ 2>/dev/null | tr "\n" " "; echo
++echo -n "cmdline: "; cat /proc/cmdline 2>/dev/null; echo
++echo "=== USB: сообщения ядра ==="
++dmesg 2>/dev/null | grep -iE "xhci|ehci|ohci|uhci|dwc|usb [0-9]|new .*USB device|option|cdc_ether|cdc_ncm|cdc_mbim|rndis|scsi|uas|regulator" | tail -40
++echo "=== USB: устройства ==="
++echo -n "sysfs: "; ls /sys/bus/usb/devices/ 2>/dev/null | tr "\n" " "; echo
++for d in /sys/bus/usb/devices/*/; do [ -f "$d/idVendor" ] && echo "$(basename $d) $(cat $d/idVendor 2>/dev/null):$(cat $d/idProduct 2>/dev/null) $(cat $d/product 2>/dev/null)"; done
++echo "=== Модем, UART и мультиплексор ==="
++ls -l /dev/ttyUSB* /dev/ttyACM* /dev/cdc-wdm* /dev/umxtty* /dev/ttyS* 2>&1
++echo "--- modeminfo ---"
++uci show modeminfo 2>/dev/null
++echo "=== Разметка памяти: MTD и UBI ==="
++cat /proc/mtd 2>/dev/null
++echo -n "тома UBI: "; for u in /sys/class/ubi/ubi*_*; do [ -f "$u/name" ] && echo -n "$(basename $u)=$(cat $u/name) "; done; echo
++echo -n "imgidx: "; fw_printenv -n imgidx 2>/dev/null; echo
++echo "=== Wi-Fi ==="
++iw dev 2>/dev/null
++grep -E "option (ssid|disabled|country|channel|htmode)" /etc/config/wireless 2>/dev/null
++dmesg 2>/dev/null | grep -iE "mt76|mt7603|mt7612|wiphy|ieee80211|firmware|calib" | tail -25
++echo -n "firmware mt76: "; ls /lib/firmware/ 2>/dev/null | grep -i mt76 | tr "\n" " "; echo
++echo "=== Сеть ==="
++ip -o link show 2>/dev/null
++echo "--- network.lte ---"
++uci show network 2>/dev/null | grep -E "lte|eth[0-9]|usb[0-9]|wan"
++echo "=== Службы ==="
++ps w 2>/dev/null | grep -E "mcud|uartmuxd|smsd|mcu" | grep -v grep
++echo "=== Батарея: mcu ==="
++/usr/bin/mcu getvolt 2>&1; echo
++/usr/bin/mcu getsys 2>&1; echo
++/usr/bin/mcu getver 2>&1; echo
++echo "=== Журнал: usb/mcu/lte ==="
++logread 2>/dev/null | grep -iE "mcu|uartmux|umxtty|usb|lte|modem|smsd" | tail -30
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 32af9a9..64c97b3 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -2,11 +2,29 @@
+ 	"luci-app-perenio": {
+ 		"description": "Grant access to Perenio STM32 status and SMS",
+ 		"read": {
++			"file": {
++				"/etc/config/idata": [ "read" ],
++				"/etc/smsd.conf": [ "read" ],
++				"/var/log/smsd.log": [ "read" ],
++				"/var/log/smsd.log.1": [ "read" ],
++				"/var/spool/sms/incoming": [ "list" ],
++				"/var/spool/sms/incoming/*": [ "read" ],
++				"/dev": [ "list" ]
++			},
+ 			"ubus": {
+ 				"file": [ "list", "read" ]
+ 			}
+ 		},
+ 		"write": {
++			"file": {
++				"/usr/bin/mcu getvolt": [ "exec" ],
++				"/usr/bin/mcu getsys": [ "exec" ],
++				"/usr/bin/mcu getver": [ "exec" ],
++				"/usr/sbin/idata_load --force": [ "exec" ],
++				"/usr/bin/sendsms *": [ "exec" ],
++				"/etc/init.d/smstools3 status": [ "exec" ],
++				"/usr/libexec/perenio-diag": [ "exec" ]
++			},
+ 			"ubus": {
+ 				"file": [ "exec" ]
+ 			}
+-- 
+2.39.5
+
