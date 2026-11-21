@@ -1,0 +1,76 @@
+From c8d3cf506d51fa192dac76db9357b3995d92dd6d Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Sat, 21 Nov 2026 12:08:18 +0000
+Subject: [PATCH 2/2] =?UTF-8?q?platform.sh:=20=D0=BF=D0=B5=D1=80=D0=B5?=
+ =?UTF-8?q?=D1=81=D0=BE=D0=B7=D0=B4=D0=B0=D0=B2=D0=B0=D1=82=D1=8C=20UBI-?=
+ =?UTF-8?q?=D1=82=D0=BE=D0=BC=20rootfs=20=D0=BF=D0=BE=D0=B4=20=D1=80=D0=B0?=
+ =?UTF-8?q?=D0=B7=D0=BC=D0=B5=D1=80=20=D0=BD=D0=BE=D0=B2=D0=BE=D0=B3=D0=BE?=
+ =?UTF-8?q?=20=D0=BE=D0=B1=D1=80=D0=B0=D0=B7=D0=B0?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Том rootfs, созданный старыми прошивками, рассчитан на 24 МБ, а наш
+rootfs - 25.5 МБ, и ubiupdatevol отказывается его писать ("will not fit
+volume"). Это вторая причина, почему обновление по воздуху ничего не
+делало: даже с правильным слотом ядра запись rootfs не проходила.
+
+Теперь перед записью:
+* том rootfs_data удаляется и создаётся заново (освобождает место);
+* том rootfs удаляется и создаётся под точный размер образа;
+* далее - обычная запись.
+
+Настройки сохраняются штатным механизмом sysupgrade (/tmp/sysupgrade.tgz
+-> восстановление при первом старте).
+---
+ .../mt7621/base-files/lib/upgrade/platform.sh | 27 +++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+index 6c1b8a1..b1d3423 100644
+--- a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+@@ -166,6 +166,23 @@ perenio_do_upgrade() {
+ 		return 1
+ 	fi
+ 
++	# Том rootfs, созданный старыми прошивками, рассчитан на 24 МБ, а наш
++	# rootfs больше - запись в него не влезает ("will not fit volume").
++	# Поэтому перед записью пересоздаём тома: rootfs под размер нового
++	# образа и rootfs_data заново (место освобождается автоматически).
++	# Настройки при этом сохраняются штатным механизмом sysupgrade
++	# (/tmp/sysupgrade.tgz -> восстановление при первом старте).
++	for ubivol in /sys/class/ubi/ubi*_*; do
++		[ -f "$ubivol/name" ] || continue
++		volname="$(cat "$ubivol/name")"
++		if [ "$volname" = "rootfs_data" ]; then
++			ubidev="$(basename "$ubivol" | cut -d_ -f1)"
++			echo "пересоздание тома rootfs_data"
++			ubirmvol "/dev/$ubidev" -N rootfs_data 2>/dev/null
++			ubimkvol "/dev/$ubidev" -N rootfs_data -m 2>/dev/null
++		fi
++	done
++
+ 	ok=0
+ 	bad=0
+ 	for ubivol in /sys/class/ubi/ubi*_*; do
+@@ -178,6 +195,16 @@ perenio_do_upgrade() {
+ 		dev="$(nand_find_volume "$(basename "$ubivol" | cut -d_ -f1)" "$volname")"
+ 		[ -n "$dev" ] || continue
+ 		echo "запись rootfs ($rootfs_len байт) в UBI-том $volname (/dev/$dev)"
++		# Пересоздаём том под точный размер образа: старый том меньше,
++		# и ubiupdatevol отказывается ("will not fit volume").
++		if [ "$volname" = "rootfs" ]; then
++			ubidev="$(basename "$ubivol" | cut -d_ -f1)"
++			ubirmvol "/dev/$ubidev" -N "$volname" 2>/dev/null
++			ubimkvol "/dev/$ubidev" -N "$volname" -s "$rootfs_len" 2>/dev/null
++			dev="$(nand_find_volume "$ubidev" "$volname")"
++			[ -n "$dev" ] || { bad=$((bad + 1)); continue; }
++			echo "том пересоздан: /dev/$dev ($rootfs_len байт)"
++		fi
+ 		if $cmd < "$tar_file" | tar xOf - "$board_dir/root" | \
+ 			ubiupdatevol "/dev/$dev" -s "$rootfs_len" -; then
+ 			ok=$((ok + 1))
+-- 
+2.39.5
+
