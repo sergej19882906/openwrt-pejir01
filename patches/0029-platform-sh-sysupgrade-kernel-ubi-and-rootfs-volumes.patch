@@ -1,11 +1,10 @@
 From: Perenio PEJIR01 port <port@local>
-Date: Tue, 21 Nov 2026 08:20:00 +0000
+Date: Tue, 21 Nov 2026 08:35:00 +0000
 Subject: [PATCH] platform.sh: sysupgrade, который реально обновляет систему
 
 Загрузчик PEJIR01 берёт образ из UBI-тома "kernel", а rootfs — из тома
 "rootfs" (на устройстве тома называются kernel/rootfs/rootfs_data — это
-стандартная раскладка NAND-варианта OpenWrt; вендер в sw-description
-использует другие имена, rootfs0/rootfs1).
+стандартная раскладка NAND-варианта OpenWrt).
 
 Старый perenio_do_upgrade писал ядро только в MTD-разделы kernel0/kernel1
 и rootfs только в том "rootfs" на одном UBI-устройстве. Из-за этого после
@@ -16,18 +15,45 @@ Subject: [PATCH] platform.sh: sysupgrade, который реально обно
   * ядро пишется в MTD kernel0/kernel1/kernel и в UBI-том "kernel";
   * rootfs пишется во все тома, чьё имя начинается с rootfs (rootfs,
     rootfs0, rootfs1; rootfs_data пропускается), на всех UBI-устройствах;
-  * ошибка записи в отдельный том обновление не валит, но если не записан
-    ни один том — обновление считается неуспешным;
+  * platform_check_image для этой платы принимает только sysupgrade-архив
+    (с sysupgrade-*/kernel и sysupgrade-*/root) — раньше factory.bin или
+    initramfs-kernel.bin проходили проверку, и обновление "успешно" ничего
+    не записывало;
   * в лог пишется разметка MTD, список томов UBI, значение imgidx и
     точное место каждой записи.
 
 --- a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
 +++ b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
 diff --git a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
-index 9436468..ea2ca7f 100644
+index 9436468..06e18dc 100644
 --- a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
 +++ b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
-@@ -25,30 +25,95 @@ platform_check_image() {
+@@ -19,36 +19,120 @@ platform_check_image() {
+ 	buffalo,wsr-2533dhpls)
+ 		buffalo_check_image "$board" "$magic" "$1" || return 1
+ 		;;
++	perenio,pejir01-34-BA)
++		# Принимаем ТОЛЬКО sysupgrade-архив. Если залить factory.bin или
++		# initramfs-kernel.bin, обновление раньше проходило "без ошибок",
++		# но ничего не записывало: система оставалась прежней.
++		local board_dir member
++		board_dir="$(tar tf "$1" 2>/dev/null | grep -m 1 '^sysupgrade-.*/$')"
++		if [ -z "$board_dir" ]; then
++			echo "Это не sysupgrade-архив. Нужен openwrt-ramips-mt7621-perenio_pejir01-34-BA-squashfs-sysupgrade.bin"
++			return 1
++		fi
++		board_dir="${board_dir%/}"
++		for member in kernel root; do
++			tar tf "$1" 2>/dev/null | grep -qx "$board_dir/$member" || {
++				echo "В архиве нет $member ($board_dir/$member)"
++				return 1
++			}
++		done
++		return 0
++		;;
+ 	esac
+ 
+ 	return 0
  }
  
  # Perenio PEJIR01: ядро лежит в MTD-разделах kernel0/kernel1 (по 4 МиБ),
