@@ -20,7 +20,7 @@ fail() { echo "FAIL: $1"; FAILED=$((FAILED+1)); }
 # --- чистое состояние -------------------------------------------------------
 # Тест обязан быть герметичным: результат не должен зависеть от файлов,
 # оставшихся от прошлого прогона (в CI состояние чистое, в песочнице - нет).
-rm -rf /tmp/extroot-test
+rm -rf /tmp/extroot-test /tmp/pejir-extroot
 mkdir -p /tmp/extroot-test/bin /tmp/extroot-test/dev
 
 # --- мок block -------------------------------------------------------------
@@ -58,13 +58,12 @@ chmod +x /tmp/extroot-test/bin/mkfs.ext4
 # --- мок mount -------------------------------------------------------------
 cat > /tmp/extroot-test/bin/mount <<'EOF'
 #!/bin/sh
-# mount -t ext4 <dev> <mnt>: имитируем монтирование флешки и копирование
-# fstab на неё (настоящей флешки в песочнице нет).
+# mount -t ext4 <dev> <mnt>: имитируем монтирование флешки. Настоящей
+# флешки в песочнице нет, поэтому mountpoint - обычный каталог.
 case "$1" in
 -t)
     dev="$3"; mnt="$4"
-    mkdir -p "$mnt/etc/config"
-    cp "$FSTAB_ENV" "$mnt/etc/config/fstab" 2>/dev/null || true
+    mkdir -p "$mnt"
     exit 0
     ;;
 esac
@@ -86,6 +85,14 @@ mkdir -p /tmp/extroot-test/dev
 : > /tmp/extroot-test/dev/sdb1
 export DEVDIR=/tmp/extroot-test/dev
 export FSTAB_ENV=/tmp/extroot-test/fstab
+
+# Фикстура текущего overlay: /overlay/upper - это изменённые файлы
+# (настройки), которые мы переносим на флешку при включении extroot.
+export OVERLAY_ENV=/tmp/extroot-test/overlay
+rm -rf "$OVERLAY_ENV"
+mkdir -p "$OVERLAY_ENV/upper/etc/config" "$OVERLAY_ENV/work"
+printf "option ssid 'MyWiFi'\n" > "$OVERLAY_ENV/upper/etc/config/wireless"
+printf "config pejir 'x'\n" > "$OVERLAY_ENV/upper/etc/config/pejir"
 
 # --- тест 1a: статус при отсутствующем fstab --------------------------------
 # Файла /etc/config/fstab нет => extroot не настроен.
@@ -143,11 +150,44 @@ else
 fi
 
 # --- тест 3: fstab скопирован на флешку ------------------------------------
-if [ -f /tmp/pejir-extroot/etc/config/fstab ]; then
-	ok "setup: fstab скопирован на флешку"
+# Копия нужна в upper/etc/config - только оттуда он попадает в объединённый
+# /etc (lowerdir=/rom + upperdir=/overlay/upper).
+if [ -f /tmp/pejir-extroot/upper/etc/config/fstab ]; then
+	ok "setup: fstab скопирован на флешку (upper/etc/config)"
 else
 	fail "setup: fstab не скопирован на флешку"
 	ls -R /tmp/pejir-extroot 2>/dev/null
+fi
+
+# --- тест 3a: настройки перенесены на флешку ------------------------------
+# После переключения overlay'а fstools создаёт на разделе ПУСТЫЕ upper/ и
+# work/, а lowerdir - это squashfs. Поэтому настройки из тома rootfs_data
+# сами не переезжают, и скрипт обязан скопировать их сам.
+if [ -f /tmp/pejir-extroot/upper/etc/config/wireless ]; then
+	ok "setup: настройки (overlay/upper) скопированы на флешку"
+else
+	fail "setup: настройки НЕ скопированы на флешку"
+	ls -R /tmp/pejir-extroot 2>/dev/null | head -20
+fi
+if grep -q "MyWiFi" /tmp/pejir-extroot/upper/etc/config/wireless 2>/dev/null; then
+	ok "setup: содержимое настроек перенесено без изменений"
+else
+	fail "setup: содержимое настроек не совпадает"
+fi
+
+# --- тест 3b: fstab лежит в upper, а не в корне раздела --------------------
+# Объединённый /etc собирается как lowerdir=/rom + upperdir=/overlay/upper,
+# поэтому fstab должен быть в upper/etc/config. Копия в корень раздела
+# (/etc/config/fstab) в объединённый /etc НЕ попадает.
+if [ -f /tmp/pejir-extroot/upper/etc/config/fstab ]; then
+	ok "setup: fstab в upper/etc/config (попадёт в объединённый /etc)"
+else
+	fail "setup: fstab не в upper/etc/config"
+fi
+if [ -f /tmp/pejir-extroot/etc/config/fstab ]; then
+	fail "setup: fstab продублирован в корень раздела - он туда не попадёт"
+else
+	ok "setup: лишней копии fstab в корне раздела нет"
 fi
 
 # --- тест 4: повторный setup не форматирует готовый ext4 -------------------

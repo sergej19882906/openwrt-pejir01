@@ -1,0 +1,117 @@
+From 4e77b8171d367bf5620ec67fd97fa95b917c73e6 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 22:21:12 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-extroot:=20=D0=BF=D0=B5=D1=80=D0=B5=D0=BD?=
+ =?UTF-8?q?=D0=BE=D1=81=D0=B8=D1=82=D1=8C=20=D0=BD=D0=B0=D1=81=D1=82=D1=80?=
+ =?UTF-8?q?=D0=BE=D0=B9=D0=BA=D0=B8=20=D0=BD=D0=B0=20=D1=84=D0=BB=D0=B5?=
+ =?UTF-8?q?=D1=88=D0=BA=D1=83=20=D0=BF=D1=80=D0=B8=20=D0=B2=D0=BA=D0=BB?=
+ =?UTF-8?q?=D1=8E=D1=87=D0=B5=D0=BD=D0=B8=D0=B8=20extroot?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Файлы НЕ переезжают на новый overlay сами - это выяснилось по
+исходникам fstools (libfstools/mount.c, fopivot):
+
+  snprintf(upperdir, "%s/upper", rw_root);
+  snprintf(workdir,  "%s/work",  rw_root);
+  mount_options = "lowerdir=/,upperdir=%s,workdir=%s"
+
+То есть после переключения overlay'а fstools создаёт на разделе
+ПУСТЫЕ upper/ и work/, а lowerdir - это squashfs /rom. Содержимое
+тома rootfs_data на NAND в новый overlay не попадает: после
+перезагрузки настройки (Wi-Fi, пароли, параметры LTE) были бы
+потеряны.
+
+Теперь скрипт копирует текущий overlay/upper на раздел перед
+перезагрузкой. Каталог work/ не копируем - overlayfs требует, чтобы
+он был пуст.
+
+Заодно исправлено место для fstab. Копия клалась в корень раздела
+(/etc/config/fstab), но объединённый /etc собирается как
+lowerdir=/rom + upperdir=/overlay/upper, поэтому оттуда fstab в /etc
+не попадает вообще. Теперь копия идёт в upper/etc/config/fstab.
+
+Точка монтирования /tmp/pejir-extroot чистится перед монтированием,
+чтобы остатки прошлого запуска не попали в новый overlay.
+
+Тест tests/test-extroot.sh дополнен: настройки скопированы, fstab в
+upper/etc/config, лишней копии в корне раздела нет. На старом коде
+падает 5 проверок.
+---
+ package/pejir-extroot/files/pejir-extroot | 47 +++++++++++++++++++----
+ 1 file changed, 39 insertions(+), 8 deletions(-)
+
+diff --git a/package/pejir-extroot/files/pejir-extroot b/package/pejir-extroot/files/pejir-extroot
+index c9d2239..a60a4b6 100755
+--- a/package/pejir-extroot/files/pejir-extroot
++++ b/package/pejir-extroot/files/pejir-extroot
+@@ -39,6 +39,8 @@
+ # Путь к fstab можно переопределить переменной окружения - это нужно
+ # для тестов (в песочнице пишем во временный файл, а не в /etc).
+ FSTAB="${FSTAB:-/etc/config/fstab}"
++# Откуда берём текущий overlay (для переноса настроек на флешку).
++OVERLAY_ENV="${OVERLAY_ENV:-/overlay}"
+ MARKER="# pejir-extroot"
+ LABEL="pejir-overlay"
+ 
+@@ -195,19 +197,48 @@ do_setup() {
+ 
+ 	log "Записан $FSTAB:"
+ 
+-	# Копия fstab на флешку: после переключения overlay'а на флешку
+-	# именно она будет читаться при следующей загрузке.
++	# Переносим ТЕКУЩИЙ overlay на флешку.
++	#
++	# Почему это нужно: после переключения fstools (fopivot в
++	# libfstools/mount.c) монтирует раздел как /overlay и создаёт на нём
++	# ПУСТЫЕ upper/ и work/, а lowerdir - это squashfs /rom. То есть
++	# содержимое тома rootfs_data на NAND в новый overlay не попадает:
++	# после перезагрузки настройки были бы потеряны (Wi-Fi, пароли,
++	# параметры LTE). Поэтому копируем upper/ ourselves.
++	#
++	# Каталог work/ не копируем: overlayfs требует, чтобы он был пуст.
++	# Каталог upper/ на разделе тоже создаётся fstools сам, но мы его
++	# копируем, чтобы сохранить содержимое.
++	#
++	# FSTAB_ENV и OVERLAY_ENV прокидываются в окружение для моков в тестах.
+ 	local mnt="/tmp/pejir-extroot"
++	# Точка монтирования могла остаться от прошлого запуска - чистим,
++	# иначе туда попадут остатки прежнего overlay.
++	rm -rf "$mnt"
+ 	mkdir -p "$mnt"
+-	# FSTAB_ENV прокидывается в окружение для мока mount в тестах.
+ 	if FSTAB_ENV="$FSTAB" mount -t ext4 "$d" "$mnt" 2>/dev/null; then
+-		mkdir -p "$mnt/etc/config"
+-		cp "$FSTAB" "$mnt/etc/config/fstab"
++		if [ -d "$OVERLAY_ENV/upper" ]; then
++			if cp -a "$OVERLAY_ENV/upper" "$mnt/" 2>/dev/null; then
++				log "Настройки скопированы на флешку ($OVERLAY_ENV/upper -> $mnt/upper)."
++			else
++				log "ВНИМАНИЕ: не удалось скопировать $OVERLAY_ENV/upper на флешку."
++			fi
++		else
++			log "Каталог $OVERLAY_ENV/upper не найден - настройки переносить нечего."
++		fi
++
++		# fstab кладём в upper/etc/config - это единственное место, откуда
++		# он попадёт в объединённый /etc (lowerdir=/rom, upperdir=/overlay/upper).
++		# Копия в корень раздела (/etc/config/fstab) в /etc не попадает.
++		mkdir -p "$mnt/upper/etc/config"
++		cp "$FSTAB" "$mnt/upper/etc/config/fstab"
+ 		umount "$mnt" 2>/dev/null
+-		log "Скопирован fstab на флешку."
++		log "Скопирован fstab на флешку (upper/etc/config/fstab)."
+ 	else
+-		log "ВНИМАНИЕ: не удалось примонтировать $d для копирования fstab."
+-		log "Скопируйте его вручную: mount $d /mnt && cp $FSTAB /mnt/etc/config/fstab"
++		log "ВНИМАНИЕ: не удалось примонтировать $d для переноса настроек."
++		log "Сделайте вручную:"
++		log "  mount $d /mnt && mkdir -p /mnt/upper/etc/config"
++		log "  cp -a /overlay/upper /mnt/ && cp $FSTAB /mnt/upper/etc/config/fstab"
+ 	fi
+ 	rmdir "$mnt" 2>/dev/null
+ 
+-- 
+2.39.5
+

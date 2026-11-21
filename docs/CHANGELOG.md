@@ -135,7 +135,21 @@
     передаётся в самой команде ECM-вызова — `AT+ZECMCALL=1,<APN>`,
     как это делает вендор.
 
-12. **Перенос overlay на USB-флешку (extroot)** (патч 0046).
+12. **Перенос overlay на USB-флешку (extroot)** (патчи 0046 + 0051).
+    `pejir-extroot setup` находит ext4-раздел USB, пишет `/etc/config/fstab`
+    с `target '/overlay'` и `delay_root '15'`, форматирует **только после
+    явного подтверждения**.
+    Патч 0051 добавляет **перенос настроек**: файлы сами на новый overlay
+    не переезжают — по исходникам fstools (`libfstools/mount.c`, `fopivot`)
+    на разделе создаются **пустые** `upper/` и `work/`, а `lowerdir` — это
+    squashfs `/rom`, поэтому содержимое тома `rootfs_data` в новый overlay
+    не попадает и после перезагрузки настройки были бы потеряны. Скрипт
+    копирует текущий `overlay/upper` на раздел сам (каталог `work/` не
+    копируется — overlayfs требует, чтобы он был пуст).
+    Заодно исправлено место для `fstab`: копия клалась в корень раздела
+    (`/etc/config/fstab`), но объединённый `/etc` собирается как
+    `lowerdir=/rom` + `upperdir=/overlay/upper`, поэтому оттуда `fstab` в
+    `/etc` не попадал. Теперь копия идёт в `upper/etc/config/fstab`.
    Внутренний overlay — UBI-том `rootfs_data` (UBIFS, около 83 МБ);
    каждая запись в него — запись в NAND. Скрипт `pejir-extroot`
    готовит флешку (ext4) и пишет `/etc/config/fstab` с
