@@ -1,0 +1,94 @@
+From 73dd34fa104427136b23e310c5f48cbe883beb56 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 22:12:25 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-lte-base:=20APN=20=D0=BE=D0=BF=D0=B5?=
+ =?UTF-8?q?=D1=80=D0=B0=D1=82=D0=BE=D1=80=D0=B0=20=D0=BF=D0=BE=20=D1=83?=
+ =?UTF-8?q?=D0=BC=D0=BE=D0=BB=D1=87=D0=B0=D0=BD=D0=B8=D1=8E=20=D0=B8=20?=
+ =?UTF-8?q?=D0=BF=D0=B5=D1=80=D0=B5=D0=B4=D0=B0=D1=87=D0=B0=20APN=20=D0=B2?=
+ =?UTF-8?q?=20ZECMCALL?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Секция network.lte создавалась без APN, а sync_apn() при пустом APN
+просто выходил, не отправляя AT+CGDCONT. Без PDP-контекста модем
+не поднимает передачу данных: интерфейс LTE поднимается, адрес
+получает, но интернет не работает.
+
+Теперь APN подставляется по умолчанию ("internet"), если пользователь
+его не задал. Свой APN не затирается - проверяется только на пустое
+значение. Задать другой APN по умолчанию можно переменной окружения
+PEJIR_LTE_APN.
+
+Кроме того, APN теперь передаётся в самой команде ECM-вызова:
+AT+ZECMCALL=1,<APN> - так делает вендор. Если APN неизвестен,
+отправляется AT+ZECMCALL=1 без него.
+
+Тест tests/test-lte-ifname.sh дополнен: APN по умолчанию, сохранение
+пользовательского APN, наличие APN в AT+CGDCONT и AT+ZECMCALL.
+---
+ .../root/etc/init.d/47-pejir-lte              | 27 +++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index b756bde..13844c6 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -79,6 +79,13 @@ detect_ifname() {
+ # timeout: порт, который не ответил, просто пропускаем.
+ AT_TIMEOUT="${AT_TIMEOUT:-5}"
+ 
++# APN оператора по умолчанию. Без него PDP-контекст не создаётся и
++# модем не поднимает передачу данных: sync_apn() при пустом APN
++# просто выходит, а AT+CGDCONT без APN модем отвергает.
++# Задаётся пользователем через network.lte.apn - тогда это значение
++# не трогаем.
++DEFAULT_APN="${PEJIR_LTE_APN:-internet}"
++
+ detect_at_port() {
+ 	local p out script="/tmp/pejir-probe.$$"
+ 
+@@ -126,6 +133,12 @@ ensure_lte_section() {
+ 		fi
+ 	fi
+ 
++	# APN: подставляем только если пользователь его не задал.
++	if [ -z "$(uci -q get network.lte.apn)" ] && [ -n "$DEFAULT_APN" ]; then
++		uci set network.lte.apn="$DEFAULT_APN"
++		log "network.lte.apn: задан по умолчанию '$DEFAULT_APN'"
++	fi
++
+ 	if ! uci -q get network.lte6 >/dev/null 2>&1; then
+ 		uci set network.lte6=interface
+ 		uci set network.lte6.proto=dhcpv6
+@@ -192,15 +205,25 @@ sync_apn() {
+ ecm_call() {
+ 	local port script
+ 
++	local apn
++
+ 	port="$(detect_at_port)" || return 0
+ 
++	apn="$(uci -q get network.lte.apn)"
+ 	script="/tmp/pejir-ecm.$$"
+-	printf 'AT+ZECMCALL=1\n' > "$script"
++	# Вендор шлёт APN в самой команде: AT+ZECMCALL=1,<APN>[,...].
++	# Если APN неизвестен - отправляем без него, модем возьмёт текущий
++	# PDP-контекст.
++	if [ -n "$apn" ]; then
++		printf 'AT+ZECMCALL=1,%s\n' "$apn" > "$script"
++	else
++		printf 'AT+ZECMCALL=1\n' > "$script"
++	fi
+ 	# Ошибку игнорируем: на модемах без ECM-поддержки вызов не нужен,
+ 	# а AT+CGDCONT уже отработал.
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+-	log "ECM data call (AT+ZECMCALL=1) отправлен модему"
++	log "ECM data call (AT+ZECMCALL=1${apn:+,}$apn) отправлен модему"
+ }
+ 
+ wait_for_modem() {
+-- 
+2.39.5
+

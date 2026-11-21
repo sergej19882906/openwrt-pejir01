@@ -126,5 +126,53 @@ if [ "$dev" != "eth1" ]; then
 fi
 echo "OK: proto/metric пользователя сохранены, имя обновлено"
 
+# --- APN: подставляется по умолчанию, пользовательский не затирается ------
+# Без APN модем не создаёт PDP-контекст и не поднимает передачу данных:
+# sync_apn() при пустом APN выходит, а AT+CGDCONT без APN модем отвергает.
+cat > "$WORK/network" <<'EOF'
+config interface 'lte'
+	option device 'eth1'
+	option proto 'dhcp'
+EOF
+(
+	. "$WORK/47-pejir-lte" 2>/dev/null || true
+	ensure_lte_section eth1
+) >/dev/null
+apn="$(uci -q get network.lte.apn)"
+if [ "$apn" != "internet" ]; then
+	echo "FAIL: APN по умолчанию не подставлен (получено '$apn', ожидалось 'internet')"
+	exit 1
+fi
+echo "OK: APN по умолчанию internet"
+
+# Пользовательский APN не трогаем.
+cat > "$WORK/network" <<'EOF'
+config interface 'lte'
+	option device 'eth1'
+	option proto 'dhcp'
+	option apn 'myoperator.ru'
+EOF
+(
+	. "$WORK/47-pejir-lte" 2>/dev/null || true
+	ensure_lte_section eth1
+) >/dev/null
+apn="$(uci -q get network.lte.apn)"
+if [ "$apn" != "myoperator.ru" ]; then
+	echo "FAIL: пользовательский APN затёрт (получено '$apn', ожидалось 'myoperator.ru')"
+	exit 1
+fi
+echo "OK: пользовательский APN не затирается"
+
+# APN уходит в модем и в AT+ZECMCALL.
+if ! grep -q 'AT+CGDCONT=1,"IP","%s"' "$INIT"; then
+	echo "FAIL: sync_apn() не шлёт AT+CGDCONT с APN"
+	exit 1
+fi
+if ! grep -q 'AT+ZECMCALL=1,%s' "$INIT"; then
+	echo "FAIL: AT+ZECMCALL отправляется без APN"
+	exit 1
+fi
+echo "OK: APN уходит в AT+CGDCONT и AT+ZECMCALL"
+
 rm -rf "$WORK"
 echo "OK: lte"
