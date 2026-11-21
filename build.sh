@@ -282,7 +282,6 @@ CONFIG_PACKAGE_kmod-veth=y
 CONFIG_PACKAGE_pejir-lxc-base=y
 CONFIG_PACKAGE_mosquitto-nossl=y
 CONFIG_PACKAGE_mosquitto-client-nossl=y
-CONFIG_PACKAGE_sing-box=y
 CONFIG_PACKAGE_kmod-amneziawg=y
 CONFIG_PACKAGE_amneziawg-tools=y
 CONFIG_PACKAGE_luci-proto-amneziawg=y

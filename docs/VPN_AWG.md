@@ -55,6 +55,7 @@ kernel-модули (`awg-proxy`, `awgm-relay`), собранные под яд�
 
 Вердикт: это форк-проект, а не адаптация. Для веб-управления **sing-box**
 на OpenWrt правильный путь — встроенный `clash_api` + дашборд
+(сам пакет ставится отдельно: `apk add sing-box`)
 [metacubexd](https://github.com/MetaCubeX/metacubexd) (GUI по подпискам,
 прокси и правилам, аналогично awg-manager):
 

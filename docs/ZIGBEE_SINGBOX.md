@@ -1,10 +1,12 @@
 # Часть 2 — Zigbee (HOMEd) и sing-box
 
-`mosquitto` и `sing-box` **уже вшиты в образ** (mosquitto-nossl + клиент,
-sing-box 1.13). Фид HOMEd преднастроен (`pejir-homed-feed`): ключ
-`/etc/apk/keys/homed.pem` и запись в `repositories.d` создаются при первой
-загрузке — остаётся одна команда установки. Ставить на extroot
-(см. [POSTINSTALL.sh](POSTINSTALL.sh)).
+`mosquitto` **уже вшит в образ** (mosquitto-nossl + клиент). `sing-box`
+**не вшит**: пакет весит 50 МБ, из-за чего rootfs не помещался в UBI-том
+устройства и обновление по «OTA» ломалось. Ставится одной командой из
+официального фида (см. раздел 5). Фид HOMEd преднастроен
+(`pejir-homed-feed`): ключ `/etc/apk/keys/homed.pem` и запись в
+`repositories.d` создаются при первой загрузке — остаётся одна команда
+установки. Ставить на extroot (см. [POSTINSTALL.sh](POSTINSTALL.sh)).
 
 ## 1. MQTT-брокер (уже установлен)
 
@@ -55,16 +57,17 @@ logread -e homed
 - Проверить, что отвечает: `mcu getver` (STM32) и `hexdump -C /dev/umxtty1 | head`
   после `stty -F /dev/umxtty1 115200`.
 
-## 5. sing-box (уже установлен)
+## 5. sing-box (ставится отдельно)
 
 ```sh
+apk update && apk add sing-box
 # конфиг: /etc/sing-box/config.json
 /etc/init.d/sing-box enable && /etc/init.d/sing-box start
 ```
 
 Правила трафика — в LuCI (Сеть→Firewall) или через nftables вручную.
-Обновления sing-box: `apk update && apk add sing-box` (пакет из официального
-фида, живёт в NAND — при частых обновлениях можно перенести на extroot).
+Пакет лежит в NAND (~50 МБ); при частых обновлениях его лучше перенести
+на extroot (см. [POSTINSTALL.sh](POSTINSTALL.sh)).
 
 ## 6. LED-индикация (шпаргалка)
 
