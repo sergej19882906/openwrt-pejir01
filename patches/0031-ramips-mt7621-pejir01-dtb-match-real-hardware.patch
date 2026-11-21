@@ -1,39 +1,37 @@
-From 8624a385f699241fb604a70a213cdba9640f571f Mon Sep 17 00:00:00 2001
+From 144ee9221fe59094b9b3ac47e26da695d20f4832 Mon Sep 17 00:00:00 2001
 From: port <port@local>
-Date: Sat, 21 Nov 2026 08:35:44 +0000
-Subject: [PATCH] =?UTF-8?q?ramips/mt7621:=20=D0=BF=D1=80=D0=B8=D0=B2=D0=B5?=
- =?UTF-8?q?=D1=81=D1=82=D0=B8=20DTB=20PEJIR01=20=D0=BA=20=D1=80=D0=B5?=
- =?UTF-8?q?=D0=B0=D0=BB=D1=8C=D0=BD=D0=BE=D0=BC=D1=83=20=D0=B6=D0=B5=D0=BB?=
- =?UTF-8?q?=D0=B5=D0=B7=D1=83?=
+Date: Sat, 21 Nov 2026 09:44:08 +0000
+Subject: [PATCH 1/3] =?UTF-8?q?ramips/mt7621:=20=D0=BF=D1=80=D0=B8=D0=B2?=
+ =?UTF-8?q?=D0=B5=D1=81=D1=82=D0=B8=20DTB=20PEJIR01=20=D0=BA=20=D1=80?=
+ =?UTF-8?q?=D0=B5=D0=B0=D0=BB=D1=8C=D0=BD=D0=BE=D0=BC=D1=83=20=D0=B6=D0=B5?=
+ =?UTF-8?q?=D0=BB=D0=B5=D0=B7=D1=83?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Проверено на живом устройстве (заводской DTB вендора):
+Проверено на живом устройстве (заводской DTB вендора и вывод dmesg):
 
-* kernel0 в нашем DTS был помечен read-only, а у вендора — нет.
-  При обновлении "mtd write" в kernel0 падал бы, и загрузчик
-  продолжал бы поднимать старое ядро из этого слота. Убираем
-  read-only у kernel0, crash и crash_syslog (как вендор).
-* Кнопка на плате — WPS (gpio 18), а не reset: с gpio-keys/reset
-  нажатие кнопки перезагружало бы роутер. Делаем gpio-keys-polled
-  с кодом KEY_WPS, как в заводском DTB.
-* i2c и третий UART (uartlite3) в заводском DTB выключены —
-  оставляем так же, чтобы не занимать лишние пины.
-* В platform.sh: правильный комментарий (загрузчик берёт ядро из
-  MTD kernel0/kernel1, том UBI "kernel" он не читает), чтение
-  imgidx из /dev/mtd0, если нет fw_printenv, и повтор записи ядра
-  после снятия read-only через sysfs.
+* i2c и третий UART (uartlite3) в заводском DTB выключены — оставляем
+  так же, чтобы не занимать лишние пины.
+* Кнопка на плате — это WPS (gpio 18), а не reset: с gpio-keys/reset
+  нажатие кнопки перезагружало бы роутер. Ставим gpio-keys-polled
+  с кодом 0x211 (KEY_WPS) — как в заводском DTB (в dt-bindings этого
+  ядра символа KEY_WPS нет, поэтому код числом).
+* Разделы kernel0/crash/crash_syslog у нас были помечены read-only, а у
+  вендора kernel0 writable. Убираем read-only: иначе запись ядра в
+  активный слот не проходит (см. следующий патч про platform.sh).
+* В platform.sh: правильный комментарий (загрузчик берёт ядро из MTD
+  kernel0/kernel1, том UBI "kernel" он не читает), чтение imgidx из
+  раздела Config, повтор записи ядра после снятия read-only через sysfs.
 ---
- .../dts/mt7621_perenio_pejir01-34-BA.dts      | 23 +++++++------
- .../mt7621/base-files/lib/upgrade/platform.sh | 33 ++++++++++++++-----
- 2 files changed, 37 insertions(+), 19 deletions(-)
+ .../dts/mt7621_perenio_pejir01-34-BA.dts      | 24 +++++++++++--------
+ 1 file changed, 14 insertions(+), 10 deletions(-)
 
 diff --git a/target/linux/ramips/dts/mt7621_perenio_pejir01-34-BA.dts b/target/linux/ramips/dts/mt7621_perenio_pejir01-34-BA.dts
-index 97716c0..2666f87 100644
+index 97716c0..b923b55 100644
 --- a/target/linux/ramips/dts/mt7621_perenio_pejir01-34-BA.dts
 +++ b/target/linux/ramips/dts/mt7621_perenio_pejir01-34-BA.dts
-@@ -14,13 +14,19 @@
+@@ -14,13 +14,20 @@
  		bootargs = "console=ttyS0,115200n8";
  	};
  
@@ -54,11 +52,12 @@ index 97716c0..2666f87 100644
 +			label = "wps";
  			gpios = <&gpio 18 GPIO_ACTIVE_LOW>;
 -			linux,code = <KEY_RESTART>;
-+			linux,code = <KEY_WPS>;
++			linux,code = <0x211>;   /* KEY_WPS: в dt-bindings этого ядра нет,
++					   код взят как в заводском DTB вендора */
  		};
  	};
  
-@@ -79,13 +85,11 @@
+@@ -79,13 +86,11 @@
  		partition@140000 {
  			label = "crash";
  			reg = <0x140000 0x40000>;
@@ -72,7 +71,7 @@ index 97716c0..2666f87 100644
  		};
  
  		partition@1c0000 {
-@@ -97,7 +101,6 @@
+@@ -97,7 +102,6 @@
  		partition@200000 {
  			label = "kernel0";
  			reg = <0x200000 0x400000>;
@@ -80,7 +79,7 @@ index 97716c0..2666f87 100644
  		};
  
  		partition@600000 {
-@@ -132,7 +135,7 @@
+@@ -132,7 +136,7 @@
  };
  
  &uartlite3 {
@@ -89,7 +88,7 @@ index 97716c0..2666f87 100644
  };
  
  &pcie {
-@@ -150,7 +153,7 @@
+@@ -150,7 +154,7 @@
  };
  
  &i2c {
@@ -98,66 +97,6 @@ index 97716c0..2666f87 100644
  };
  
  &switch0 {
-diff --git a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
-index 06e18dc..a56f702 100644
---- a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
-+++ b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
-@@ -50,10 +50,14 @@ platform_check_image() {
- # bootenv imgidx=0/1). OpenWrt же создаёт свой том "rootfs", а номер
- # UBI-устройства (ubi0/ubi1) при загрузке может меняться.
- #
--# Поэтому пишем ядро в оба слота, а rootfs — во ВСЕ тома, чьё имя
--# начинается с rootfs (кроме rootfs_data), на всех UBI-устройствах: так
--# не приходится угадывать, какой том читает загрузчик. Ошибка записи в
--# отдельный том не валит обновление (важно, чтобы прошивка встала), но
-+# Проверено на живом устройстве: загрузчик берёт ядро ИМЕННО из MTD
-+# kernel0/kernel1 (там лежит заводское 6.6.119), а том UBI "kernel"
-+# (куда OpenWrt кладёт ядро) загрузчик не читает вовсе. Поэтому ядро
-+# пишем в оба слота (и заодно в том "kernel" — на случай смены
-+# загрузчика), а rootfs — во ВСЕ тома, чьё имя начинается с rootfs
-+# (кроме rootfs_data), на всех UBI-устройствах: так не приходится
-+# угадывать, какой том читает ядро (root=/dev/ubiblock0_N). Ошибка записи
-+# в отдельный том не валит обновление (важно, чтобы прошивка встала), но
- # если не записан ни один том — обновление считается неуспешным.
- perenio_do_upgrade() {
- 	local tar_file="$1"
-@@ -73,20 +77,31 @@ perenio_do_upgrade() {
- 	done
- 
- 	echo "=== Perenio: активный слот ==="
--	echo "imgidx=$(fw_printenv -n imgidx 2>/dev/null)"
-+	imgidx="$(fw_printenv -n imgidx 2>/dev/null)"
-+	if [ -z "$imgidx" ]; then
-+		# fw_printenv на устройстве нет (нет /etc/fw_env.config), читаем
-+		# переменные окружения загрузчика напрямую из раздела Bootloader.
-+		imgidx="$(strings /dev/mtd0 2>/dev/null | sed -n 's/^imgidx=//p' | head -1)"
-+	fi
-+	echo "imgidx=${imgidx:-?} (0 = kernel0, 1 = kernel1)"
- 
- 	for part in kernel0 kernel1 kernel; do
- 		idx="$(find_mtd_index "$part")"
- 		[ -n "$idx" ] || continue
- 		echo "запись ядра в MTD-раздел $part"
-+		$cmd < "$tar_file" | tar xOf - "$board_dir/kernel" | \
-+			mtd write - "$part" && continue
-+		# Раздел может быть помечен в DT как read-only — снимаем флаг
-+		# и пробуем ещё раз, иначе обновление молча не пишет ядро.
-+		echo "запись в $part не удалась, снимаем read-only и повторяем"
-+		printf '0' > "/sys/class/mtd/mtd$idx/flags" 2>/dev/null
- 		$cmd < "$tar_file" | tar xOf - "$board_dir/kernel" | \
- 			mtd write - "$part" || return 1
- 	done
- 
--	# Ядро также кладём в UBI-том "kernel" — именно из него OpenWrt-овский
--	# u-boot берёт образ при загрузке (тома kernel/rootfs/rootfs_data — это
--	# стандартная раскладка NAND-варианта OpenWrt). Раньше ядро писалось
--	# только в MTD kernel0/kernel1, и загрузчик продолжал поднимать старый.
-+	# Ядро кладём и в UBI-том "kernel" — на этом устройстве загрузчик
-+	# его не читает (он берёт ядро из MTD kernel0/kernel1), но при смене
-+	# загрузчика на OpenWrt-овский том окажется валидным.
- 	kernel_len="$($cmd < "$tar_file" | tar xOf - "$board_dir/kernel" | wc -c)"
- 	for ubivol in /sys/class/ubi/ubi*_*; do
- 		[ -f "$ubivol/name" ] || continue
 -- 
 2.39.5
 

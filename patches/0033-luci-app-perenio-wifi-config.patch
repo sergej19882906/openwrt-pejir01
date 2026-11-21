@@ -1,0 +1,112 @@
+From 4a4878f640e1663414303d9e596296ef85561fea Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Sat, 21 Nov 2026 09:44:09 +0000
+Subject: [PATCH 3/3] =?UTF-8?q?luci-app-perenio:=20=D0=BA=D0=BE=D1=80?=
+ =?UTF-8?q?=D1=80=D0=B5=D0=BA=D1=82=D0=BD=D1=8B=D0=B9=20=D0=BA=D0=BE=D0=BD?=
+ =?UTF-8?q?=D1=84=D0=B8=D0=B3=20Wi-Fi=20=D0=B4=D0=BB=D1=8F=20PEJIR01?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+На плате оба радио — 2.4 ГГц: 0000:01:00.0 (MediaTek MT7603, mt7603e) и
+0000:02:00.0 (MT7612E, mt76x2e); проверено на живом устройстве через
+`iw phy phy0 info` (только Band 1, 2412-2484 МГц).
+
+В заводском /etc/config/wireless полосы были перепутаны: радио на
+0000:01:00.0 помечено как 5 ГГц, из-за чего AP не поднимался — netifd
+в цикле писал "Preparing interface: phy0-ap0" -> "Tearing down phy0".
+
+Добавляем uci-defaults, который приводит конфиг к реальному железу:
+оба радио 2.4 ГГц на разных каналах (1 и 6), один SSID, клиенты в
+сети lan. Если конфиг уже верный — скрипт ничего не меняет.
+---
+ package/luci-app-perenio/Makefile             |  2 +
+ .../root/etc/uci-defaults/50-perenio-wifi     | 63 +++++++++++++++++++
+ 2 files changed, 65 insertions(+)
+ create mode 100644 package/luci-app-perenio/root/etc/uci-defaults/50-perenio-wifi
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index 1e13da2..f4d64e4 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -31,6 +31,8 @@ define Package/luci-app-perenio/install
+ 	$(INSTALL_DIR) $(1)/etc/uci-defaults
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-ru \
+ 		$(1)/etc/uci-defaults/50-perenio-ru
++	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-wifi \
++		$(1)/etc/uci-defaults/50-perenio-wifi
+ 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+ 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-perenio.json \
+ 		$(1)/usr/share/luci/menu.d/luci-app-perenio.json
+diff --git a/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-wifi b/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-wifi
+new file mode 100644
+index 0000000..c2c113f
+--- /dev/null
++++ b/package/luci-app-perenio/root/etc/uci-defaults/50-perenio-wifi
+@@ -0,0 +1,63 @@
++#!/bin/sh
++# Wi-Fi PEJIR01: на плате два радио, и оба — 2.4 ГГц:
++#   0000:01:00.0 — MediaTek MT7603 (mt7603e), 2.4 ГГц, 3x3
++#   0000:02:00.0 — MediaTek MT7612E (mt76x2e), 2.4 ГГц
++# Проверено на живом устройстве: `iw phy phy0 info` показывает только
++# Band 1 (2412-2484 МГц), второе радио тоже поднимается на 2.4 ГГц.
++#
++# В заводском /etc/config/wireless полосы были перепутаны (radio0 с путём
++# 0000:01:00.0 помечен как 5 ГГц), поэтому AP не поднимался: netifd
++# повторял "Preparing interface: phy0-ap0" -> "Tearing down phy0".
++#
++# Здесь приводим конфиг к реальному железу: оба радио — 2.4 ГГц, разные
++# каналы (1 и 6), один SSID. Ключ можно сменить в LuCI.
++
++RADIO0_PATH='1e140000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
++RADIO1_PATH='1e140000.pcie/pci0000:00/0000:00:01.0/0000:02:00.0'
++SSID='Perenio PEJIR01'
++KEY='pejir012345'
++WIRELESS=/etc/config/wireless
++
++# Если конфиг уже верный — не трогаем (чтобы не затирать настройки юзера).
++if [ "$(uci -q get wireless.radio0.band)" = "2g" ] &&
++   [ "$(uci -q get wireless.radio1.band)" = "2g" ] &&
++   [ "$(uci -q get wireless.default_radio0.disabled)" = "0" ] &&
++   [ "$(uci -q get wireless.default_radio1.disabled)" = "0" ]; then
++	exit 0
++fi
++
++cat > "$WIRELESS" <<EOF
++config wifi-device 'radio0'
++	option type 'mac80211'
++	option path '$RADIO0_PATH'
++	option band '2g'
++	option channel '1'
++	option htmode 'HT20'
++
++config wifi-iface 'default_radio0'
++	option device 'radio0'
++	option network 'lan'
++	option mode 'ap'
++	option ssid '$SSID'
++	option encryption 'psk2'
++	option key '$KEY'
++	option disabled '0'
++
++config wifi-device 'radio1'
++	option type 'mac80211'
++	option path '$RADIO1_PATH'
++	option band '2g'
++	option channel '6'
++	option htmode 'HT20'
++
++config wifi-iface 'default_radio1'
++	option device 'radio1'
++	option network 'lan'
++	option mode 'ap'
++	option ssid '$SSID'
++	option encryption 'psk2'
++	option key '$KEY'
++	option disabled '0'
++EOF
++
++exit 0
+-- 
+2.39.5
+
