@@ -1,0 +1,232 @@
+From 10b5904298708a116d71a90fcde324b918e863f1 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 15:31:14 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-perenio:=20=D0=BD=D0=B0=20=D1=81=D1=82?=
+ =?UTF-8?q?=D1=80=D0=B0=D0=BD=D0=B8=D1=86=D0=B5=20SMS=20=D0=BF=D0=BE=D0=BA?=
+ =?UTF-8?q?=D0=B0=D0=B7=D0=B0=D1=82=D1=8C=20=D0=B8=D1=81=D1=85=D0=BE=D0=B4?=
+ =?UTF-8?q?=D1=8F=D1=89=D0=B8=D0=B5=20=D1=81=D0=BE=D0=BE=D0=B1=D1=89=D0=B5?=
+ =?UTF-8?q?=D0=BD=D0=B8=D1=8F?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Страница показывала только ВХОДЯЩИЕ SMS (из /var/spool/sms/incoming).
+Исходящие лежат в трёх каталогах smstools3:
+  /var/spool/sms/outgoing - в очереди на отправку,
+  /var/spool/sms/sent     - успешно отправленные,
+  /var/spool/sms/failed   - не отправленные (ошибка).
+
+Изменения:
+  * чтение каталогов вынесено в общую функцию readSpool(), отрисовка
+    таблиц - в renderMsgs();
+  * добавлена секция 'Исходящие SMS' с тремя таблицами;
+  * в ACL (luci-app-perenio.json) добавлены права list/read на эти
+    каталоги - без них LuCI отдал бы 'Permission denied' (как это было
+    с диагностикой);
+  * в po/ru добавлены переводы новых строк.
+
+Добавлен тест tests/test-sms-outbox.sh: проверяет страницу, ACL и
+переводы; на коде до патча дает отказы.
+---
+ .../luci-static/resources/view/perenio/sms.js | 108 +++++++++++++-----
+ .../po/ru/luci-app-perenio.po                 |  15 +++
+ .../share/rpcd/acl.d/luci-app-perenio.json    |   6 +
+ 3 files changed, 99 insertions(+), 30 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index ccee47a..4319e34 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -5,6 +5,9 @@
+ 'require poll';
+ 
+ var DIR = '/var/spool/sms/incoming';
++var DIR_OUT = '/var/spool/sms/outgoing';
++var DIR_SENT = '/var/spool/sms/sent';
++var DIR_FAILED = '/var/spool/sms/failed';
+ var CONF = '/etc/smsd.conf';
+ var LOG = '/var/log/smsd.log';
+ 
+@@ -58,16 +61,18 @@ function readStatus() {
+ 	});
+ }
+ 
+-/* Приём входящих SMS из /var/spool/sms/incoming */
+-function readInbox() {
+-	return fs.list(DIR).catch(function() { return []; }).then(L.bind(function(list) {
++/* Чтение сообщений из каталога spool smstools3.
++ * Формат файла: первая строка - номер (у входящих отправитель, у исходящих
++ * получатель), вторая - дата, дальше - текст сообщения. */
++function readSpool(dir) {
++	return fs.list(dir).catch(function() { return []; }).then(L.bind(function(list) {
+ 		var files = (list || []).filter(function(f) { return f.type == 'file'; });
+ 
+ 		files.sort(function(a, b) { return b.mtime - a.mtime; });
+ 		files = files.slice(0, 50);
+ 
+ 		return Promise.all(files.map(function(f) {
+-			return fs.read(DIR + '/' + f.name).then(function(txt) {
++			return fs.read(dir + '/' + f.name).then(function(txt) {
+ 				var lines = (txt || '').split('\n');
+ 
+ 				return { name: f.name, mtime: f.mtime,
+@@ -77,34 +82,57 @@ function readInbox() {
+ 		})).then(function(all) {
+ 			return all.filter(function(m) { return m != null; });
+ 		});
+-	}, this)).then(function(msgs) {
+-		var box = document.getElementById('sms-list');
++	}, this));
++}
+ 
+-		if (!box)
+-			return;
++/* Отрисовка списка сообщений в таблицу */
++function renderMsgs(boxId, msgs, whoLabel) {
++	var box = document.getElementById(boxId);
+ 
+-		if (!msgs.length) {
+-			box.innerHTML = '<em>' + _('No SMS') + '</em>';
+-			return;
+-		}
++	if (!box)
++		return;
+ 
+-		var rows = msgs.map(function(m) {
+-			return E('tr', { 'class': 'tr' }, [
+-				E('td', { 'class': 'td', 'style': 'white-space:nowrap' },
+-					new Date(m.mtime * 1000).toLocaleString()),
+-				E('td', { 'class': 'td' }, m.from),
+-				E('td', { 'class': 'td', 'style': 'white-space:pre-wrap' }, m.text)
+-			]);
+-		});
++	if (!msgs.length) {
++		box.innerHTML = '<em>' + _('No SMS') + '</em>';
++		return;
++	}
+ 
+-		box.innerHTML = '';
+-		box.appendChild(E('table', { 'class': 'table' }, [
+-			E('tr', { 'class': 'tr table-titles' }, [
+-				E('th', { 'class': 'th' }, _('Time')),
+-				E('th', { 'class': 'th' }, _('Sender')),
+-				E('th', { 'class': 'th' }, _('Text'))
+-			])
+-		].concat(rows)));
++	var rows = msgs.map(function(m) {
++		return E('tr', { 'class': 'tr' }, [
++			E('td', { 'class': 'td', 'style': 'white-space:nowrap' },
++				new Date(m.mtime * 1000).toLocaleString()),
++			E('td', { 'class': 'td' }, m.from),
++			E('td', { 'class': 'td', 'style': 'white-space:pre-wrap' }, m.text)
++		]);
++	});
++
++	box.innerHTML = '';
++	box.appendChild(E('table', { 'class': 'table' }, [
++		E('tr', { 'class': 'tr table-titles' }, [
++			E('th', { 'class': 'th' }, _('Time')),
++			E('th', { 'class': 'th' }, whoLabel),
++			E('th', { 'class': 'th' }, _('Text'))
++		])
++	].concat(rows)));
++}
++
++/* Приём входящих SMS из /var/spool/sms/incoming */
++function readInbox() {
++	return readSpool(DIR).then(function(msgs) {
++		renderMsgs('sms-list', msgs, _('Sender'));
++	});
++}
++
++/* Исходящие: в очереди на отправку, отправленные и неотправленные */
++function readOutbox() {
++	return Promise.all([
++		readSpool(DIR_OUT),
++		readSpool(DIR_SENT),
++		readSpool(DIR_FAILED)
++	]).then(function(all) {
++		renderMsgs('sms-out-list', all[0], _('Recipient'));
++		renderMsgs('sms-sent-list', all[1], _('Recipient'));
++		renderMsgs('sms-failed-list', all[2], _('Recipient'));
+ 	});
+ }
+ 
+@@ -187,12 +215,32 @@ return view.extend({
+ 
+ 					E('div', { 'class': 'cbi-value-description' },
+ 						_('Files from /var/spool/sms/incoming (smstools3): the first line is the sender, the second is the time, the rest is the message.'))
+-				])
++				]),
++
++			E('div', { 'class': 'cbi-section' }, [
++				E('div', { 'class': 'cbi-section-descr' },
++					_('Outgoing SMS')),
++
++				E('div', { 'class': 'cbi-value-title' }, _('Queued for sending')),
++				E('div', { 'id': 'sms-out-list' },
++					E('em', {}, _('Loading…'))),
++
++				E('div', { 'class': 'cbi-value-title' }, _('Sent messages')),
++				E('div', { 'id': 'sms-sent-list' },
++					E('em', {}, _('Loading…'))),
++
++				E('div', { 'class': 'cbi-value-title' }, _('Failed messages')),
++				E('div', { 'id': 'sms-failed-list' },
++					E('em', {}, _('Loading…'))),
++
++				E('div', { 'class': 'cbi-value-description' },
++					_('Files from /var/spool/sms/outgoing, /var/spool/sms/sent and /var/spool/sms/failed (smstools3): the first line is the number, the second is the time, the rest is the message.'))
++			]),
+ 			])
+ 		]);
+ 
+ 		poll.add(L.bind(function() {
+-			return Promise.all([ readStatus(), readInbox() ]);
++			return Promise.all([ readStatus(), readInbox(), readOutbox() ]);
+ 		}, this), 20);
+ 
+ 		return body;
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 4506fa7..f26eeed 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -209,3 +209,18 @@ msgstr "Не отправлено"
+ 
+ msgid "Queued for sending"
+ msgstr "Поставлено в очередь отправки"
++
++msgid "Outgoing SMS"
++msgstr "Исходящие SMS"
++
++msgid "Recipient"
++msgstr "Получатель"
++
++msgid "Sent messages"
++msgstr "Отправленные"
++
++msgid "Failed messages"
++msgstr "Не отправленные"
++
++msgid "Files from /var/spool/sms/outgoing, /var/spool/sms/sent and /var/spool/sms/failed (smstools3): the first line is the number, the second is the time, the rest is the message."
++msgstr "Файлы из /var/spool/sms/outgoing, /var/spool/sms/sent и /var/spool/sms/failed (smstools3): первая строка — номер, вторая — время, дальше — текст сообщения."
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 64c97b3..536aedf 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -9,6 +9,12 @@
+ 				"/var/log/smsd.log.1": [ "read" ],
+ 				"/var/spool/sms/incoming": [ "list" ],
+ 				"/var/spool/sms/incoming/*": [ "read" ],
++				"/var/spool/sms/outgoing": [ "list" ],
++				"/var/spool/sms/outgoing/*": [ "read" ],
++				"/var/spool/sms/sent": [ "list" ],
++				"/var/spool/sms/sent/*": [ "read" ],
++				"/var/spool/sms/failed": [ "list" ],
++				"/var/spool/sms/failed/*": [ "read" ],
+ 				"/dev": [ "list" ]
+ 			},
+ 			"ubus": {
+-- 
+2.39.5
+
