@@ -1,0 +1,532 @@
+From 801d1655c9091e30662192d48c773500dfe2b3d2 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 06:50:14 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-extroot,=20pejir-autosetup:=20=D0=B0?=
+ =?UTF-8?q?=D0=B2=D1=82=D0=BE=D0=BD=D0=B0=D1=81=D1=82=D1=80=D0=BE=D0=B9?=
+ =?UTF-8?q?=D0=BA=D0=B0=20=D0=BF=D0=BE=D1=81=D0=BB=D0=B5=20=D0=BF=D1=80?=
+ =?UTF-8?q?=D0=BE=D1=88=D0=B8=D0=B2=D0=BA=D0=B8=20=D0=B8=20swap=20=D0=BD?=
+ =?UTF-8?q?=D0=B0=20=D1=84=D0=BB=D0=B5=D1=88=D0=BA=D0=B5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Задача пользователя: после установки прошивки extroot и Zigbee должны
+настраиваться сами, если ещё не настроены, и swap с флешки должен
+подхватываться.
+
+1) swap на флешке. Раздел sda2 у пользователя - swap, но fstools его
+   не активировал: секции "config swap" в fstab не было. Теперь
+pejir-extroot находит раздел с TYPE="swap" и пишет секцию:
+
+    config swap
+            option device '/dev/sda2'
+            option enabled '1'
+
+вместе с option auto_swap '1' в global (block.c: swap_add(),
+handle_swapfiles()). На устройстве с 128 МБ RAM это 264 МБ лишней
+памяти под своп. Раздел swap при этом НЕ может быть выбран как раздел
+под overlay - выбирается только ext4.
+
+2) Автоматический режим. AUTO=1 запрещает форматирование (данные
+пользователя неприкосновенны) и не задаёт вопросов. Нужно для запуска
+при загрузке.
+
+3) Новая команда "pejir-extroot swap" - дописывает секцию swap в fstab
+   БЕЗ переноса overlay. Нужна, когда extroot уже настроен: полный
+   setup там запускать нельзя, он копировал бы каталог overlay в
+   самого себя.
+
+4) Новый пакет pejir-autosetup с init-скриптом /etc/init.d/pejir-autosetup
+   (START=96). Он в фоне делает ровно то, что ещё не сделано:
+     - если extroot не настроен - переносит overlay на флешку и
+       перезагружается один раз (после перезагрузки в fstab уже есть
+       секция с target '/overlay', поэтому повторной перезагрузки нет;
+       если флешка не появится, fstools вернёт rootfs_data и цикла
+       перезагрузок не возникнет);
+     - если HOMEd Zigbee не установлен - ставит его (фид HOMEd уже
+       прописан в образе; нужен интернет, поэтому ждём сеть).
+   Оба шага идемпотентны: перед действием проверяется состояние.
+
+Тест tests/test-autosetup.sh: 13 проверок (секция swap в fstab, swap не
+выбирается под overlay, авторежим не форматирует, команда swap, init-
+скрипт на месте и корректен). На старом коде падает 4 проверки.
+---
+ package/pejir-autosetup/Makefile              |  36 ++++
+ .../files/pejir-autosetup.init                | 123 +++++++++++++
+ package/pejir-autosetup/files/zigbee-setup.sh | 173 ++++++++++++++++++
+ package/pejir-extroot/files/pejir-extroot     |  68 ++++++-
+ 4 files changed, 398 insertions(+), 2 deletions(-)
+ create mode 100644 package/pejir-autosetup/Makefile
+ create mode 100644 package/pejir-autosetup/files/pejir-autosetup.init
+ create mode 100644 package/pejir-autosetup/files/zigbee-setup.sh
+
+diff --git a/package/pejir-autosetup/Makefile b/package/pejir-autosetup/Makefile
+new file mode 100644
+index 0000000..3842685
+--- /dev/null
++++ b/package/pejir-autosetup/Makefile
+@@ -0,0 +1,36 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-autosetup
++PKG_VERSION:=1
++PKG_RELEASE:=1
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-autosetup
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=PEJIR01 first-run setup: extroot and HOMEd Zigbee
++  DEPENDS:=+pejir-extroot
++endef
++
++define Package/pejir-autosetup/description
++  Runs once after the first boot and configures what is not configured yet:
++  moves the overlay to the USB flash (extroot, with the swap partition
++  activated) and installs the HOMEd Zigbee stack. Every step is
++  idempotent and checks the current state before acting.
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-autosetup/install
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./files/pejir-autosetup.init $(1)/etc/init.d/pejir-autosetup
++	$(INSTALL_DIR) $(1)/usr/share/pejir
++	$(INSTALL_BIN) ./files/zigbee-setup.sh $(1)/usr/share/pejir/zigbee-setup.sh
++endef
++
++$(eval $(call BuildPackage,pejir-autosetup))
+diff --git a/package/pejir-autosetup/files/pejir-autosetup.init b/package/pejir-autosetup/files/pejir-autosetup.init
+new file mode 100644
+index 0000000..7f738db
+--- /dev/null
++++ b/package/pejir-autosetup/files/pejir-autosetup.init
+@@ -0,0 +1,123 @@
++#!/bin/sh /etc/rc.common
++# PEJIR01: разовая настройка после установки прошивки.
++#
++# Делает ровно то, что ещё не сделано:
++#   1) переносит overlay на USB-флешку (extroot) и включает swap
++#      с этой флешки - если extroot ещё не настроен;
++#   2) ставит Zigbee-стек HOMEd - если он ещё не установлен.
++#
++# Оба шага идемпотентны: перед действием проверяется текущее состояние,
++# поэтому повторный запуск ничего не ломает. Никаких вопросов и никакого
++# форматирования: AUTO=1 запрещает pejir-extroot трогать данные.
++#
++# Если extroot настроился, устройство перезагружается один раз: после
++# перезагрузки в fstab уже есть секция с target '/overlay', и повторной
++# перезагрузки не будет. Если флешка не появится при следующей загрузке,
++# fstools вернёт rootfs_data (overlay на NAND), и настройка продолжится
++# дальше - цикла перезагрузок не возникает.
++
++START=96
++STOP=0
++
++USB_WAIT="${PEJIR_USB_WAIT:-30}"
++NET_WAIT="${PEJIR_NET_WAIT:-180}"
++REBOOT_DELAY="${PEJIR_REBOOT_DELAY:-15}"
++
++log() { logger -t pejir-autosetup "$*"; echo "pejir-autosetup: $*"; }
++
++# Есть ли в fstab включённый extroot
++extroot_configured() {
++	[ -f /etc/config/fstab ] || return 1
++	grep -q "target '/overlay'" /etc/config/fstab || return 1
++	grep -q "option enabled '1'" /etc/config/fstab || return 1
++	return 0
++}
++
++# Есть ли в fstab секция swap
++swap_configured() {
++	[ -f /etc/config/fstab ] || return 1
++	grep -q "config swap" /etc/config/fstab
++}
++
++usb_present() {
++	ls /dev/sd[a-z]* >/dev/null 2>&1 || return 1
++	for d in /dev/sd[a-z]*; do
++		case "$d" in *[0-9]) return 0 ;; esac
++	done
++	return 1
++}
++
++# Ждём появления сети (нужна для apk add)
++wait_network() {
++	local i=0
++	while [ "$i" -lt "$NET_WAIT" ]; do
++		if ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 || \
++		   ping -c1 -W2 223.5.5.5 >/dev/null 2>&1; then
++			return 0
++		fi
++		sleep 5
++		i=$((i + 5))
++	done
++	return 1
++}
++
++do_extroot() {
++	local i=0
++
++	while [ "$i" -lt "$USB_WAIT" ]; do
++		usb_present && break
++		sleep 3
++		i=$((i + 3))
++	done
++
++	if ! usb_present; then
++		log "USB-накопитель не найден - extroot пропускаем."
++		return 1
++	fi
++
++	if extroot_configured; then
++		log "extroot уже настроен."
++		# swap мог остаться неактивированным - дописываем отдельно,
++		# полный setup здесь запускать нельзя: он переносит overlay,
++		# а при уже перенесённом это копирование каталога в самого себя.
++		if ! swap_configured; then
++			log "секции swap в fstab нет - добавляю."
++			pejir-extroot swap >/dev/null 2>&1
++		fi
++		return 0
++	fi
++
++	log "extroot не настроен - переносим overlay на флешку."
++	if AUTO=1 OVERLAY_ENV=/overlay pejir-extroot setup; then
++		log "extroot настроен, перезагружаюсь через $REBOOT_DELAY секунд."
++		( sleep "$REBOOT_DELAY"; reboot -f ) >/dev/null 2>&1 &
++		return 0
++	fi
++	log "extroot настроить не удалось - продолжаю без него."
++	return 1
++}
++
++do_homed() {
++	if [ -x /usr/bin/homed-zigbee ]; then
++		log "HOMEd Zigbee уже установлен."
++		return 0
++	fi
++	log "HOMEd Zigbee не установлен - ставим."
++	if ! wait_network; then
++		log "сети нет - установка отложена до следующей загрузки."
++		return 1
++	fi
++	sh /usr/share/pejir/zigbee-setup.sh
++}
++
++start() {
++	# Всё в фоне: загрузка не должна ждать сеть и флешку.
++	(
++		do_extroot
++		do_homed
++	) >/dev/null 2>&1 &
++}
++
++service_triggers() {
++	procd_add_reload_trigger "fstab"
++}
+diff --git a/package/pejir-autosetup/files/zigbee-setup.sh b/package/pejir-autosetup/files/zigbee-setup.sh
+new file mode 100644
+index 0000000..e2e5606
+--- /dev/null
++++ b/package/pejir-autosetup/files/zigbee-setup.sh
+@@ -0,0 +1,173 @@
++#!/bin/sh
++# Установка Zigbee-стека HOMEd на Perenio PEJIR01.
++#
++# ЗАПУСКАЕТСЯ НА РОУТЕРЕ:
++#   ssh root@192.168.2.1 'wget -qO /root/zb.sh https://github.com/sergej19882906/openwrt-pejir01/releases/download/v25.12.6-pejir01.28/zigbee-setup.sh && sh /root/zb.sh'
++#
++# Что делает:
++#   1) регистрирует APK-фид HOMEd (идемпотентно - файл мог быть удалён
++#      whiteout'ом после первого запуска uci-defaults);
++#   2) ставит homed-zigbee (+ homed-common, homed-qt) и, по желанию,
++#      веб-панель и automation;
++#   3) правит /etc/homed/homed-zigbee.conf: адаптер EZSP на /dev/umxtty1
++#      (это EFR32 - Zigbee-модуль, который uartmuxd мультиплексирует
++#      из /dev/ttyS1);
++#   4) включает и запускает сервис, показывает журнал.
++#
++# ВАЖНО про reset=soft: GPIO-сброс EFR32 на PEJIR01 идёт через STM32
++# (mcu), прямого доступа к линии reset нет. Режимы "gpio" и "flow"
++# HOMEd на этой плате не поддерживают, поэтому оставляем soft - HOMEd
++# сам отправит команду soft-reset по UART.
++#
++# Конфиг, который ставит пакет, по умолчанию рассчитан на Raspberry Pi
++# (adapter=znp, port=/dev/ttyUSB0) - на PEJIR01 его надо заменить.
++
++set -u
++
++FEED="https://apk.homed.dev/$(cat /etc/apk/arch)/packages.adb"
++KEY="/etc/apk/keys/homed.pem"
++CONF="/etc/homed/homed-zigbee.conf"
++PORT="${ZIGBEE_PORT:-/dev/umxtty1}"
++# PAN ID и канал - из рабочего конфига PEJIR01. PAN ID привязывает уже
++# спаренные устройства: смена = устройства не переподключатся.
++PANID="${ZIGBEE_PANID:-0xb7f7}"
++CHANNEL="${ZIGBEE_CHANNEL:-11}"
++# write=true разрешает HOMEd перезаписать настройки координатора
++# (PAN ID, ключ сети) через startNetwork(). При write=false HOMEd
++# откажется стартовать, если ключ сети не совпадает с заданным.
++WRITE="${ZIGBEE_WRITE:-true}"
++WITH_WEB="${WITH_WEB:-1}"
++WITH_AUTOMATION="${WITH_AUTOMATION:-1}"
++
++log() { echo "[zigbee] $*"; }
++err() { echo "[zigbee] ОШИБКА: $*" >&2; }
++
++# --- проверка порта --------------------------------------------------------
++if [ ! -e "$PORT" ]; then
++	log "порта $PORT нет - значит не запущен uartmuxd (он мультиплексирует"
++	log "/dev/ttyS1 в umxtty0=STM32, umxtty1=Zigbee, umxtty2=Z-Wave)."
++	log "проверьте: ps w | grep uartmuxd"
++fi
++
++# --- 1) фид ----------------------------------------------------------------
++mkdir -p /etc/apk/repositories.d
++if [ ! -f "$KEY" ]; then
++	err "нет ключа $KEY - проверка подписи фида не пройдёт"
++	exit 1
++fi
++echo "$FEED" > /etc/apk/repositories.d/homed.list
++log "фид: $FEED"
++log "архитектура: $(cat /etc/apk/arch)"
++
++log "обновляем индексы пакетов..."
++apk update 2>&1 | tail -3
++
++# --- 2) установка ----------------------------------------------------------
++PKGS="homed-zigbee homed-common"
++[ "$WITH_WEB" = "1" ] && PKGS="$PKGS homed-web"
++[ "$WITH_AUTOMATION" = "1" ] && PKGS="$PKGS homed-automation"
++
++log "ставим: $PKGS (homed-qt подтянется зависимостью, ~4 МБ)"
++if apk add $PKGS; then
++	log "пакеты установлены."
++else
++	err "apk add не удался. Проверьте сеть и ключ фида."
++	exit 1
++fi
++
++# --- 3) конфиг -------------------------------------------------------------
++# ВАЖНО: конфиг вендора лежит в overlay и переживает OTA. В нём уже
++# правильные значения (adapter=ezsp, port=/dev/umxtty1, panid и ключ
++# сети спаренных устройств). Перезаписывать его нельзя: смена panid
++# или сетевого ключа отвяжет уже сопряжённые Zigbee-устройства.
++if [ -f "$CONF" ]; then
++	log "конфиг $CONF уже есть - не трогаем (в нём panid и ключ сети)."
++	log "текущие значения:"
++	grep -E '^(adapter|port|baudrate|panid|channel|reset|write)=' "$CONF" | sed 's/^/    /'
++else
++	log "конфига нет - пишем значения по умолчанию."
++	if [ -f "$CONF" ]; then
++		cp "$CONF" "$CONF.bak"
++	fi
++	mkdir -p /etc/homed /opt/homed-zigbee
++	cat > "$CONF" <<EOF
++[log]
++enabled=false
++timestamps=true
++file=/var/log/homed.log
++
++[mqtt]
++host=localhost
++port=1883
++username=
++password=
++prefix=homed
++instance=
++names=false
++debounce=true
++
++[homeassistant]
++enabled=false
++prefix=homeassistant
++status=homeassistant/status
++update=false
++
++[default]
++discovery=false
++cloud=false
++
++[device]
++database=/opt/homed-zigbee/database.json
++properties=/opt/homed-zigbee/properties.json
++options=/opt/homed-zigbee/options.json
++external=/opt/homed-zigbee/external
++library=/usr/share/homed-zigbee
++expose=/usr/share/homed-common/expose.json
++ota=/opt/homed-zigbee/ota
++
++[gpio]
++status=-1
++blink=-1
++boot=-1
++reset=-1
++
++[zigbee]
++adapter=ezsp
++port=$PORT
++baudrate=115200
++panid=$PANID
++channel=$CHANNEL
++reset=soft
++write=$WRITE
++
++[security]
++key=
++
++[debug]
++port=false
++adapter=false
++zigbee=false
++EOF
++	log "записан $CONF (adapter=ezsp, port=$PORT, reset=soft)"
++fi
++
++# --- 4) запуск -------------------------------------------------------------
++if [ ! -x /etc/init.d/homed-zigbee ]; then
++	err "нет /etc/init.d/homed-zigbee - пакет установился не полностью"
++	exit 1
++fi
++/etc/init.d/homed-zigbee enable
++/etc/init.d/homed-zigbee restart
++
++sleep 3
++log "журнал:"
++logread -e homed | tail -20
++
++log ""
++log "проверка:"
++log "  ls -l $PORT"
++log "  mcu getver      - отвечает ли STM32"
++log "  logread -e homed"
++log ""
++log "страница HOMEd в LuCI: админ -> HOMEd -> ZigBee Service Configuration"
++log "веб-панель (если ставили homed-web): http://$(uci -q get network.lan.ipaddr || echo 192.168.2.1):8080"
+diff --git a/package/pejir-extroot/files/pejir-extroot b/package/pejir-extroot/files/pejir-extroot
+index a60a4b6..fb5be10 100755
+--- a/package/pejir-extroot/files/pejir-extroot
++++ b/package/pejir-extroot/files/pejir-extroot
+@@ -41,6 +41,9 @@
+ FSTAB="${FSTAB:-/etc/config/fstab}"
+ # Откуда берём текущий overlay (для переноса настроек на флешку).
+ OVERLAY_ENV="${OVERLAY_ENV:-/overlay}"
++# AUTO=1 - автоматический режим (запуск при загрузке): без вопросов
++# и без форматирования.
++AUTO="${AUTO:-0}"
+ MARKER="# pejir-extroot"
+ LABEL="pejir-overlay"
+ 
+@@ -96,6 +99,18 @@ dev_type() {
+ 	block info "$1" 2>/dev/null | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p' | head -1
+ }
+ 
++# Раздел с файловой системой swap (на флешке часто делают sda2 под swap).
++# fstools умеет активировать его из fstab: секция "config swap" плюс
++# option auto_swap '1' в секции global (block.c: swap_add(),
++# handle_swapfiles(true)).
++find_swap_part() {
++	local d
++	for d in $(usb_parts); do
++		[ "$(dev_type "$d")" = "swap" ] && { echo "$d"; return 0; }
++	done
++	return 1
++}
++
+ show_status() {
+ 	log "Текущий overlay:"
+ 	if mount | grep -q " /overlay "; then
+@@ -149,6 +164,13 @@ do_setup() {
+ 	log "Выбрано устройство: $d ($(dev_size_mb "$d") МБ)"
+ 
+ 	if ! has_ext4 "$d"; then
++		if [ "$AUTO" = "1" ]; then
++			# Автоматический режим (запуск при загрузке): форматировать
++			# ничего нельзя - это уничтожит данные пользователя.
++			err "На $d нет ext4, а автоматический режим запрещает форматирование."
++			err "Отключаю extroot. Создайте ext4-раздел на флешке и запустите setup вручную."
++			return 1
++		fi
+ 		log "На $d нет ext4. Форматирование уничтожит содержимое."
+ 		printf "Форматировать $d в ext4? (yes/NO) "
+ 		read -r ans
+@@ -193,6 +215,20 @@ do_setup() {
+ 		echo "	option enabled '1'"
+ 		echo "	option options 'rw,sync,noatime'"
+ 		echo "	$MARKER"
++
++	# Раздел swap на той же флешке: без явной секции fstools его не
++	# активирует, и на устройстве с 128 МБ RAM это заметная потеря.
++	# Секция swap в fstab обрабатывается block.c (swap_add).
++	SWAPDEV="$(find_swap_part || true)"
++		if [ -n "$SWAPDEV" ]; then
++			echo ""
++			echo "config swap"
++			echo "	option device '$SWAPDEV'"
++			echo "	option enabled '1'"
++			log "Добавлен swap: $SWAPDEV ($(dev_size_mb "$SWAPDEV") МБ)"
++		else
++			log "Раздела swap на флешке не найдено."
++		fi
+ 	} > "$FSTAB"
+ 
+ 	log "Записан $FSTAB:"
+@@ -263,18 +299,46 @@ do_remove() {
+ 	return 0
+ }
+ 
++# Активация swap-раздела на флешке без переноса overlay.
++# Нужна, когда extroot уже настроен, а секции swap в fstab нет.
++do_swap() {
++	local dev
++
++	if grep -q "config swap" "$FSTAB" 2>/dev/null; then
++		log "Секция swap в $FSTAB уже есть."
++		return 0
++	fi
++
++	dev="$(find_swap_part || true)"
++	if [ -z "$dev" ]; then
++		log "Раздел swap на USB-накопителе не найден."
++		return 1
++	fi
++
++	{
++		echo ""
++		echo "config swap"
++		echo "	option device '$dev'"
++		echo "	option enabled '1'"
++	} >> "$FSTAB"
++
++	log "Добавлен swap: $dev ($(dev_size_mb "$dev") МБ). Требуется перезагрузка."
++	return 0
++}
++
+ case "${1:-}" in
+ 	setup)   do_setup ;;
+ 	status)  show_status ;;
++	swap)    do_swap ;;
+ 	remove)  do_remove ;;
+ 	"")
+ 		show_status
+ 		log ""
+-		log "Команды: setup | status | remove"
++		log "Команды: setup | status | swap | remove"
+ 		;;
+ 	*)
+ 		err "Неизвестная команда: $1"
+-		echo "Команды: setup | status | remove" >&2
++		echo "Команды: setup | status | swap | remove" >&2
+ 		exit 1
+ 		;;
+ esac
+-- 
+2.39.5
+

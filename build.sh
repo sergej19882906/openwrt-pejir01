@@ -264,6 +264,8 @@ CONFIG_PACKAGE_uartmuxd=y
 CONFIG_PACKAGE_perenio-mcu=y
 CONFIG_PACKAGE_block-mount=y
 CONFIG_PACKAGE_pejir-extroot=y
+# Автонастройка после установки: перенос overlay на флешку + Zigbee HOMEd
+CONFIG_PACKAGE_pejir-autosetup=y
 # timeout нужен AT-скриптам: без ограничения времени чтение с
 # последовательного порта, на который модем не отвечает, висит вечно
 # и не даёт init-скриптам дойти до конца.
@@ -589,6 +591,18 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  скрипт extroot (/usr/bin/pejir-extroot): OK"
+
+        # Автонастройка после установки: init-скрипт pejir-autosetup
+        # переносит overlay на флешку и ставит Zigbee-стек HOMEd.
+        # Без него после прошивки всё приходится делать руками.
+        for f in etc/init.d/pejir-autosetup usr/share/pejir/zigbee-setup.sh; do
+          if ! echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f"; then
+            ann error "build.sh: autosetup" "В образе нет $f"
+            echo "ОШИБКА: пакет pejir-autosetup не попал в образ ($f)"
+            exit 1
+          fi
+        done
+        echo "  автонастройка (pejir-autosetup + zigbee-setup.sh): OK"
 
         # ACL страниц порта. В LuCI 25.12 fs.read/fs.exec проверяются по
         # scope "file" с указанием пути (в rpcd/plugins/file.c вызов
