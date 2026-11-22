@@ -154,6 +154,107 @@ else
 	ok "GOSUN: decimail читается из @general"
 fi
 
+
+# --- 6) сквозной прогон /usr/bin/modeminfo на моках ----------------------
+# Главный баг: LuCI создаёт ИМЕНОВАННЫЙ раздел ("config modeminfo
+# 'modeminfo'"), а скрипт искал только анонимные (@modeminfo[0]) - список
+# секций оказывался пустым, и на странице не было ни одного поля.
+# Проверяем оба вида раздела: и именованный, и анонимный.
+run_modeminfo() {
+	# $1 - имя раздела в выводе "uci show" ("modeminfo" или "@modeminfo[0]")
+	# $2 - ожидаемое значение device
+	T=$(mktemp -d)
+	mkdir -p "$T/usr/share/modeminfo/scripts" "$T/usr/share/libubox" "$T/usr/bin" "$T/bin"
+
+	cp "$PKG/root/usr/share/modeminfo/modeminfo" "$T/usr/share/modeminfo/"
+	cp "$PKG/root/usr/share/modeminfo/modem.list" "$T/usr/share/modeminfo/"
+	cp "$PKG/root/usr/share/modeminfo/scripts/"* "$T/usr/share/modeminfo/scripts/" 2>/dev/null
+	cp "$PKG/root/usr/bin/modeminfo" "$T/usr/bin/modeminfo"
+
+	# Абсолютные пути в скриптах -> во временный префикс. Shebang ->
+	# bash: скрипты пакета используют bashism ("function name() {"),
+	# на устройстве это работает за счёт busybox ash с bash-совместимостью,
+	# а /bin/sh в песочнице - dash, который такой синтаксис не понимает.
+	for f in "$T/usr/bin/modeminfo" "$T/usr/share/modeminfo/modeminfo" \
+	         "$T/usr/share/modeminfo/scripts/modeminfo"; do
+		[ -f "$f" ] || continue
+		sed -i "s#/usr/share/modeminfo#$T/usr/share/modeminfo#g; s#/usr/share/libubox/jshn.sh#$T/usr/share/libubox/jshn.sh#g" "$f"
+		sed -i "1s#.*#!/bin/bash#" "$f"
+	done
+
+	cat > "$T/usr/share/libubox/jshn.sh" <<'JSHN'
+json_load() { JSON_IN="$1"; }
+json_dump() { printf '%s\n' "$JSON_IN"; }
+JSHN
+
+	cat > "$T/bin/uci" <<'UCI'
+#!/bin/sh
+[ "$1" = "-q" ] && shift
+cmd="$1"; shift
+case "$cmd" in
+	show)
+		cat "$MOCK_UCI_SHOW"
+		exit 0
+		;;
+	get)
+		opt="${1##*.}"
+		case "$opt" in
+			device) echo "$MOCK_DEVICE" ;;
+			decimail) echo "1" ;;
+			*) echo "" ;;
+		esac
+		exit 0
+		;;
+esac
+exit 0
+UCI
+
+	cat > "$T/bin/atinout" <<'ATINOUT'
+#!/bin/sh
+cat <<'EOF'
+OK
++COPS: 0,1,"MTS RUS",7
++CREG: 2,1,"1234","56789A"
++CSQ: 16,99
+EOF
+ATINOUT
+	chmod +x "$T/bin/uci" "$T/bin/atinout"
+
+	cat > "$T/show.txt" <<EOF
+modeminfo.general=general
+modeminfo.general.index='1'
+modeminfo.general.decimail='1'
+modeminfo.general.delay='30'
+modeminfo.$1=modeminfo
+modeminfo.$1.device='$2'
+EOF
+
+	OUT=$(MOCK_UCI_SHOW="$T/show.txt" MOCK_DEVICE="$2" PATH="$T/bin:$PATH" \
+		bash "$T/usr/bin/modeminfo" 2>/dev/null)
+	rm -rf "$T"
+	printf '%s' "$OUT"
+}
+
+# именованный раздел (как создаёт LuCI)
+out_named=$(run_modeminfo modeminfo /dev/ttyUSB2)
+if printf '%s' "$out_named" | grep -q '"modem"'; then
+	if printf '%s' "$out_named" | grep -q '"rssi"'; then
+		ok "modeminfo (именованный раздел): данные модера получены"
+	else
+		fail "modeminfo (именованный раздел): нет данных модема: $out_named"
+	fi
+else
+	fail "modeminfo (именованный раздел): пустой вывод: $out_named"
+fi
+
+# анонимный раздел
+out_anon=$(run_modeminfo '@modeminfo[0]' /dev/ttyUSB2)
+if printf '%s' "$out_anon" | grep -q '"rssi"'; then
+	ok "modeminfo (анонимный раздел): данные модема получены"
+else
+	fail "modeminfo (анонимный раздел): нет данных модема: $out_anon"
+fi
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
 	echo "Все тесты modeminfo пройдены"

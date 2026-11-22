@@ -1,0 +1,152 @@
+From af460ff2e7d4284ab21cf4533c830c43d24f7832 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 16:35:43 +0000
+Subject: [PATCH] =?UTF-8?q?modeminfo:=20=D1=80=D0=B0=D0=B7=D0=B1=D0=BE?=
+ =?UTF-8?q?=D1=80=20=D1=81=D0=B5=D0=BA=D1=86=D0=B8=D0=B9=20=D0=BD=D0=B5=20?=
+ =?UTF-8?q?=D0=B2=D0=B8=D0=B4=D0=B5=D0=BB=20=D0=98=D0=9C=D0=95=D0=9D=D0=9E?=
+ =?UTF-8?q?=D0=92=D0=90=D0=9D=D0=9D=D0=AB=D0=99=20=D1=80=D0=B0=D0=B7=D0=B4?=
+ =?UTF-8?q?=D0=B5=D0=BB=20(=D0=B4=D0=B0=D0=BD=D0=BD=D1=8B=D0=B5=20=D0=BC?=
+ =?UTF-8?q?=D0=BE=D0=B4=D0=B5=D1=80=D0=B0=20=D1=82=D0=B5=D1=80=D1=8F=D0=BB?=
+ =?UTF-8?q?=D0=B8=D1=81=D1=8C)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Факт с живого устройства: /etc/config/modeminfo содержит
+
+    config general
+        option index '1'
+        option decimail '1'
+        option delay '30'
+
+    config modeminfo 'modeminfo'
+        option device '/dev/ttyUSB2'
+
+т.е. раздел ИМЕНОВАННЫЙ (так его создаёт LuCI -> Модем -> Настройка).
+А скрипт брал номер индекса из вывода 'uci show' и находил только
+анонимные разделы (@modeminfo[0]) - именованный в список не попадал,
+SECTIONS оказывался пустым, и /usr/bin/modeminfo выдавал
+{ "modem": [ ] }: страница LuCI 'Модем' не показывала НИ ОДНОГО поля
+даже при живом модеме.
+
+Изменения:
+  * SECTIONS теперь собирает ссылку на раздел целиком (@modeminfo[0]
+    или modeminfo) - работают оба вида разделов;
+  * все обращения к uci переведены на modeminfo..<option>;
+  * uci-defaults 60-perenio-modeminfo не создаёт вторую секцию, если
+    пользователь уже настроил именованную.
+
+Тест tests/test-modeminfo.sh дополнен сквозным прогоном
+/usr/bin/modeminfo на моках (uci/atinout/jshn): для именованного и
+анонимного раздела данные модера должны появиться в JSON. На коде до
+патча именованный раздел не даёт данных.
+---
+ .../root/etc/uci-defaults/60-perenio-modeminfo     |  8 +++++++-
+ .../modeminfo/root/usr/share/modeminfo/modeminfo   | 14 +++++++++++---
+ .../root/usr/share/modeminfo/scripts/modeminfo     | 10 +++++-----
+ 3 files changed, 23 insertions(+), 9 deletions(-)
+
+diff --git a/package/modeminfo/root/etc/uci-defaults/60-perenio-modeminfo b/package/modeminfo/root/etc/uci-defaults/60-perenio-modeminfo
+index 039bfa5..a5ea31f 100755
+--- a/package/modeminfo/root/etc/uci-defaults/60-perenio-modeminfo
++++ b/package/modeminfo/root/etc/uci-defaults/60-perenio-modeminfo
+@@ -6,7 +6,13 @@
+ # AT-порт модема GM510 на этой плате (ttyUSB2). Если у пользователя секция
+ # уже создана (через LuCI -> Модем -> Настройка), ничего не меняем.
+ 
+-[ -n "$(uci -q get modeminfo.@modeminfo[0].device)" ] && exit 0
++# LuCI создаёт ИМЕНОВАННЫЙ раздел ("config modeminfo 'modeminfo'"),
++# поэтому проверяем оба вида: и именованный, и анонимный. Если раздел
++# уже есть - не трогаем настройки пользователя.
++if [ -n "$(uci -q get modeminfo.modeminfo.device)" ] ||
++   [ -n "$(uci -q get modeminfo.@modeminfo[0].device)" ]; then
++	exit 0
++fi
+ 
+ uci -q delete modeminfo.@modeminfo[0] 2>/dev/null
+ uci set modeminfo.@modeminfo[0]='modeminfo'
+diff --git a/package/modeminfo/root/usr/share/modeminfo/modeminfo b/package/modeminfo/root/usr/share/modeminfo/modeminfo
+index 332aff7..0dd9d7e 100755
+--- a/package/modeminfo/root/usr/share/modeminfo/modeminfo
++++ b/package/modeminfo/root/usr/share/modeminfo/modeminfo
+@@ -1,11 +1,17 @@
+ #!/bin/sh
+ 
+ trap 'cleanup >/dev/null 2>&1; exit 0' INT TERM
+-SECTIONS=$(echo $(uci show modeminfo | awk -F [\]\[\@=] '/=modeminfo/{print $3}'))
++# Разделы config modeminfo. LuCI (вкладка "Настройка") создаёт ИМЕНОВАННЫЙ
++# раздел - "config modeminfo 'modeminfo'". Прежний разбор брал номер
++# индекса из вывода "uci show" и находил только анонимные разделы
++# (@modeminfo[0]); именованный раздел в список не попадал, и скрипт
++# выдавал пустой {"modem": []} - страница LuCI "Модем" была пустой.
++# Теперь берём ссылку на раздел целиком: "@modeminfo[0]" или "modeminfo".
++SECTIONS=$(uci -q show modeminfo 2>/dev/null | grep -E '^modeminfo\.(@modeminfo\[[0-9]+\]|modeminfo)=' | sed 's/^modeminfo\.//; s/=.*$//')
+ 
+ get_vars(){
+ 	for v in device device_qmi qmi_trap decimail qmi_mode;  do
+-		eval $v=$(uci -q get modeminfo.@modeminfo[${s}].${v} 2>/dev/null)
++		eval $v=$(uci -q get modeminfo.${s}.${v} 2>/dev/null)
+ 	done
+ }
+ 
+@@ -79,8 +85,10 @@ ARGSLEN=$(args $SECTIONS)
+ 
+ echo "{ \"modem\" : ["
+ 
++i=0
+ for s in $SECTIONS; do
+-	m=$((${s} + 1))
++	i=$((i + 1))
++	m=$i
+ 	get_vars
+ 	if [ $qmi_mode ]; then
+ 		if [ "$s" ]; then
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo b/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
+index 36ee7b1..41ae160 100644
+--- a/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
+@@ -7,7 +7,7 @@ RES="/usr/share/modeminfo"
+ #GSCRIPT="$RES/scripts/${FAMILY}.txt"
+ 
+ function get_device_info() {
+-	DEVPORT=$(uci -q get modeminfo.@modeminfo[${s}].device)
++	DEVPORT=$(uci -q get modeminfo.${s}.device)
+ 	case $DEVPORT in
+ 		!*tty*) get_port ;;
+ 	esac
+@@ -24,12 +24,12 @@ function get_port() {
+ 		for d in $devices; do
+ 			DEVPORT=$d gcom -s $RES/scripts/probeport.gcom > /dev/null 2>&1
+ 			if [ $? = 0 ]; then
+-				uci set modeminfo.@modeminfo[${s}].device="$d"
++				uci set modeminfo.${s}.device="$d"
+ 				uci commit modeminfo
+ 				break
+ 			fi
+ 		done
+-	DEVPORT=$(uci -q get modeminfo.@modeminfo[${s}].device)
++	DEVPORT=$(uci -q get modeminfo.${s}.device)
+ 	# Модем не отвечает на AT, пока порт не переведён в raw-режим
+ 	# без эха (иначе ответы не приходят вовсе).
+ 	stty -F "$DEVPORT" 115200 raw -echo 2>/dev/null
+@@ -37,7 +37,7 @@ function get_port() {
+ }
+ 
+ function modem_family() {
+-    FAMILY=$(uci -q get modeminfo.@modeminfo[${s}].device | awk -F/ -v res="$RES" '
++    FAMILY=$(uci -q get modeminfo.${s}.device | awk -F/ -v res="$RES" '
+         function read_file(path) {
+             value = ""
+             if ((getline value < path) > 0) {
+@@ -146,7 +146,7 @@ function generic_data(){
+ 
+ # name device via mmcli utility
+ mmcli_name(){
+-        MMCLI=$(uci -q get modeminfo.@modeminfo[${s}].mmcli_name)
++        MMCLI=$(uci -q get modeminfo.${s}.mmcli_name)
+         if [ "$MMCLI" = "1" ]; then
+                 if [ -x /usr/bin/mmcli ]; then
+                         MODEM=$(mmcli -L | awk '{print $1}' | awk -F [/] '{print $NF}')
+-- 
+2.39.5
+
