@@ -1,0 +1,299 @@
+From a35e342f0a74847de8cd67cdcea9a71773986c62 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 09:30:38 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-sms/pejir-lte:=20=D0=B6=D0=B4=D0=B0=D1=82?=
+ =?UTF-8?q?=D1=8C=20USB-=D0=BC=D0=BE=D0=B4=D0=B5=D0=BC=D0=B0=20=D0=B4?=
+ =?UTF-8?q?=D0=BE=D0=BB=D1=8C=D1=88=D0=B5,=20=D0=B8=D1=81=D0=BA=D0=B0?=
+ =?UTF-8?q?=D1=82=D1=8C=20AT-=D0=BF=D0=BE=D1=80=D1=82=20=D0=B2=20=D1=84?=
+ =?UTF-8?q?=D0=BE=D0=BD=D0=B5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+На устройстве /etc/smsd.conf оставался стоковым (секция [GSM1]
+закомментирована, device отсутствует), то есть скрипт 40-pejir-sms не
+находил AT-порт при загрузке и smsd не запускался.
+
+Причина: ожидание модема сводилось к 10 попыткам по 3 с, но detect_at_port
+возвращается мгновенно, пока нет узла /dev/ttyUSB*. Итоговый цикл
+укладывался в 30 секунд, а модем на этой плате перечисляется позже.
+
+Что изменено:
+  * ожидание узла USB-модема (PEJIR_MODEM_WAIT, по умолчанию 60 с для SMS
+    и 120 с для LTE) вместо ожидания «ответа AT»;
+  * если модем не готов - поиск продолжается в фоне (до 15 минут), загрузка
+    не блокируется; фоновый повтор вызывает тот же init-скрипт с
+    PEJIR_SMS_RETRY=1 / PEJIR_LTE_RETRY=1;
+  * порт из /etc/config/modeminfo проверяется первым (его уже подтверждал
+    живым AT-запросом 41-pejir-modem) и используется как запасной вариант,
+    если модем не отвечает на AT;
+  * ModemManager по умолчанию не запускается (uci-defaults
+    97-pejir-modemmanager-off): он забирает AT-порт себе и конфликтует с
+    47-pejir-lte/40-pejir-sms.
+---
+ package/pejir-lte-base/Makefile               |  3 +-
+ .../root/etc/init.d/47-pejir-lte              | 49 +++++++++-
+ .../uci-defaults/97-pejir-modemmanager-off    | 21 +++++
+ package/pejir-sms/Makefile                    |  2 +-
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    | 91 ++++++++++++++++---
+ 5 files changed, 146 insertions(+), 20 deletions(-)
+ create mode 100755 package/pejir-lte-base/root/etc/uci-defaults/97-pejir-modemmanager-off
+
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index 4ff9cea..8067dd4 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-lte-base
+ PKG_VERSION:=1
+-PKG_RELEASE:=3
++PKG_RELEASE:=4
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -29,6 +29,7 @@ endef
+ define Package/pejir-lte-base/install
+ 	$(INSTALL_DIR) $(1)/etc/uci-defaults
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/40-pejir-lte $(1)/etc/uci-defaults/40-pejir-lte
++	$(INSTALL_BIN) ./root/etc/uci-defaults/97-pejir-modemmanager-off $(1)/etc/uci-defaults/97-pejir-modemmanager-off
+ 	$(INSTALL_DIR) $(1)/usr/bin
+ 	$(INSTALL_BIN) ./root/usr/bin/mdm-at $(1)/usr/bin/mdm-at
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 4c8b67b..dafdf86 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -246,20 +246,59 @@ ecm_call() {
+ 	log "ECM data call (AT+ZECMCALL=1${apn:+,}$apn) отправлен модему"
+ }
+ 
++# Появился ли USB-модем (узел /dev/ttyUSB* или /dev/ttyACM*).
++usb_modem_present() {
++	local p
++
++	for p in /dev/ttyUSB* /dev/ttyACM*; do
++		[ -c "$p" ] && return 0
++	done
++	return 1
++}
++
++# Сколько секунд ждём модем в USB.
++#
++# Прежний цикл 10x2с на практике отрабатывал за 20 секунд: пока узла
++# /dev/ttyUSB* нет, detect_at_port возвращается мгновенно. Модем на этой
++# плате перечисляется позже, поэтому AT-порт не находился и LTE не
++# поднимался без ручного вмешательства. Теперь ждём появления узла
++# устройства, а не пробуем AT "в пустоту".
++MODEM_WAIT="${PEJIR_MODEM_WAIT:-120}"
++
+ wait_for_modem() {
+-	local i
++	local waited=0
+ 
+-	for i in 1 2 3 4 5 6 7 8 9 10; do
+-		[ -n "$(detect_at_port)" ] && return 0
+-		sleep 2
++	while [ "$waited" -lt "$MODEM_WAIT" ]; do
++		if usb_modem_present && [ -n "$(detect_at_port)" ]; then
++			return 0
++		fi
++		sleep 5
++		waited=$((waited + 5))
+ 	done
+ 	return 1
+ }
+ 
++# Фоновый повтор: скрипт вызывает сам себя с PEJIR_LTE_RETRY=1.
++spawn_retry() {
++	local vars="$1" script="$2"
++
++	if command -v setsid >/dev/null 2>&1; then
++		( env $vars setsid "$script" start >/dev/null 2>&1 & )
++	else
++		( env $vars "$script" start >/dev/null 2>&1 & )
++	fi
++}
++
+ start_service() {
+ 	local ifname proto
+ 
+-	wait_for_modem || log "модем не появился (USB?)"
++	if ! wait_for_modem; then
++		log "модем не появился (USB?) - продолжаем в фоне"
++		if [ "$PEJIR_LTE_RETRY" != "1" ]; then
++			spawn_retry "PEJIR_LTE_RETRY=1 PEJIR_MODEM_WAIT=900" /etc/init.d/47-pejir-lte
++		fi
++		return 0
++	fi
+ 
+ 	ifname="$(detect_ifname)" || ifname=""
+ 	if [ -z "$ifname" ]; then
+diff --git a/package/pejir-lte-base/root/etc/uci-defaults/97-pejir-modemmanager-off b/package/pejir-lte-base/root/etc/uci-defaults/97-pejir-modemmanager-off
+new file mode 100755
+index 0000000..fcb4965
+--- /dev/null
++++ b/package/pejir-lte-base/root/etc/uci-defaults/97-pejir-modemmanager-off
+@@ -0,0 +1,21 @@
++#!/bin/sh
++# ModemManager по умолчанию НЕ запускаем.
++#
++# Он сам находит AT-порт модема и забирает его себе, а LTE и SMS у нас
++# управляются собственными скриптами (47-pejir-lte и 40-pejir-sms) через
++# тот же /dev/ttyUSB2. Если оба будут работать одновременно, модем будет
++# отвечать только одному из них - LTE и SMS перестанут работать.
++#
++# Поэтому служба выключена, но пакет ModemManager и страницы LuCI
++# установлены. Включить вручную:
++#   /etc/init.d/modemmanager enable && /etc/init.d/modemmanager start
++#
++# Имя файла уникально: uci-defaults выполняются один раз, поэтому
++# последующее ручное включение не будет отменяться этим скриптом.
++
++[ -x /etc/init.d/modemmanager ] || exit 0
++
++/etc/init.d/modemmanager disable >/dev/null 2>&1
++rm -f /etc/rc.d/S70modemmanager
++
++exit 0
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+index 7ed0508..4fe4c27 100644
+--- a/package/pejir-sms/Makefile
++++ b/package/pejir-sms/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-sms
+ PKG_VERSION:=1
+-PKG_RELEASE:=3
++PKG_RELEASE:=4
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index 14a0822..383c6ad 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -64,13 +64,28 @@ set_port_speed() {
+ 	stty -F "$1" "$AT_BAUD" raw -echo 2>/dev/null
+ }
+ 
++# Кандидаты AT-порта. Первым идёт порт из /etc/config/modeminfo: его уже
++# проверял живым AT-запросом 41-pejir-modem, поэтому даже если модем при
++# загрузке не отвечает на AT (не успел инициализироваться), мы знаем
++# правильный порт.
++at_port_candidates() {
++	local saved
++
++	saved="$(uci -q get modeminfo.@modeminfo[0].device 2>/dev/null)"
++	[ -n "$saved" ] && echo "$saved"
++	echo /dev/ttyUSB2
++	echo /dev/ttyUSB1
++	echo /dev/ttyUSB0
++	echo /dev/ttyACM0
++	echo /dev/ttyACM1
++}
++
+ detect_at_port() {
+ 	local p out script="/tmp/pejir-sms-probe.$$"
+ 
+ 	printf 'AT\n' > "$script"
+ 
+-	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 \
+-	         /dev/ttyACM1 /dev/ttyACM0; do
++	for p in $(at_port_candidates); do
+ 		[ -c "$p" ] || continue
+ 		set_port_speed "$p"
+ 		out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
+@@ -83,6 +98,48 @@ detect_at_port() {
+ 	return 1
+ }
+ 
++# Появился ли USB-модем (узел /dev/ttyUSB* или /dev/ttyACM*).
++usb_modem_present() {
++	local p
++
++	for p in /dev/ttyUSB* /dev/ttyACM*; do
++		[ -c "$p" ] && return 0
++	done
++	return 1
++}
++
++# Сколько секунд ждём появления модема в USB.
++#
++# Раньше ожидание сводилось к 10 попыткам по 3 с, но detect_at_port
++# возвращается мгновенно, пока узла /dev/ttyUSB* ещё нет, - то есть весь
++# цикл укладывался в 30 секунд. Модем на этой плате появляется позже,
++# поэтому порт не находился, /etc/smsd.conf оставался стоковым, а smsd
++# не запускался. Теперь ждём появления узла устройства.
++MODEM_WAIT="${PEJIR_MODEM_WAIT:-60}"
++
++wait_for_modem_usb() {
++	local waited=0
++
++	while [ "$waited" -lt "$MODEM_WAIT" ]; do
++		usb_modem_present && return 0
++		sleep 5
++		waited=$((waited + 5))
++	done
++	return 1
++}
++
++# Фоновый повтор: скрипт вызывает сам себя с PEJIR_SMS_RETRY=1, тогда
++# ожидание модема длиннее и новый повтор не запускается.
++spawn_retry() {
++	local vars="$1" script="$2"
++
++	if command -v setsid >/dev/null 2>&1; then
++		( env $vars setsid "$script" start >/dev/null 2>&1 & )
++	else
++		( env $vars "$script" start >/dev/null 2>&1 & )
++	fi
++}
++
+ write_conf() {
+ 	local port="$1"
+ 
+@@ -137,21 +194,29 @@ start_service() {
+ 	mkdir -p /var/spool/sms/incoming /var/spool/sms/outgoing \
+ 	         /var/spool/sms/sent /var/spool/sms/failed /var/spool/sms/checked
+ 
+-	# Модем может появиться в USB чуть позже, поэтому перебираем порты
+-	# подольше, чем раньше (было 3 попытки по 2 с).
+-	for i in 1 2 3 4 5 6 7 8 9 10; do
+-		port="$(detect_at_port)"
+-		[ -n "$port" ] && break
+-		sleep 3
+-	done
++	# Ждём появления USB-модема и пробуем AT-порт.
++	wait_for_modem_usb
++	port="$(detect_at_port)"
+ 
+-	if [ -z "$port" ]; then
+-		# AT-порт не найден: конфиг не трогаем (чтобы не записать
+-		# заведомо неверный порт), smsd не запускаем.
+-		logger -t pejir-sms "AT-порт модема не найден, smsd не запущен"
++	if [ -z "$port" ] && [ "$PEJIR_SMS_RETRY" != "1" ]; then
++		# Модем ещё не готов: загрузку не блокируем, продолжаем поиск
++		# в фоне (до 15 минут).
++		logger -t pejir-sms "AT-порт модема пока не найден, поиск продолжается в фоне"
++		spawn_retry "PEJIR_SMS_RETRY=1 PEJIR_MODEM_WAIT=900" /etc/init.d/40-pejir-sms
+ 		return 0
+ 	fi
+ 
++	if [ -z "$port" ]; then
++		# Фоновый повтор тоже не дождался ответа AT: берём порт из
++		# modeminfo - он проверен живым AT-запросом в 41-pejir-modem.
++		port="$(uci -q get modeminfo.@modeminfo[0].device 2>/dev/null)"
++		if [ -z "$port" ] || [ ! -c "$port" ]; then
++			logger -t pejir-sms "AT-порт модема не найден, smsd не запущен"
++			return 0
++		fi
++		logger -t pejir-sms "AT-порт не отвечает, берём $port из modeminfo"
++	fi
++
+ 	write_conf "$port"
+ 
+ 	# Конфиг изменился — перезапускаем smsd, чтобы он подхватил порт.
+-- 
+2.39.5
+

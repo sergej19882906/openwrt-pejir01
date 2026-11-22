@@ -505,9 +505,13 @@ if [ -n "$SU" ]; then
         # LTE-модем через ModemManager: демон, rpcd-плагин, страница LuCI
         # и модули ядра для CDC/MBIM/QMI. Если что-то из этого не попало в
         # образ, страница "Модем" будет пустой.
+        # Пути проверены по реально собранному образу: демон ставится как
+        # /usr/sbin/ModemManager (с большой буквы), rpcd-плагин - в
+        # /usr/libexec/rpcd/modemmanager (не .so и не в /usr/lib/rpcd).
         MM_MISSING=""
-        for f in usr/sbin/modemmanager \
-                 usr/lib/rpcd/modemmanager.so \
+        for f in usr/sbin/ModemManager \
+                 usr/libexec/rpcd/modemmanager \
+                 etc/init.d/modemmanager \
                  www/luci-static/resources/protocol/modemmanager.js \
                  www/luci-static/resources/view/modemmanager/status.js; do
           echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || MM_MISSING="$MM_MISSING $f"
