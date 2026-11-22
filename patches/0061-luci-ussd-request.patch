@@ -1,0 +1,440 @@
+From b3a993bdfd5508cd74c73a92f25dac7089e37896 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 15:41:44 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-perenio:=20USSD-=D0=B7=D0=B0=D0=BF?=
+ =?UTF-8?q?=D1=80=D0=BE=D1=81=20=D0=BD=D0=B0=20=D1=81=D1=82=D1=80=D0=B0?=
+ =?UTF-8?q?=D0=BD=D0=B8=D1=86=D0=B5=20SMS?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Добавлен блок 'USSD-запрос' (баланс, остаток пакета и т.п.):
+
+  * helper /usr/libexec/pejir-ussd - обмен AT+CUSD с модемом. Отдельный
+    файл, а не 'sh -c': rpcd проверяет ACL для конкретного пути, поэтому
+    выдаётся ровно один грант exec и не открывается exec для /bin/sh.
+  * Порт AT: подтверждённый из /etc/pejir/at-port, затем ttyUSB2/1/0.
+    Перед обменом - stty 115200 raw -echo, чтение порциями с ранним
+    выходом по маркеру ответа.
+  * smsd на время обмена останавливается (иначе забирает ответы
+    модема себе) и запускается обратно.
+  * AT-порт GM510 не отвечает при активном LTE-вызове. По умолчанию
+    соединение не трогаем - в выводе печатается подсказка, а на
+    странице появляется кнопка повтора с перезапуском LTE.
+  * В ACL добавлен грант exec на /usr/libexec/pejir-ussd.
+  * Переводы новых строк в po/ru.
+
+Новый тест tests/test-ussd.sh: проверяет helper, ACL, страницу и
+переводы, а также поведение helper'а на псевдо-терминале с эмулятором
+модема (ответ оператора должен попасть в stdout).
+---
+ package/luci-app-perenio/Makefile             |   2 +
+ .../luci-static/resources/view/perenio/sms.js |  90 ++++++++
+ .../po/ru/luci-app-perenio.po                 |  30 +++
+ .../root/usr/libexec/pejir-ussd               | 200 ++++++++++++++++++
+ .../share/rpcd/acl.d/luci-app-perenio.json    |   3 +-
+ 5 files changed, 324 insertions(+), 1 deletion(-)
+ create mode 100755 package/luci-app-perenio/root/usr/libexec/pejir-ussd
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index c01094a..ef53265 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -53,6 +53,8 @@ define Package/luci-app-perenio/install
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/perenio-diag \
+ 		$(1)/usr/libexec/perenio-diag
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-ussd \
++		$(1)/usr/libexec/pejir-ussd
+ 	# Русский перевод наших страниц. Исходные строки в JS - английские,
+ 	# поэтому в английском режиме интерфейса страницы не остаются
+ 	# русскими. Каталог .lmo собираем из po/ru штатным po2lmo (его
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 4319e34..d6aa035 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -10,6 +10,7 @@ var DIR_SENT = '/var/spool/sms/sent';
+ var DIR_FAILED = '/var/spool/sms/failed';
+ var CONF = '/etc/smsd.conf';
+ var LOG = '/var/log/smsd.log';
++var USSD = '/usr/libexec/pejir-ussd';
+ 
+ function setText(id, s) {
+ 	var el = document.getElementById(id);
+@@ -123,6 +124,23 @@ function readInbox() {
+ 	});
+ }
+ 
++/* USSD-запрос к модему (AT+CUSD). Ответ оператора приходит в stdout,
++ * код возврата - в code. Если модем молчит (активен LTE-вызов, AT-порт
++ * заблокирован), предлагаем повторить с перезапуском LTE-соединения. */
++function runUssd(code, restartLte) {
++	var args = restartLte ? [ '--restart-lte', code ] : [ code ];
++
++	return fs.exec(USSD, args).then(function(r) {
++		var out = (r && r.stdout ? r.stdout : '').trim();
++		var err = (r && r.stderr ? r.stderr : '').trim();
++		var ok = r && (r.code === 0 || r.code === undefined);
++
++		return { ok: ok, text: ok ? (out || _('Empty response')) : (out || err) };
++	}).catch(function(e) {
++		return { ok: false, text: (e && e.message) ? e.message : String(e || '') };
++	});
++}
++
+ /* Исходящие: в очереди на отправку, отправленные и неотправленные */
+ function readOutbox() {
+ 	return Promise.all([
+@@ -137,12 +155,54 @@ function readOutbox() {
+ }
+ 
+ return view.extend({
++	handleUssd: function() {
++		return this.ussdRun(false);
++	},
++
++	handleUssdRetry: function() {
++		return this.ussdRun(true);
++	},
++
++	ussdRun: function(restartLte) {
++		var input = document.getElementById('ussd-code');
++		var code = (input && input.value ? input.value : '').trim();
++		var retry = document.getElementById('ussd-retry');
++
++		if (!code) {
++			setText('ussd-result', _('Enter a USSD code'));
++			return Promise.resolve();
++		}
++
++		setText('ussd-result', _('Waiting for the operator...'));
++
++		if (retry)
++			retry.style.display = 'none';
++
++		return runUssd(code, restartLte).then(function(r) {
++			setText('ussd-result', r.text || _('Request failed'));
++
++			if (!r.ok && retry)
++				retry.style.display = '';
++		});
++	},
++
+ 	render: function() {
+ 		var sendBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
+ 				_('Send'));
+ 
+ 		sendBtn.addEventListener('click', L.bind(this.handleSend, this));
+ 
++		var ussdBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
++				_('Send request'));
++
++		ussdBtn.addEventListener('click', L.bind(this.handleUssd, this));
++
++		var ussdRetryBtn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++				'id': 'ussd-retry', 'style': 'display:none' },
++				_('Retry with LTE restart'));
++
++		ussdRetryBtn.addEventListener('click', L.bind(this.handleUssdRetry, this));
++
+ 		var body = E([
+ 			E('h2', {}, _('SMS (GM510)')),
+ 			E('div', { 'class': 'cbi-map' }, [
+@@ -236,6 +296,36 @@ return view.extend({
+ 				E('div', { 'class': 'cbi-value-description' },
+ 					_('Files from /var/spool/sms/outgoing, /var/spool/sms/sent and /var/spool/sms/failed (smstools3): the first line is the number, the second is the time, the rest is the message.'))
+ 			]),
++			E('div', { 'class': 'cbi-section' }, [
++				E('div', { 'class': 'cbi-section-descr' },
++					_('USSD request')),
++
++				E('div', { 'class': 'cbi-value' }, [
++					E('div', { 'class': 'cbi-value-title' }, _('USSD code')),
++					E('div', { 'class': 'cbi-value-field' },
++						E('input', { 'type': 'text', 'id': 'ussd-code', 'value': '*100#',
++							'style': 'width:100%', 'placeholder': '*100#' }))
++				]),
++
++				E('div', { 'class': 'cbi-value' }, [
++					E('div', { 'class': 'cbi-value-title' }, _('Operator response')),
++					E('div', { 'class': 'cbi-value-field' },
++						E('span', { 'id': 'ussd-result' }, ''))
++				]),
++
++				E('div', { 'class': 'cbi-value' }, [
++					E('div', { 'class': 'cbi-value-title' }, ''),
++					E('div', { 'class': 'cbi-value-field' }, ussdBtn)
++				]),
++
++				E('div', { 'class': 'cbi-value' }, [
++					E('div', { 'class': 'cbi-value-title' }, ''),
++					E('div', { 'class': 'cbi-value-field' }, ussdRetryBtn)
++				]),
++
++				E('div', { 'class': 'cbi-value-description' },
++					_('The request is sent to the modem directly (AT+CUSD). While the LTE data call is active, the modem does not answer AT commands - in that case use the retry button.'))
++			]),
+ 			])
+ 		]);
+ 
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index f26eeed..695274a 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -224,3 +224,33 @@ msgstr "Не отправленные"
+ 
+ msgid "Files from /var/spool/sms/outgoing, /var/spool/sms/sent and /var/spool/sms/failed (smstools3): the first line is the number, the second is the time, the rest is the message."
+ msgstr "Файлы из /var/spool/sms/outgoing, /var/spool/sms/sent и /var/spool/sms/failed (smstools3): первая строка — номер, вторая — время, дальше — текст сообщения."
++
++msgid "USSD request"
++msgstr "USSD-запрос"
++
++msgid "USSD code"
++msgstr "Код USSD"
++
++msgid "Operator response"
++msgstr "Ответ оператора"
++
++msgid "Send request"
++msgstr "Отправить запрос"
++
++msgid "Retry with LTE restart"
++msgstr "Повторить с перезапуском LTE"
++
++msgid "Waiting for the operator..."
++msgstr "Ожидание ответа оператора..."
++
++msgid "Enter a USSD code"
++msgstr "Введите код USSD"
++
++msgid "Empty response"
++msgstr "Пустой ответ"
++
++msgid "Request failed"
++msgstr "Запрос не выполнен"
++
++msgid "The request is sent to the modem directly (AT+CUSD). While the LTE data call is active, the modem does not answer AT commands - in that case use the retry button."
++msgstr "Запрос отправляется модему напрямую (AT+CUSD). Пока активен LTE-вызов, модем не отвечает на AT-команды - в этом случае нажмите кнопку повтора."
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-ussd b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+new file mode 100755
+index 0000000..7444bfb
+--- /dev/null
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+@@ -0,0 +1,200 @@
++#!/bin/sh
++# /usr/libexec/pejir-ussd - USSD-запрос к модему (AT+CUSD).
++#
++# Использование:
++#   pejir-ussd [-p ПОРТ] [--restart-lte] КОД
++#
++# Печатает в stdout ответ оператора (одна строка) либо текст ошибки.
++# Код возврата: 0 - ответ получен, 1 - ошибка.
++#
++# Почему отдельный файл, а не "sh -c <текст>":
++#   rpcd проверяет ACL для файла, запускаемого через file.exec, и требует
++#   права на КОНКРЕТНЫЙ путь. Отдельный известный путь позволяет выдать
++#   ровно один грант (write.file["/usr/libexec/pejir-ussd"] = ["exec"])
++#   и не открывать exec для /bin/sh или busybox.
++#
++# Особенность GM510 (как и у многих LTE-модемов):
++#   при активном голосовом/дата-вызове AT-порт перестаёт отвечать.
++#   Поэтому по умолчанию скрипт НЕ трогает соединение - если модем
++#   молчит, в выводе печатается подсказка, а страница LuCI предлагает
++#   повторить запрос с перезапуском LTE (--restart-lte).
++
++SMSD_WAS=0
++RESTART_LTE=0
++PORT=""
++CODE=""
++
++die() {
++	echo "ERROR: $1"
++	exit 1
++}
++
++usage() {
++	echo "usage: pejir-ussd [-p PORT] [--restart-lte] CODE"
++}
++
++while [ $# -gt 0 ]; do
++	case "$1" in
++		-p)
++			PORT="$2"
++			shift 2
++			;;
++		--restart-lte)
++			RESTART_LTE=1
++			shift
++			;;
++		-h|--help)
++			usage
++			exit 0
++			;;
++		*)
++			CODE="$1"
++			shift
++			;;
++	esac
++done
++
++[ -n "$CODE" ] || { usage; exit 1; }
++
++# Код USSD допускает только буквы, цифры и служебные символы - иначе
++# сломается AT-команда.
++case "$CODE" in
++	*[!0-9A-Za-z*#+\-]*)
++		die "invalid USSD code"
++		;;
++esac
++
++# Кандидаты AT-портов: подтверждённый порт из /etc/pejir/at-port, затем
++# штатный порядок. Дубли убираем.
++candidates() {
++	if [ -n "$PORT" ]; then
++		echo "$PORT"
++		return
++	fi
++	if [ -f /etc/pejir/at-port ]; then
++		p=$(head -n 1 /etc/pejir/at-port 2>/dev/null)
++		[ -n "$p" ] && echo "$p"
++	fi
++	echo /dev/ttyUSB2
++	echo /dev/ttyUSB1
++	echo /dev/ttyUSB0
++	echo /dev/ttyACM0
++}
++
++# Обмен с модемом: отправить команду и прочитать ответ. Чтение идёт
++# порциями по секунде и прерывается, как только в ответе встретился
++# маркер want (если он задан), иначе - по истечении secs секунд.
++at_send_read() {
++	_aport="$1"
++	_acmd="$2"
++	_secs="$3"
++	_want="${4:-}"
++
++	stty -F "$_aport" 115200 raw -echo 2>/dev/null || return 1
++	printf '%s\r' "$_acmd" > "$_aport" 2>/dev/null || return 1
++
++	_out=""
++	_i=0
++
++	while [ "$_i" -lt "$_secs" ]; do
++		_chunk=$(timeout 1 cat "$_aport" 2>/dev/null)
++		_out="$_out$_chunk"
++
++		if [ -n "$_want" ]; then
++			case "$_out" in
++				*"$_want"*) break ;;
++			esac
++		fi
++
++		_i=$((_i + 1))
++	done
++
++	printf '%s' "$_out"
++}
++
++# Достать текст USSD из ответа вида  +CUSD: 1,"Balance 100",0
++parse_ussd() {
++	printf '%s\n' "$1" | awk '
++		match($0, /\+CUSD: *[0-9]+, *"/) {
++		s = substr($0, RSTART + RLENGTH)
++		q = index(s, "\"")
++		if (q > 0) {
++			s = substr(s, 1, q - 1)
++			gsub(/\\r|\\n/, " ", s)
++			gsub(/\\"/, "\"", s)
++			print s
++			exit
++		}
++	}'
++}
++
++smsd_stop() {
++	[ -x /etc/init.d/smsd ] || return 0
++	if pidof smsd >/dev/null 2>&1; then
++		SMSD_WAS=1
++		/etc/init.d/smsd stop >/dev/null 2>&1
++		sleep 2
++	fi
++	return 0
++}
++
++smsd_start() {
++	[ "$SMSD_WAS" = "1" ] || return 0
++	/etc/init.d/smsd start >/dev/null 2>&1
++	SMSD_WAS=0
++	return 0
++}
++
++# Один проход по портам: проба живым AT, затем сам USSD-запрос.
++try_ports() {
++	for _p in $(candidates); do
++		[ -c "$_p" ] || continue
++		case "$_p" in
++			*' '*|*'	'*) continue ;;
++		esac
++
++		_probe=$(at_send_read "$_p" 'AT' 3 'OK')
++		case "$_probe" in
++			*OK*) ;;
++			*) continue ;;
++		esac
++
++		_out=$(at_send_read "$_p" "AT+CUSD=1,\"$CODE\",15" 20 '+CUSD')
++		_ans=$(parse_ussd "$_out")
++
++		if [ -n "$_ans" ]; then
++			printf '%s\n' "$_ans"
++			return 0
++		fi
++	done
++	return 1
++}
++
++smsd_stop
++
++if try_ports; then
++	smsd_start
++	exit 0
++fi
++
++# Модем молчит. Если явно попросили - рвём LTE-вызов (на GM510 AT-порт
++# блокируется активным data call) и пробуем ещё раз.
++if [ "$RESTART_LTE" = "1" ]; then
++	echo "LTE restarting..." >&2
++	ifdown lte >/dev/null 2>&1
++	sleep 12
++
++	if try_ports; then
++		ifup lte >/dev/null 2>&1
++		smsd_start
++		exit 0
++	fi
++
++	ifup lte >/dev/null 2>&1
++	smsd_start
++	die "modem did not answer even after LTE restart"
++fi
++
++smsd_start
++echo "modem did not answer (AT port is blocked while the LTE data call is active; retry with the LTE restart option)"
++exit 1
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 536aedf..89b1476 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -29,7 +29,8 @@
+ 				"/usr/sbin/idata_load --force": [ "exec" ],
+ 				"/usr/bin/sendsms *": [ "exec" ],
+ 				"/etc/init.d/smstools3 status": [ "exec" ],
+-				"/usr/libexec/perenio-diag": [ "exec" ]
++				"/usr/libexec/perenio-diag": [ "exec" ],
++				"/usr/libexec/pejir-ussd": [ "exec" ]
+ 			},
+ 			"ubus": {
+ 				"file": [ "exec" ]
+-- 
+2.39.5
+
