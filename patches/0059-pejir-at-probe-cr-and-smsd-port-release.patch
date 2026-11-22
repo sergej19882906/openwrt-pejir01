@@ -1,0 +1,226 @@
+From 15c2ab40faca58232bdb71f3352b0846d7b03139 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 14:20:13 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-lte/pejir-sms:=20AT-=D0=BF=D0=BE=D1=80?=
+ =?UTF-8?q?=D1=82=20=D0=B8=D1=81=D0=BA=D0=B0=D1=82=D1=8C=20=D0=BF=D1=80?=
+ =?UTF-8?q?=D0=BE=D0=B1=D0=BE=D0=B9=20AT\r,=20smsd=20=D0=BE=D1=82=D0=BF?=
+ =?UTF-8?q?=D1=83=D1=81=D0=BA=D0=B0=D1=82=D1=8C=20=D0=BF=D0=BE=D1=80=D1=82?=
+ =?UTF-8?q?=20=D0=BD=D0=B0=20=D0=B2=D1=80=D0=B5=D0=BC=D1=8F=20=D0=BE=D0=B1?=
+ =?UTF-8?q?=D0=BC=D0=B5=D0=BD=D0=B0?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Проблема, найденная на живом устройстве (релиз .33):
+модем GM510 отвечает на AT только если команда завершена CR (AT\r).
+На AT\n (только LF) модем НЕ отвечает: 6 минут проб - тишина.
+Именно так работает mdm-at (printf 'AT\r'), поэтому он порт находил.
+
+В 40-pejir-sms и 47-pejir-lte проба была ровно 'AT\n', поэтому:
+  * 47-pejir-lte не находил порт -> не вызывались ensure_lte_section и
+    sync_apn -> APN не ставился, PDP-контекст не создавался: eth1 был
+    с адресом от DHCP модема, но мобильного трафика не было;
+  * 40-pejir-sms порт находил не с первого раза, /etc/smsd.conf
+    переписывался с задержкой или не переписывался вовсе.
+
+Второй дефект того же класса: smsd (40-pejir-sms, START=92) стартует
+раньше 47-pejir-lte (START=94), держит AT-порт открытым и забирает
+ответы модема себе. Поэтому 47-pejir-lte не мог прочитать ответ на AT.
+Теперь на время пробы и AT-обмена smsd останавливается, а потом
+запускается обратно (только если был запущен).
+
+Проба теперь трёхступенчатая: AT\r (как в mdm-at), затем AT+CSQ\r,
+затем AT+CSQ\n - модем может игнорировать голый AT, но на CSQ отвечает
+всегда (проверено: '+CSQ: 17,99').
+
+Добавлен тест tests/test-at-probe.sh: мок-модем отвечает только на AT\r
+и на AT+CSQ, а на голый AT\n молчит - на старом коде тест падает.
+---
+ .../root/etc/init.d/47-pejir-lte              | 75 +++++++++++++++++--
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    | 41 ++++++++--
+ 2 files changed, 102 insertions(+), 14 deletions(-)
+
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 6dde263..76c1013 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -103,25 +103,80 @@ set_port_speed() {
+ # не трогаем.
+ DEFAULT_APN="${PEJIR_LTE_APN:-internet}"
+ 
+-detect_at_port() {
+-	local p out script="/tmp/pejir-probe.$$"
++# Отправить AT-команду на порт и напечатать ответ модема.
++#
++# $1 - порт, $2 - формат команды для printf (например 'AT\r').
++# Скорость выставляется перед КАЖДЫМ обменом: порт могли сбросить
++# (например, smsd при старте), и тогда модем снова замолчал бы.
++at_ask() {
++	local p="$1" fmt="$2" out script="/tmp/pejir-ask.$$"
++
++	printf "$fmt" > "$script"
++	set_port_speed "$p"
++	out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
++	rm -f "$script"
++	printf '%s' "$out"
++}
+ 
+-	printf 'AT\n' > "$script"
++# Отвечает ли порт на AT-команду.
++#
++# На GM510 ответ зависит от символа конца строки: на "AT\n" (только LF)
++# модем НЕ отвечает, а на "AT\r" отвечает "OK". Проверено на устройстве:
++# 6 минут проб "AT\n" - тишина, "AT+CSQ" - ответ "+CSQ: 17,99".
++# Именно поэтому mdm-at шлёт "AT\r" и находит порт, а прежняя проба
++# здесь (AT\n) порт не находила - и LTE оставался без APN и без
++# PDP-контекста (модем отвечает, а через интерфейс трафика нет).
++#
++# Поэтому пробим тремя способами:
++#   1) AT\r     - так работает mdm-at, самый надёжный вариант;
++#   2) AT+CSQ\r - модем может игнорировать голый AT, но на CSQ отвечает;
++#   3) AT+CSQ\n - на всякий случай (некоторые прошивки ждут только LF).
++detect_at_port() {
++	local p out
+ 
+ 	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 \
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
+-		set_port_speed "$p"
+-		out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
++
++		out="$(at_ask "$p" 'AT\r')"
++		case "$out" in
++			*OK*) echo "$p"; return 0 ;;
++		esac
++
++		out="$(at_ask "$p" 'AT+CSQ\r')"
+ 		case "$out" in
+-			*OK*) rm -f "$script"; echo "$p"; return 0 ;;
++			*+CSQ*|*OK*) echo "$p"; return 0 ;;
++		esac
++
++		out="$(at_ask "$p" 'AT+CSQ\n')"
++		case "$out" in
++			*+CSQ*|*OK*) echo "$p"; return 0 ;;
+ 		esac
+ 	done
+ 
+-	rm -f "$script"
+ 	return 1
+ }
+ 
++# smsd (40-pejir-sms, START=92) стартует РАНЬШЕ нас (START=94) и держит
++# AT-порт открытым, забирая ответы модема себе. Поэтому 47-pejir-lte не
++# мог прочитать ответ на AT и пропускал APN и ECM data call - LTE
++# оставался без PDP-контекста. На время AT-обмена smsd останавливаем,
++# а потом запускаем обратно.
++SMSD_WAS_RUNNING=""
++smsd_pause_for_at() {
++	[ -x /etc/init.d/smstools3 ] || return 0
++	if ps w 2>/dev/null | grep -v grep | grep -q smsd; then
++		SMSD_WAS_RUNNING=1
++		/etc/init.d/smstools3 stop >/dev/null 2>&1
++	fi
++}
++
++smsd_resume_after_at() {
++	[ "$SMSD_WAS_RUNNING" = "1" ] || return 0
++	/etc/init.d/smstools3 start >/dev/null 2>&1
++	SMSD_WAS_RUNNING=""
++}
++
+ ensure_lte_section() {
+ 	local ifname="$1" cur
+ 
+@@ -322,8 +377,10 @@ start_service() {
+ 
+ 		ensure_lte_section "$ifname"
+ 		ensure_firewall
++		smsd_pause_for_at
+ 		sync_apn
+ 		ecm_call
++		smsd_resume_after_at
+ 		ifup lte >/dev/null 2>&1
+ 		return 0
+ 	fi
+@@ -346,6 +403,9 @@ start_service() {
+ 	ensure_lte_section "$ifname"
+ 	ensure_firewall
+ 
++	# smsd держит AT-порт - на время пробы и AT-обмена его надо отпустить,
++	# иначе модем не ответит.
++	smsd_pause_for_at
+ 	have_at="$(detect_at_port)"
+ 	if [ -n "$have_at" ]; then
+ 		sync_apn
+@@ -354,6 +414,7 @@ start_service() {
+ 		log "модем пока не отвечает на AT - APN и ECM пропущены, продолжаем в фоне"
+ 		spawn_retry "PEJIR_LTE_RETRY=1 PEJIR_MODEM_WAIT=900" /etc/init.d/47-pejir-lte
+ 	fi
++	smsd_resume_after_at
+ 
+ 	proto="$(uci -q get network.lte.proto)"
+ 	if [ "$proto" != "none" ]; then
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index 3a91dfb..13811d9 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -89,21 +89,48 @@ at_port_candidates() {
+ 	[ -n "$saved" ] && echo "$saved"
+ }
+ 
+-detect_at_port() {
+-	local p out script="/tmp/pejir-sms-probe.$$"
++# Отправить AT-команду на порт и напечатать ответ модема.
++# $1 - порт, $2 - формат команды для printf (например 'AT\r').
++# Скорость выставляется перед КАЖДЫМ обменом.
++at_ask() {
++	local p="$1" fmt="$2" out script="/tmp/pejir-sms-ask.$$"
++
++	printf "$fmt" > "$script"
++	set_port_speed "$p"
++	out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
++	rm -f "$script"
++	printf '%s' "$out"
++}
+ 
+-	printf 'AT\n' > "$script"
++# Проба AT-порта.
++#
++# На GM510 на "AT\n" (только LF) модем не отвечает, а на "AT\r"
++# отвечает "OK" - так работает mdm-at. Раньше здесь был только "AT\n",
++# поэтому порт не находился и /etc/smsd.conf оставался стоковым.
++# Дополнительно пробуем AT+CSQ: модем может игнорировать голый AT, но на
++# CSQ отвечает всегда.
++detect_at_port() {
++	local p out
+ 
+ 	for p in $(at_port_candidates); do
+ 		[ -c "$p" ] || continue
+-		set_port_speed "$p"
+-		out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
++
++		out="$(at_ask "$p" 'AT\r')"
+ 		case "$out" in
+-			*OK*) rm -f "$script"; echo "$p"; return 0 ;;
++			*OK*) echo "$p"; return 0 ;;
++		esac
++
++		out="$(at_ask "$p" 'AT+CSQ\r')"
++		case "$out" in
++			*+CSQ*|*OK*) echo "$p"; return 0 ;;
++		esac
++
++		out="$(at_ask "$p" 'AT+CSQ\n')"
++		case "$out" in
++			*+CSQ*|*OK*) echo "$p"; return 0 ;;
+ 		esac
+ 	done
+ 
+-	rm -f "$script"
+ 	return 1
+ }
+ 
+-- 
+2.39.5
+
