@@ -1,0 +1,57 @@
+From 4a54bb104fb9c3927c3ba5bd732a530a3e2d4819 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 18:05:04 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-perenio:=20USSD=20=D0=BD=D0=B5=20?=
+ =?UTF-8?q?=D1=80=D0=B0=D0=B1=D0=BE=D1=82=D0=B0=D0=BB=20=D0=B8=D0=B7-?=
+ =?UTF-8?q?=D0=B7=D0=B0=20=D0=BE=D1=88=D0=B8=D0=B1=D0=BA=D0=B8=20stty?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Факт с живого устройства: 'stty -F /dev/ttyUSB2 115200 raw -echo'
+возвращает ошибку 'unable to perform all requested operations' - и так
+всегда, при полностью рабочем порте (модем на него отвечает: AT -> OK,
+AT+CSQ -> +CSQ: 16,99).
+
+В helper'е USSD стояло 'stty ... || return 1' => при первой же ошибке
+stty обмен с модемом прекращался, и USSD-запрос не мог сработать вовсе.
+
+Теперь ошибка stty не фатальна: обмен продолжается, порт и так в нужном
+режиме. Тест tests/test-ussd.sh дополнен сценарием с mock-stty,
+который всегда падает: helper обязан вернуть ответ оператора.
+---
+ package/luci-app-perenio/root/usr/libexec/.mockbin/stty | 3 +++
+ package/luci-app-perenio/root/usr/libexec/pejir-ussd    | 7 ++++++-
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+ create mode 100755 package/luci-app-perenio/root/usr/libexec/.mockbin/stty
+
+diff --git a/package/luci-app-perenio/root/usr/libexec/.mockbin/stty b/package/luci-app-perenio/root/usr/libexec/.mockbin/stty
+new file mode 100755
+index 0000000..b99f78e
+--- /dev/null
++++ b/package/luci-app-perenio/root/usr/libexec/.mockbin/stty
+@@ -0,0 +1,3 @@
++#!/bin/sh
++echo "stty: unable to perform all requested operations" >&2
++exit 1
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-ussd b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+index 7444bfb..93d4799 100755
+--- a/package/luci-app-perenio/root/usr/libexec/pejir-ussd
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+@@ -90,7 +90,12 @@ at_send_read() {
+ 	_secs="$3"
+ 	_want="${4:-}"
+ 
+-	stty -F "$_aport" 115200 raw -echo 2>/dev/null || return 1
++	# stty на этом устройстве возвращает ошибку ("unable to perform all
++	# requested operations"), хотя порт при этом полностью рабочий:
++	# модем на него отвечает. Поэтому ошибку stty НЕ считаем фатальной -
++	# продолжаем обмен (раньше тут был "|| return 1", и USSD не работал
++	# бы вообще).
++	stty -F "$_aport" 115200 raw -echo 2>/dev/null || true
+ 	printf '%s\r' "$_acmd" > "$_aport" 2>/dev/null || return 1
+ 
+ 	_out=""
+-- 
+2.39.5
+

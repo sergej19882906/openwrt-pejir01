@@ -157,6 +157,68 @@ else
 	fail "helper: неверное поведение на эмуляторе модема"
 fi
 
+
+# Сценарий: stty возвращает ошибку (на живом устройстве он всегда
+# возвращает "unable to perform all requested operations", хотя порт
+# рабочий). Helper обязан продолжить обмен и вернуть ответ оператора.
+if python3 - "$HELPER" <<'USSDCASE'
+import os, pty, subprocess, sys, threading
+
+helper = sys.argv[1]
+master, slave = pty.openpty()
+slave_name = os.ttyname(slave)
+stop = False
+
+def modem():
+	buf = b''
+	while not stop:
+		try:
+			data = os.read(master, 4096)
+		except OSError:
+			break
+		if not data:
+			break
+		buf += data
+		while b'\r' in buf:
+			cmd, buf = buf.split(b'\r', 1)
+			cmd = cmd.strip()
+			if cmd == b'AT':
+				os.write(master, b'\r\nOK\r\n')
+			elif cmd.startswith(b'AT+CUSD'):
+				os.write(master, b'\r\n+CUSD: 1,"Balance 100",0\r\n')
+
+t = threading.Thread(target=modem, daemon=True)
+t.start()
+
+# mock stty: всегда возвращает ошибку (как на живом устройстве)
+mockbin = os.path.join(os.path.dirname(helper), '.mockbin')
+os.makedirs(mockbin, exist_ok=True)
+with open(os.path.join(mockbin, 'stty'), 'w') as f:
+	f.write('#!/bin/sh\necho "stty: unable to perform all requested operations" >&2\nexit 1\n')
+os.chmod(os.path.join(mockbin, 'stty'), 0o755)
+
+env = dict(os.environ)
+env['PATH'] = mockbin + ':' + env['PATH']
+
+p = subprocess.run([helper, '-p', slave_name, '*100#'], stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE, timeout=60, env=env)
+stop = True
+out = p.stdout.decode('utf-8', 'replace').strip()
+
+if p.returncode != 0:
+	print("FAIL: helper прервался из-за ошибки stty (код %d): %r" % (p.returncode, out))
+	sys.exit(1)
+if 'Balance 100' not in out:
+	print("FAIL: ответ оператора не получен при падающем stty: %r" % out)
+	sys.exit(1)
+print("OK: helper не сломался на ошибке stty, ответ: %r" % out)
+USSDCASE
+then
+	:
+else
+	fail "helper: падает, когда stty возвращает ошибку"
+fi
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
 	echo "Все тесты USSD пройдены"
