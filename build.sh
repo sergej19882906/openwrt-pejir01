@@ -285,16 +285,17 @@ CONFIG_PACKAGE_bind-host=y
 CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
 CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
 CONFIG_PACKAGE_kmod-usb-serial-option=y
-# LTE-модем: ModemManager вместо вендорных скриптов modeminfo.
-# luci-proto-modemmanager тянет modemmanager, но rpcd-плагин для него
-# отдельный (modemmanager-rpcd) - без него страница LuCI "Модем"
-# ничего не показывает. Модули ядра нужны для разных протоколов
-# модема: option (CDC), cdc-mbim (MBIM), qmi-wwan (QMI).
-CONFIG_PACKAGE_modemmanager=y
-CONFIG_PACKAGE_modemmanager-rpcd=y
-CONFIG_PACKAGE_luci-proto-modemmanager=y
-CONFIG_PACKAGE_kmod-usb-net-cdc-mbim=y
-CONFIG_PACKAGE_kmod-usb-net-qmi-wwan=y
+# LTE-модем: ModemManager из образа УДАЛЁН.
+#
+# Он сам находит AT-порт модема и забирает его себе, а LTE и SMS у нас
+# ведут собственные скрипты (47-pejir-lte, 40-pejir-sms) через тот же
+# /dev/ttyUSB2. Одновременно работать они не могут: модем отвечает
+# только одному из них. Поэтому демон, его rpcd-плагин и страница LuCI
+# "Модем" больше не ставятся; LTE работает через ECM (cdc_ether) и
+# собственные AT-команды.
+#
+# Модули ядра для разных протоколов модема остаются (option, cdc-mbim,
+# qmi-wwan и далее) - они нужны uqmi/umbim и другим модемам.
 CONFIG_PACKAGE_xz-utils=y
 CONFIG_PACKAGE_mosquitto-nossl=y
 CONFIG_PACKAGE_mosquitto-client-nossl=y
@@ -502,29 +503,25 @@ if [ -n "$SU" ]; then
         fi
         echo "  bind-host (host) в образе: OK"
 
-        # LTE-модем через ModemManager: демон, rpcd-плагин, страница LuCI
-        # и модули ядра для CDC/MBIM/QMI. Если что-то из этого не попало в
-        # образ, страница "Модем" будет пустой.
-        # Пути проверены по реально собранному образу: демон ставится как
-        # /usr/sbin/ModemManager (с большой буквы), rpcd-плагин - в
-        # /usr/libexec/rpcd/modemmanager (не .so и не в /usr/lib/rpcd).
+        # LTE-модем: модули ядра для USB-протоколов модема (CDC, MBIM, QMI)
+        # и AT-порт (option). ModemManager в образе быть НЕ должно: он
+        # забирает AT-порт и конфликтует с нашими скриптами LTE/SMS.
         MM_MISSING=""
-        for f in usr/sbin/ModemManager \
-                 usr/libexec/rpcd/modemmanager \
-                 etc/init.d/modemmanager \
-                 www/luci-static/resources/protocol/modemmanager.js \
-                 www/luci-static/resources/view/modemmanager/status.js; do
-          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || MM_MISSING="$MM_MISSING $f"
-        done
-        for m in cdc_mbim.ko qmi_wwan.ko; do
+        for m in option.ko cdc_ether.ko cdc_mbim.ko qmi_wwan.ko; do
           echo "$ROOTFS_LIST" | grep -q "$m" || MM_MISSING="$MM_MISSING $m"
         done
         if [ -n "$MM_MISSING" ]; then
-          ann error "build.sh: ModemManager" "в образе нет файлов ModemManager:$MM_MISSING"
-          echo "ОШИБКА: ModemManager не попал в образ ($MM_MISSING)"
+          ann error "build.sh: модули модема" "в образе нет файлов:$MM_MISSING"
+          echo "ОШИБКА: модули ядра для модема не попали в образ ($MM_MISSING)"
           exit 1
         fi
-        echo "  ModemManager (демон, rpcd, страница, модули ядра): OK"
+        if echo "$ROOTFS_LIST" | grep -qiE "modemmanager"; then
+          ann error "build.sh: ModemManager" "ModemManager попал в образ, а он конфликтует с 47-pejir-lte/40-pejir-sms"
+          echo "ОШИБКА: ModemManager не должен попадать в образ"
+          exit 1
+        fi
+        echo "  LTE: модули ядра (option, cdc_ether, cdc_mbim, qmi_wwan): OK"
+        echo "  LTE: ModemManager в образе отсутствует: OK"
 
         # Файлы страниц LuCI порта, init-скриптов и uci-defaults.
         #
