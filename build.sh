@@ -285,6 +285,16 @@ CONFIG_PACKAGE_bind-host=y
 CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
 CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
 CONFIG_PACKAGE_kmod-usb-serial-option=y
+# LTE-модем: ModemManager вместо вендорных скриптов modeminfo.
+# luci-proto-modemmanager тянет modemmanager, но rpcd-плагин для него
+# отдельный (modemmanager-rpcd) - без него страница LuCI "Модем"
+# ничего не показывает. Модули ядра нужны для разных протоколов
+# модема: option (CDC), cdc-mbim (MBIM), qmi-wwan (QMI).
+CONFIG_PACKAGE_modemmanager=y
+CONFIG_PACKAGE_modemmanager-rpcd=y
+CONFIG_PACKAGE_luci-proto-modemmanager=y
+CONFIG_PACKAGE_kmod-usb-net-cdc-mbim=y
+CONFIG_PACKAGE_kmod-usb-net-qmi-wwan=y
 CONFIG_PACKAGE_xz-utils=y
 CONFIG_PACKAGE_mosquitto-nossl=y
 CONFIG_PACKAGE_mosquitto-client-nossl=y
@@ -491,6 +501,26 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  bind-host (host) в образе: OK"
+
+        # LTE-модем через ModemManager: демон, rpcd-плагин, страница LuCI
+        # и модули ядра для CDC/MBIM/QMI. Если что-то из этого не попало в
+        # образ, страница "Модем" будет пустой.
+        MM_MISSING=""
+        for f in usr/sbin/modemmanager \
+                 usr/lib/rpcd/modemmanager.so \
+                 www/luci-static/resources/protocol/modemmanager.js \
+                 www/luci-static/resources/view/modemmanager/status.js; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || MM_MISSING="$MM_MISSING $f"
+        done
+        for m in cdc_mbim.ko qmi_wwan.ko; do
+          echo "$ROOTFS_LIST" | grep -q "$m" || MM_MISSING="$MM_MISSING $m"
+        done
+        if [ -n "$MM_MISSING" ]; then
+          ann error "build.sh: ModemManager" "в образе нет файлов ModemManager:$MM_MISSING"
+          echo "ОШИБКА: ModemManager не попал в образ ($MM_MISSING)"
+          exit 1
+        fi
+        echo "  ModemManager (демон, rpcd, страница, модули ядра): OK"
 
         # Файлы страниц LuCI порта, init-скриптов и uci-defaults.
         #
