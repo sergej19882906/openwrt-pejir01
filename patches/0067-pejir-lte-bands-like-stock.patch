@@ -1,4 +1,4 @@
-From 806a411f8093b868dd207742018555051b9f9e67 Mon Sep 17 00:00:00 2001
+From 4af5f04cadf0de0448f4632102f7070fc30441a3 Mon Sep 17 00:00:00 2001
 From: sergej19882906 <sergej19882906@users.noreply.github.com>
 Date: Sun, 22 Nov 2026 18:15:44 +0000
 Subject: [PATCH] =?UTF-8?q?=D0=9D=D0=B0=D1=81=D1=82=D1=80=D0=BE=D0=B9?=
@@ -10,30 +10,6 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Сток Perenio задаёт диапазоны модема GM510 (GOSUNCN) командой
-  AT+ZBAND=<UMTS>,0,0,<LTE>
-где UMTS и LTE - битовые маски, а список диапазонов лежит в UCI
-network.lte.perenio_band (сток: /usr/lib/modem_ubus/gosuncn.sh).
-
-Реализовано ровно то же:
-  * /usr/share/pejir/bands.sh - общая таблица диапазонов и расчёт масок.
-    Маски сверены со стоком программно (все 8 совпали);
-  * /usr/libexec/pejir-band - helper: show/apply/set. Читает список из
-    UCI, считает маски, отправляет AT+ZBAND, печатает ответ модема;
-  * 47-pejir-lte - функция sync_bands: применяет диапазоны при каждом
-    старте LTE (перед ECM data call), если список задан;
-  * новая страница LuCI 'Диапазоны 3G/4G (PEJIR01)' - галочки
-    диапазонов, кнопки 'Сохранить', 'Применить сейчас', 'Показать
-    текущие' + журнал;
-  * ACL: грант exec на /usr/libexec/pejir-band и доступ к uci network;
-  * luci-app-perenio теперь зависит от pejir-lte-base (там helper);
-  * переводы новых строк в po/ru.
-
-Ошибка stty в helper'е не фатальна - на этом устройстве stty всегда
-возвращает ошибку, хотя порт рабочий.
-
-Новый тест tests/test-bands.sh: сверка масок со стоком, проверка
-helper'а, init-скрипта, ACL, меню и страницы.
 ---
  package/luci-app-perenio/Makefile             |   2 +-
  .../resources/view/perenio/bands.js           | 153 ++++++++++++++++++
@@ -64,7 +40,7 @@ index ef53265..96add70 100644
  define Build/Prepare
 diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js
 new file mode 100644
-index 0000000..3da1dc9
+index 0000000..09b07f9
 --- /dev/null
 +++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js
 @@ -0,0 +1,153 @@
@@ -213,7 +189,7 @@ index 0000000..3da1dc9
 +				])
 +			]),
 +			E('div', { 'class': 'cbi-value' }, [
-+				E('div', { 'class': 'cbi-value-title' }, _('Log')),
++				E('div', { 'class': 'cbi-value-title' }, _('Band log')),
 +				E('div', { 'class': 'cbi-value-field' },
 +					E('pre', { 'id': 'pejir-bands-log',
 +						'style': 'white-space:pre-wrap; font-family:monospace; font-size:12px; max-height:40vh; overflow:auto; border:1px solid #ccc; padding:8px;' }, ''))
@@ -222,7 +198,7 @@ index 0000000..3da1dc9
 +	}
 +});
 diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
-index 695274a..c7f5fa6 100644
+index 695274a..db95b7c 100644
 --- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
 +++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
 @@ -8,85 +8,60 @@ msgstr ""
@@ -501,8 +477,8 @@ index 695274a..c7f5fa6 100644
 +msgstr "Применить сейчас"
 +msgid "Show current"
 +msgstr "Показать текущие"
-+msgid "Log"
-+msgstr "Журнал"
++msgid "Band log"
++msgstr "Журнал диапазонов"
 +msgid "Saved. Press \"Apply now\" to send the setting to the modem."
 +msgstr "Сохранено. Нажмите «Применить сейчас», чтобы отправить настройку модему."
 +msgid "Failed to save: "
