@@ -121,6 +121,8 @@ jobs:
           sh tests/test-ussd.sh
           sh tests/test-bands.sh
           sh tests/test-battery.sh
+          sh tests/test-diag.sh
+          sh tests/test-led.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый

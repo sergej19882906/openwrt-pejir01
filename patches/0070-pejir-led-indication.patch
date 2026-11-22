@@ -1,0 +1,695 @@
+From add9391d64ef425b666afbd6d77b51cd32d5f3f0 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 21:05:11 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=A1=D0=B2=D0=B5=D1=82=D0=BE=D0=B2=D0=B0?=
+ =?UTF-8?q?=D1=8F=20=D0=B8=D0=BD=D0=B4=D0=B8=D0=BA=D0=B0=D1=86=D0=B8=D1=8F?=
+ =?UTF-8?q?=20(STM32):=20=D1=81=D1=82=D1=80=D0=B0=D0=BD=D0=B8=D1=86=D0=B0?=
+ =?UTF-8?q?=20LuCI,=20helper=20=D0=B8=20=D0=B0=D0=B2=D1=82=D0=BE-=D1=80?=
+ =?UTF-8?q?=D0=B5=D0=B6=D0=B8=D0=BC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Индикаторы зажигает STM32, а не ядро: в заводской прошивке /etc/config/led
+пуст, а светодиодами управляет vendor-сервис через mcud -
+'mcu -p l <имя>=<значение>' (стоковый pim.lua: ubus mcud post
+{query="l ..."}). Имена индикаторов: i (интернет), l (LTE), zb (ZigBee),
+2 (Wi-Fi 2.4 ГГц), 5 (Wi-Fi 5 ГГц), sh и a (служебные).
+
+Добавлено:
+- /usr/libexec/pejir-led: set/all/off/demo/status/auto. Значение -
+  <цвет>[*яркость][,режим]; цвета 0 w r g b m y c o; режимы f 55 11 s10
+  s25 s3. Имя, цвет и режим проверяются - в STM32 уходит только
+  разрешённое значение.
+- /etc/init.d/pejir-led: фоновый цикл авто-режима (как стоковый pim):
+  интернет - зелёный/жёлтый/оранжевый по наличию маршрута и carrier,
+  LTE - зелёный/оранжевый, Wi-Fi - зелёный/оранжевый. Ручные настройки
+  не трогаются.
+- Страница LuCI 'Световая индикация (Perenio)': цвет и режим мигания
+  для каждого индикатора, переключатель авто-режима, кнопки 'Применить
+  всё', 'Погасить все', 'Демо-мигание'.
+- ACL: грант exec на /usr/libexec/pejir-led; пункт меню; переводы.
+- Новый тест tests/test-led.sh (мок mcu, проверка команд и проверки
+  входных данных).
+---
+ package/luci-app-perenio/Makefile             |   7 +-
+ .../luci-static/resources/view/perenio/led.js | 189 +++++++++++++
+ .../po/ru/luci-app-perenio.po                 |  77 ++++-
+ .../root/etc/init.d/pejir-led                 |  28 ++
+ .../root/usr/libexec/pejir-led                | 262 ++++++++++++++++++
+ .../share/luci/menu.d/luci-app-perenio.json   |  13 +
+ .../share/rpcd/acl.d/luci-app-perenio.json    |   3 +
+ 7 files changed, 577 insertions(+), 2 deletions(-)
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/led.js
+ create mode 100755 package/luci-app-perenio/root/etc/init.d/pejir-led
+ create mode 100755 package/luci-app-perenio/root/usr/libexec/pejir-led
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index 135e49c..0cf518a 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=luci-app-perenio
+ PKG_VERSION:=1.0.0
+-PKG_RELEASE:=7
++PKG_RELEASE:=8
+ 
+ PKG_LICENSE:=Apache-2.0
+ 
+@@ -56,6 +56,11 @@ define Package/luci-app-perenio/install
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/perenio-diag \
+ 		$(1)/usr/libexec/perenio-diag
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-led \
++		$(1)/usr/libexec/pejir-led
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/pejir-led \
++		$(1)/etc/init.d/pejir-led
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-ussd \
+ 		$(1)/usr/libexec/pejir-ussd
+ 	# Русский перевод наших страниц. Исходные строки в JS - английские,
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/led.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/led.js
+new file mode 100644
+index 0000000..e7fa321
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/led.js
+@@ -0,0 +1,189 @@
++'use strict';
++'require view';
++'require fs';
++'require ui';
++
++/*
++ * Световая индикация Perenio PEJIR01.
++ *
++ * Индикаторы зажигает STM32: команда уходит через vendor-демон mcud
++ * (`mcu -p l <имя>=<значение>`), ровно как в заводственной прошивке 9.0.4
++ * (там это делает /usr/sbin/pim.lua через ubus mcud post {query="l ..."}).
++ *
++ * Индикаторы: i - интернет, l - LTE, zb - ZigBee, 2 - Wi-Fi 2.4 ГГц,
++ * 5 - Wi-Fi 5 ГГц, sh и a - служебные.
++ *
++ * Значение: <цвет>[,<режим>], где цвет - 0 (выключить) или w r g b m y c o,
++ * режим - пусто (постоянно), f/55/11 (мигание) или s10/s25/s3 (скорость).
++ *
++ * Всё общение с STM32 идёт через /usr/libexec/pejir-led (отдельный файл,
++ * а не "sh -c": rpcd требует грант по конкретному пути файла).
++ */
++
++var LED = '/usr/libexec/pejir-led';
++
++var COLORS = [
++	[ '0',  _('Off') ],
++	[ 'w',  _('White') ],
++	[ 'r',  _('Red') ],
++	[ 'g',  _('Green') ],
++	[ 'b',  _('Blue') ],
++	[ 'm',  _('Magenta') ],
++	[ 'y',  _('Yellow') ],
++	[ 'c',  _('Cyan') ],
++	[ 'o',  _('Orange') ]
++];
++
++var MODES = [
++	[ '',    _('Steady') ],
++	[ 'f',   _('Blink fast') ],
++	[ '55',  _('Blink 55') ],
++	[ '11',  _('Blink 11') ],
++	[ 's10', _('Speed 10') ],
++	[ 's25', _('Speed 25') ],
++	[ 's3',  _('Speed 3') ]
++];
++
++var DESCR = {
++	'i':  _('Internet connection'),
++	'l':  _('LTE / modem'),
++	'zb': _('ZigBee'),
++	'2':  _('Wi-Fi 2.4 GHz'),
++	'5':  _('Wi-Fi 5 GHz'),
++	'sh': _('Service indicator SH'),
++	'a':  _('Service indicator A')
++};
++
++var ORDER = [ 'i', 'l', '2', '5', 'zb', 'sh', 'a' ];
++
++function run(args) {
++	return fs.exec(LED, args).then(function(r) {
++		return (r && r.stdout ? r.stdout : '') +
++			(r && r.stderr ? r.stderr : '');
++	}).catch(function(e) {
++		return _('Failed to run: ') + (e && e.message ? e.message : String(e || ''));
++	});
++}
++
++return view.extend({
++	load: function() {
++		return run([ 'status' ]);
++	},
++
++	render: function(data) {
++		var state = {};
++		var raw = (data && data[0]) ? data[0] : '';
++		var lines = raw.split('\n');
++
++		for (var i = 0; i < lines.length; i++) {
++			var p = lines[i].split(' ');
++			if (p.length >= 3 && p[0] != 'STATE' && p[0] != '')
++				state[p[0]] = { mode: p[1], color: p[2], blink: (p.length > 3 ? p[3] : '') };
++		}
++
++		var rows = [];
++
++		ORDER.forEach(function(name) {
++			var st = state[name] || { mode: 'manual', color: '0', blink: '' };
++
++			var colorSel = E('select', { 'class': 'cbi-input-select',
++				'id': 'led-color-' + name, 'style': 'min-width:120px' },
++				COLORS.map(function(c) {
++					return E('option', {
++						'value': c[0],
++						'selected': (c[0] == st.color) ? 'selected' : null
++					}, c[1]);
++				}));
++
++			var modeSel = E('select', { 'class': 'cbi-input-select',
++				'id': 'led-mode-' + name, 'style': 'min-width:120px' },
++				MODES.map(function(m) {
++					return E('option', {
++						'value': m[0],
++						'selected': (m[0] == st.blink) ? 'selected' : null
++					}, m[1]);
++				}));
++
++			var autoChk = E('input', {
++				'type': 'checkbox',
++				'id': 'led-auto-' + name,
++				'checked': (st.mode == 'auto') ? 'checked' : null
++			});
++
++			rows.push(E('tr', { 'class': 'tr' }, [
++				E('td', { 'class': 'td', 'width': '22%' },
++					E('b', {}, name + ' - ' + (DESCR[name] || ''))),
++				E('td', { 'class': 'td' }, colorSel),
++				E('td', { 'class': 'td' }, modeSel),
++				E('td', { 'class': 'td' },
++					E('label', {}, [ autoChk, ' ' + _('Automatic') ]))
++			]));
++		});
++
++		function applyOne(name) {
++			var color = (document.getElementById('led-color-' + name) || {}).value || '0';
++			var blink = (document.getElementById('led-mode-' + name) || {}).value || '';
++			var auto = document.getElementById('led-auto-' + name);
++
++			if (auto && auto.checked)
++				return run([ 'auto', name, 'on' ]).then(function() {
++					return run([ 'status' ]);
++				});
++
++			return run([ 'set', name, color, blink ]).then(function() {
++				return run([ 'status' ]);
++			});
++		}
++
++		function refresh(text) {
++			return run([ 'status' ]).then(function(s) {
++				var el = document.getElementById('led-out');
++				if (el)
++					el.textContent = text ? (text + '\n' + s) : s;
++			});
++		}
++
++		var self = this;
++
++		return E('div', { 'class': 'cbi-section' }, [
++			E('h2', _('LED indication (Perenio STM32)')),
++			E('p', { 'class': 'cbi-value-description' },
++				_('Indicators are driven by the STM32 microcontroller, exactly as in the stock firmware: mcu -p l <name>=<color>[,<mode>]. Colors: white, red, green, blue, magenta, yellow, cyan, orange; 0 turns the indicator off. Automatic mode paints the indicator by the system state (like the stock pim service).')),
++			E('table', { 'class': 'table' }, [
++				E('tr', { 'class': 'tr table-titles' }, [
++					E('td', { 'class': 'td th' }, _('Indicator')),
++					E('td', { 'class': 'td th' }, _('Color')),
++					E('td', { 'class': 'td th' }, _('Blink mode')),
++					E('td', { 'class': 'td th' }, _('Mode'))
++				])
++			].concat(rows)),
++			E('div', { 'style': 'margin-top:10px; display:flex; gap:8px; flex-wrap:wrap' }, [
++				E('button', { 'class': 'cbi-button cbi-button-apply',
++					'click': ui.createHandlerFn(self, function() {
++						return Promise.all(ORDER.map(applyOne)).then(function() {
++							return refresh(_('Done'));
++						});
++					}) }, _('Apply all')),
++				E('button', { 'class': 'cbi-button cbi-button-neutral',
++					'click': ui.createHandlerFn(self, function() {
++						return run([ 'off' ]).then(function() {
++							return refresh(_('All indicators are off'));
++						});
++					}) }, _('Turn off all')),
++				E('button', { 'class': 'cbi-button cbi-button-neutral',
++					'click': ui.createHandlerFn(self, function() {
++						return run([ 'demo', '10' ]).then(function() {
++							return refresh(_('Demo finished'));
++						});
++					}) }, _('Blink demo (10 s)'))
++			]),
++			E('pre', { 'id': 'led-out',
++				'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; margin-top:10px; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
++				(data && data[0]) ? data[0] : '')
++		]);
++	},
++
++	handleSaveApply: null,
++	handleSave: null,
++	handleReset: null
++});
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index ddde51f..6b3e3aa 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -226,4 +226,79 @@ msgstr "Отправляем настройку модему..."
+ msgid "Reading the modem bands..."
+ msgstr "Читаем диапазоны модема..."
+ msgid "No data"
+-msgstr "Нет данных"
+\ No newline at end of file
++msgstr "Нет данных"
++
++msgid "LED indication (Perenio STM32)"
++msgstr "Световая индикация (Perenio STM32)"
++msgid "Off"
++msgstr "Выкл."
++msgid "White"
++msgstr "Белый"
++msgid "Red"
++msgstr "Красный"
++msgid "Green"
++msgstr "Зелёный"
++msgid "Blue"
++msgstr "Синий"
++msgid "Magenta"
++msgstr "Пурпурный"
++msgid "Yellow"
++msgstr "Жёлтый"
++msgid "Cyan"
++msgstr "Голубой"
++msgid "Orange"
++msgstr "Оранжевый"
++msgid "Steady"
++msgstr "Постоянно"
++msgid "Blink fast"
++msgstr "Быстрое мигание"
++msgid "Blink 55"
++msgstr "Мигание 55"
++msgid "Blink 11"
++msgstr "Мигание 11"
++msgid "Speed 10"
++msgstr "Скорость 10"
++msgid "Speed 25"
++msgstr "Скорость 25"
++msgid "Speed 3"
++msgstr "Скорость 3"
++msgid "Internet connection"
++msgstr "Интернет"
++msgid "LTE / modem"
++msgstr "LTE / модем"
++msgid "ZigBee"
++msgstr "ZigBee"
++msgid "Wi-Fi 2.4 GHz"
++msgstr "Wi-Fi 2.4 ГГц"
++msgid "Wi-Fi 5 GHz"
++msgstr "Wi-Fi 5 ГГц"
++msgid "Service indicator SH"
++msgstr "Служебный индикатор SH"
++msgid "Service indicator A"
++msgstr "Служебный индикатор A"
++msgid "Automatic"
++msgstr "Автоматически"
++msgid "Indicator"
++msgstr "Индикатор"
++msgid "Color"
++msgstr "Цвет"
++msgid "Blink mode"
++msgstr "Режим мигания"
++msgid "Mode"
++msgstr "Режим работы"
++msgid "Apply all"
++msgstr "Применить всё"
++msgid "Turn off all"
++msgstr "Погасить все"
++msgid "Blink demo (10 s)"
++msgstr "Демо-мигание (10 с)"
++msgid "Done"
++msgstr "Готово"
++msgid "All indicators are off"
++msgstr "Все индикаторы погашены"
++msgid "Demo finished"
++msgstr "Демо завершено"
++msgid "Failed to run: "
++msgstr "Не удалось выполнить: "
++msgid "Indicators are driven by the STM32 microcontroller, exactly as in the stock firmware: mcu -p l <name>=<color>[,<mode>]. Colors: white, red, green, blue, magenta, yellow, cyan, orange; 0 turns the indicator off. Automatic mode paints the indicator by the system state (like the stock pim service)."
++msgstr "Индикаторы зажигает микроконтроллер STM32 - ровно как в заводской прошивке: mcu -p l <имя>=<цвет>[,<режим>]. Цвета: белый, красный, зелёный, синий, пурпурный, жёлтый, голубой, оранжевый; 0 - выключить. Автоматический режим красит индикатор по состоянию системы (как стоковый сервис pim)."
+diff --git a/package/luci-app-perenio/root/etc/init.d/pejir-led b/package/luci-app-perenio/root/etc/init.d/pejir-led
+new file mode 100755
+index 0000000..064f40c
+--- /dev/null
++++ b/package/luci-app-perenio/root/etc/init.d/pejir-led
+@@ -0,0 +1,28 @@
++#!/bin/sh /etc/rc.common
++# Авто-индикация Perenio (STM32).
++#
++# Фоновый цикл /usr/libexec/pejir-led auto перекрашивает индикаторы,
++# помеченные в /etc/pejir/led.conf как auto, - по состоянию системы
++# (интернет/LTE/Wi-Fi). Логика цветов - как в заводской прошивке
++# (/usr/sbin/pim.lua): хорошо - зелёный, плохо - жёлтый, нет связи -
++# оранжевый.
++#
++# Ручные настройки (из страницы LuCI) помечаются как manual и авто-режим
++# их не трогает.
++
++START=97
++STOP=98
++USE_PROCD=1
++
++start_service() {
++	procd_open_instance
++	procd_set_param command /usr/libexec/pejir-led auto
++	procd_set_param respawn 3600 5 5
++	procd_set_param stdout 1
++	procd_set_param stderr 1
++	procd_close_instance
++}
++
++stop_service() {
++	/usr/libexec/pejir-led off >/dev/null 2>&1
++}
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-led b/package/luci-app-perenio/root/usr/libexec/pejir-led
+new file mode 100755
+index 0000000..f7936f0
+--- /dev/null
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-led
+@@ -0,0 +1,262 @@
++#!/bin/sh
++# Управление RGB-индикаторами Perenio PEJIR01.
++#
++# Индикаторы зажигает STM32 (а не ядро): в заводской прошивке /etc/config/led
++# пуст, а светодиодами управляет vendor-сервис через mcud:
++#
++#   mcu -p l <имя>=<значение>
++#
++# (в стоке это делает pim.lua: ubus mcud post {query="l ..."}).
++#
++# Имена индикаторов (сток, /usr/sbin/pim.lua):
++#   i  - интернет (eth0/l2tp/pppoe)
++#   l  - LTE/модем (4G - зелёный, 3G - синий, 2G - голубой)
++#   zb - ZigBee
++#   2  - Wi-Fi 2.4 ГГц
++#   5  - Wi-Fi 5 ГГц
++#   sh - служебный
++#   a  - служебный
++#
++# Значение: <цвет>[*<яркость 00-FF>][,<режим>]
++#   цвета: 0 (выключить), w r g b m y c o
++#   режимы: пусто - постоянно, f - быстрое мигание, 55/11 - мигание,
++#           s10/s25/s3 - скорость (как в стоковых blink*.sh)
++#
++# Команды:
++#   status                     - текущие настройки
++#   set <имя> <цвет> [режим]   - задать индикатор вручную
++#   auto <имя> on|off          - авто-режим для индикатора
++#   off                        - погасить все
++#   demo [секунд]              - мигание (как стоковый blink3.sh)
++#   auto                       - бесконечный цикл авто-режима (для init)
++
++set -u
++
++LEDS="2 5 zb i sh a l"
++# Переопределения путей нужны только тесту (tests/test-led.sh): в образе
++# это /etc/pejir/led.conf и /usr/bin/mcu.
++CONF="${LED_CONF:-/etc/pejir/led.conf}"
++MCU="${MCU_BIN:-/usr/bin/mcu}"
++
++# --- проверка значений -------------------------------------------------------
++
++valid_name() {
++	case " $LEDS " in
++	*" $1 "*) return 0 ;;
++	esac
++	return 1
++}
++
++valid_color() {
++	case "$1" in
++	0|w|r|g|b|m|y|c|o) return 0 ;;
++	esac
++	return 1
++}
++
++valid_mode() {
++	case "$1" in
++	"") return 0 ;;
++	f|55|11|s3|s10|s25) return 0 ;;
++	esac
++	return 1
++}
++
++# --- чтение и запись настроек ------------------------------------------------
++# Формат файла: "<имя> <режим> <цвет> <режим-мигания>", режим = auto|manual.
++
++conf_get() {
++	# Возвращает "<режим> <цвет> [мигание]" для индикатора $1.
++	[ -f "$CONF" ] || return 1
++	line="$(grep "^$1 " "$CONF" 2>/dev/null | head -1)"
++	[ -n "$line" ] || return 1
++	echo "$line" | cut -d' ' -f2-
++}
++
++conf_set() {
++	# $1 - имя, $2 - auto|manual, $3 - цвет, $4 - режим мигания
++	tmp="$CONF.tmp"
++	mkdir -p "$(dirname "$CONF")"
++	[ -f "$CONF" ] && grep -v "^$1 " "$CONF" > "$tmp" 2>/dev/null
++	printf '%s %s %s %s\n' "$1" "$2" "$3" "$4" >> "$tmp"
++	mv -f "$tmp" "$CONF"
++}
++
++conf_init() {
++	[ -f "$CONF" ] && return 0
++	mkdir -p "$(dirname "$CONF")"
++	for l in $LEDS; do
++		case "$l" in
++		i|l|2|5) printf '%s auto g\n' "$l" ;;
++		*) printf '%s manual 0\n' "$l" ;;
++		esac
++	done > "$CONF"
++}
++
++# --- отправка в STM32 --------------------------------------------------------
++
++send_led() {
++	# $1 - "имя=значение"
++	"$MCU" -p l "$1" >/dev/null 2>&1
++}
++
++apply() {
++	# $1 - имя, $2 - значение (цвет[+режим])
++	send_led "$1=$2"
++}
++
++# --- авто-режим: цвета по состоянию системы --------------------------------
++# Упрощённая стоковая логика (pim.lua): хорошо - зелёный, плохо - жёлтый,
++# нет связи - оранжевый.
++
++carrier_up() {
++	# $1 - имя интерфейса
++	[ -r "/sys/class/net/$1/carrier" ] || return 1
++	[ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = "1" ]
++}
++
++auto_color() {
++	case "$1" in
++	i)
++		if ip route show default 2>/dev/null | grep -q .; then echo g
++		elif carrier_up eth0 || carrier_up wan; then echo y
++		else echo o
++		fi
++		;;
++	l)
++		if carrier_up eth1; then echo g
++		else echo o
++		fi
++		;;
++	2)
++		if iw dev radio0 info 2>/dev/null | grep -q Interface; then echo g
++		else echo o
++		fi
++		;;
++	5)
++		if iw dev radio1 info 2>/dev/null | grep -q Interface; then echo g
++		else echo o
++		fi
++		;;
++	*)
++		echo ""
++		;;
++	esac
++}
++
++auto_loop() {
++	conf_init
++	last=""
++	while true; do
++		for l in $LEDS; do
++			set -- $(conf_get "$l")
++			[ "$1" = "auto" ] || continue
++			color="$(auto_color "$l")"
++			[ -n "$color" ] || continue
++			key="$l=$color"
++			[ "$key" = "$last" ] && continue
++			send_led "$key"
++			last="$key"
++		done
++		sleep 10
++	done
++}
++
++# --- команды -----------------------------------------------------------------
++
++cmd_status() {
++	conf_init
++	echo "STATE"
++	for l in $LEDS; do
++		set -- $(conf_get "$l")
++		echo "$l ${1:-manual} ${2:-0} ${3:-}"
++	done
++}
++
++cmd_set() {
++	name="$1"; color="$2"; mode="${3:-}"
++	if ! valid_name "$name"; then
++		echo "ERROR: неизвестный индикатор: $name"
++		return 1
++	fi
++	if ! valid_color "$color"; then
++		echo "ERROR: недопустимый цвет: $color"
++		return 1
++	fi
++	if ! valid_mode "$mode"; then
++		echo "ERROR: недопустимый режим: $mode"
++		return 1
++	fi
++	conf_init
++	val="$color"
++	[ -n "$mode" ] && val="$color,$mode"
++	apply "$name" "$val"
++	conf_set "$name" manual "$color" "$mode"
++	echo "OK $name=$val"
++}
++
++cmd_auto() {
++	name="$1"; state="$2"
++	if ! valid_name "$name"; then
++		echo "ERROR: неизвестный индикатор: $name"
++		return 1
++	fi
++	conf_init
++	set -- $(conf_get "$name")
++	color="${2:-g}"
++	case "$state" in
++	on)
++		conf_set "$name" auto "$color" ""
++		c="$(auto_color "$name")"
++		[ -n "$c" ] && apply "$name" "$c"
++		echo "OK $name auto"
++		;;
++	off)
++		conf_set "$name" manual "$color" ""
++		echo "OK $name manual"
++		;;
++	*)
++		echo "ERROR: auto <имя> on|off"
++		return 1
++		;;
++	esac
++}
++
++cmd_off() {
++	conf_init
++	for l in $LEDS; do
++		apply "$l" "0,s10"
++		conf_set "$l" manual "0" ""
++	done
++	echo "OK all off"
++}
++
++cmd_demo() {
++	secs="${1:-10}"
++	pattern="wrgbmyco"
++	end=$(( $(date +%s) + secs ))
++	while [ "$(date +%s)" -lt "$end" ]; do
++		for l in $LEDS; do
++			c="$(printf '%s' "$pattern" | cut -c$(( ( $(od -An -N1 -tu1 /dev/urandom 2>/dev/null || echo 1) % 8 ) + 1 )))"
++			[ -n "$c" ] && send_led "$l=$c,s3"
++		done
++		sleep 0.4
++	done
++	echo "OK demo finished"
++}
++
++case "${1:-}" in
++status) cmd_status ;;
++set) shift; cmd_set "$@" ;;
++auto)
++	if [ "${2:-}" = "" ]; then auto_loop
++	else shift; cmd_auto "$@"
++	fi
++	;;
++off) cmd_off ;;
++demo) shift; cmd_demo "$@" ;;
++*)
++	echo "Использование: pejir-led status|set <имя> <цвет> [режим]|auto <имя> on|off|off|demo [сек]|auto"
++	exit 1
++	;;
++esac
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 62b5b93..29d2126 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -46,6 +46,19 @@
+ 			"path": "perenio/diag"
+ 		}
+ 	},
++	"admin/status/perenio-led": {
++		"title": "Световая индикация (Perenio)",
++		"order": 69,
++		"action": {
++			"type": "view",
++			"path": "perenio/led"
++		},
++		"depends": {
++			"fs": {
++				"/usr/bin/mcu": "executable"
++			}
++		}
++	},
+ 	"admin/status/perenio-bands": {
+ 		"title": "3G/4G bands (PEJIR01)",
+ 		"order": 68,
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 5ed6f12..636e8eb 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -81,6 +81,9 @@
+ 				],
+ 				"/usr/libexec/pejir-band": [
+ 					"exec"
++				],
++				"/usr/libexec/pejir-led": [
++					"exec"
+ 				]
+ 			},
+ 			"ubus": {
+-- 
+2.39.5
+
