@@ -114,6 +114,13 @@ jobs:
           sh tests/test-at-speed.sh
           sh tests/test-autosetup.sh
           sh tests/test-luci-requires.sh
+          sh tests/test-at-probe.sh
+          sh tests/test-modeminfo.sh
+          sh tests/test-ota-acl.sh
+          sh tests/test-sms-outbox.sh
+          sh tests/test-ussd.sh
+          sh tests/test-bands.sh
+          sh tests/test-battery.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый
