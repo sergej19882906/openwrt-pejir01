@@ -1,0 +1,46 @@
+From 366c6ac435d31d410c5597ddd133b3c7ab7e4a67 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 18:10:06 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-ota:=20=D1=81=D1=82=D1=80=D0=B0=D0=BD?=
+ =?UTF-8?q?=D0=B8=D1=86=D0=B0=20=D0=BE=D0=B1=D0=BD=D0=BE=D0=B2=D0=BB=D0=B5?=
+ =?UTF-8?q?=D0=BD=D0=B8=D1=8F=20=D0=BF=D1=80=D0=BE=D1=88=D0=B8=D0=B2=D0=BA?=
+ =?UTF-8?q?=D0=B8=20=D0=BE=D1=82=D0=B4=D0=B0=D0=B2=D0=B0=D0=BB=D0=B0=20'?=
+ =?UTF-8?q?=D0=94=D0=BE=D1=81=D1=82=D1=83=D0=BF=20=D0=B7=D0=B0=D0=BF=D1=80?=
+ =?UTF-8?q?=D0=B5=D1=89=D1=91=D0=BD'?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Грант на запуск помощника был выдан ТОЛЬКО через scope 'ubus'
+(ubus.file = exec). Но rpcd дополнительно проверяет права по
+КОНКРЕТНОМУ пути исполняемого файла: без записи
+  write.file['/usr/bin/pejir-ota'] = ['exec']
+вызов fs.exec('/usr/bin/pejir-ota', ...) отклоняется с 'Permission
+denied' - страница показывала 'Доступ запрещён' и пустые версии.
+
+Ровно так же сделано в luci-app-perenio.json (perenio-diag,
+pejir-ussd) - там страницы работают.
+
+Новый тест tests/test-ota-acl.sh: проверяет наличие гранта по пути,
+валидность JSON, вызов helper'а со страницы. На коде до патча падает.
+---
+ .../root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json          | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+index 5d6464c..7aa8533 100644
+--- a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
++++ b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+@@ -7,6 +7,9 @@
+ 			}
+ 		},
+ 		"write": {
++			"file": {
++				"/usr/bin/pejir-ota": [ "exec" ]
++			},
+ 			"ubus": {
+ 				"file": [ "exec" ]
+ 			}
+-- 
+2.39.5
+
