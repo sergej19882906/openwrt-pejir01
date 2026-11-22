@@ -1,0 +1,206 @@
+From e550337f7b754903a590f0c69763eb9d851d9dc1 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 11:32:13 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-lte/pejir-sms:=20LTE=20=D0=BF=D0=BE=D0=B4?=
+ =?UTF-8?q?=D0=BD=D0=B8=D0=BC=D0=B0=D0=B5=D1=82=D1=81=D1=8F=20=D0=B1=D0=B5?=
+ =?UTF-8?q?=D0=B7=20AT-=D0=BE=D1=82=D0=B2=D0=B5=D1=82=D0=B0,=20=D0=BF?=
+ =?UTF-8?q?=D0=BE=D1=80=D1=82=20=D0=B7=D0=B0=D0=BF=D0=BE=D0=BC=D0=B8=D0=BD?=
+ =?UTF-8?q?=D0=B0=D0=B5=D1=82=D1=81=D1=8F=20=D1=82=D0=BE=D0=BB=D1=8C=D0=BA?=
+ =?UTF-8?q?=D0=BE=20=D0=BF=D1=80=D0=BE=D0=B2=D0=B5=D1=80=D0=B5=D0=BD=D0=BD?=
+ =?UTF-8?q?=D1=8B=D0=BC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+На устройстве после .32 модем не отвечает на AT ни на одном порту, и
+из-за этого:
+  * 47-pejir-lte выходил до ensure_lte_section - секция network.lte
+    оставалась без device, интерфейс не поднимался;
+  * 40-pejir-sms не вызывал write_conf - /etc/smsd.conf оставался
+    стоковым, smsd не запускался;
+  * 41-pejir-modem записывал неподтверждённый /dev/ttyUSB0, и он
+    сохранялся навсегда.
+
+Что изменено:
+  * 47-pejir-lte: USB-NIC модема ищется всегда, AT-команды (APN, ECM
+    data call) - только если модем отвечает. Ethernet-интерфейс
+    модема работает и без AT, если модем уже в режиме данных;
+  * 41-pejir-modem: неподтверждённый порт больше не пишется, последний
+    живой AT-ответ запоминается в /etc/pejir/at-port;
+  * 40-pejir-sms: запасной порт берётся из /etc/pejir/at-port (только
+    подтверждённый), а не из неподтверждённых настроек.
+---
+ .../root/etc/init.d/41-pejir-modem            | 27 ++++++++---
+ .../root/etc/init.d/47-pejir-lte              | 45 ++++++++++++++-----
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    | 18 +++++---
+ 3 files changed, 69 insertions(+), 21 deletions(-)
+
+diff --git a/package/pejir-lte-base/root/etc/init.d/41-pejir-modem b/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
+index 4ad37ff..3d31a0e 100644
+--- a/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
++++ b/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
+@@ -25,24 +25,41 @@ port_alive() {
+ 	mdm-at "AT" "$p" 2>/dev/null | grep -q "OK"
+ }
+ 
++# Последний порт, подтверждённый живым AT-ответом.
++#
++# Нужен как запасной вариант: если модем при загрузке не отвечает на AT,
++# скрипты SMS и LTE всё равно должны знать, какой порт использовать.
++# Значение пишется только после настоящего AT-ответа, поэтому
++# неподтверждённый /dev/ttyUSB0 сюда не попадёт.
++remember_port() {
++	local p="$1"
++
++	mkdir -p /etc/pejir
++	printf '%s\n' "$p" > /etc/pejir/at-port
++}
++
+ start_service() {
+ 	local port saved
+ 
+ 	port="$(mdm-at --port 2>/dev/null)"
+-	[ -n "$port" ] || port="/dev/ttyUSB0"
+-
+ 	saved="$(uci -q get modeminfo.@modeminfo[0].device)"
+ 
+ 	# Сохранённый пользователем порт не трогаем - но только если модем на
+ 	# нём действительно отвечает. Раньше порт записывался вслепую: если
+ 	# AT-порт определить не удалось, подставлялся /dev/ttyUSB0, и он
+-	# сохранялся навсегда. Теперь такой порт при следующей загрузке
+-	# заменяется найденным (на GM510 это ttyUSB2).
++	# сохранялся навсегда - потом ни SMS, ни LTE не находили правильный
++	# порт. Теперь неподтверждённый порт не записывается вовсе.
+ 	if [ -n "$saved" ] && port_alive "$saved"; then
++		remember_port "$saved"
+ 		return 0
+ 	fi
+ 
+-	write_modeminfo "$port"
++	if [ -n "$port" ]; then
++		write_modeminfo "$port"
++		remember_port "$port"
++	else
++		logger -t pejir-modem "AT-порт модема не определён - оставляем прошлый"
++	fi
+ }
+ 
+ stop_service() {
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index dafdf86..9db2d96 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -265,6 +265,20 @@ usb_modem_present() {
+ # устройства, а не пробуем AT "в пустоту".
+ MODEM_WAIT="${PEJIR_MODEM_WAIT:-120}"
+ 
++# Ждём появления USB-модема (не AT-ответа: узла /dev/ttyUSB* может не
++# быть ещё минуту после загрузки).
++wait_for_modem_usb() {
++	local waited=0
++
++	while [ "$waited" -lt "$MODEM_WAIT" ]; do
++		usb_modem_present && return 0
++		sleep 5
++		waited=$((waited + 5))
++	done
++	return 1
++}
++
++# Ждём модема И его AT-ответа.
+ wait_for_modem() {
+ 	local waited=0
+ 
+@@ -290,26 +304,35 @@ spawn_retry() {
+ }
+ 
+ start_service() {
+-	local ifname proto
++	local ifname proto have_at=""
+ 
+-	if ! wait_for_modem; then
+-		log "модем не появился (USB?) - продолжаем в фоне"
+-		if [ "$PEJIR_LTE_RETRY" != "1" ]; then
+-			spawn_retry "PEJIR_LTE_RETRY=1 PEJIR_MODEM_WAIT=900" /etc/init.d/47-pejir-lte
+-		fi
+-		return 0
+-	fi
++	# AT-команды нужны только для APN и ECM data call. Сам интерфейс
++	# (cdc_ether на этой плате - ethN) работает и без них: если модем уже
++	# в режиме данных, DHCP по ethN поднимает связь без единой AT-команды.
++	# Поэтому NIC ищем всегда, а AT - как дополнение. Раньше при любом
++	# молчании модема скрипт выходил до ensure_lte_section, и секция
++	# network.lte оставалась без device - интерфейс не поднимался вовсе.
++	wait_for_modem_usb
+ 
+ 	ifname="$(detect_ifname)" || ifname=""
+ 	if [ -z "$ifname" ]; then
+-		log "USB-NIC модема не найден — интерфейс LTE не поднимаем"
++		log "USB-NIC модема не найден - интерфейс LTE не поднимаем"
++		if [ "$PEJIR_LTE_RETRY" != "1" ]; then
++			spawn_retry "PEJIR_LTE_RETRY=1 PEJIR_MODEM_WAIT=900" /etc/init.d/47-pejir-lte
++		fi
+ 		return 0
+ 	fi
+ 
+ 	ensure_lte_section "$ifname"
+ 	ensure_firewall
+-	sync_apn
+-	ecm_call
++
++	have_at="$(detect_at_port)"
++	if [ -n "$have_at" ]; then
++		sync_apn
++		ecm_call
++	else
++		log "модем не отвечает на AT - APN и ECM data call пропущены, поднимаем eth${ifname} как есть"
++	fi
+ 
+ 	proto="$(uci -q get network.lte.proto)"
+ 	if [ "$proto" != "none" ]; then
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index 383c6ad..a3df7c9 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -69,10 +69,16 @@ set_port_speed() {
+ # загрузке не отвечает на AT (не успел инициализироваться), мы знаем
+ # правильный порт.
+ at_port_candidates() {
+-	local saved
++	local verified saved
+ 
++	# Последний порт, подтверждённый живым AT-ответом (41-pejir-modem).
++	verified="$(cat /etc/pejir/at-port 2>/dev/null)"
++	[ -n "$verified" ] && echo "$verified"
++
++	# Затем порт из настроек LuCI-модема.
+ 	saved="$(uci -q get modeminfo.@modeminfo[0].device 2>/dev/null)"
+ 	[ -n "$saved" ] && echo "$saved"
++
+ 	echo /dev/ttyUSB2
+ 	echo /dev/ttyUSB1
+ 	echo /dev/ttyUSB0
+@@ -207,14 +213,16 @@ start_service() {
+ 	fi
+ 
+ 	if [ -z "$port" ]; then
+-		# Фоновый повтор тоже не дождался ответа AT: берём порт из
+-		# modeminfo - он проверен живым AT-запросом в 41-pejir-modem.
+-		port="$(uci -q get modeminfo.@modeminfo[0].device 2>/dev/null)"
++		# Фоновый повтор тоже не дождался ответа AT: берём последний
++		# подтверждённый порт (/etc/pejir/at-port пишет 41-pejir-modem
++		# только после настоящего AT-ответа), а не неподтверждённое
++		# значение из настроек.
++		port="$(cat /etc/pejir/at-port 2>/dev/null)"
+ 		if [ -z "$port" ] || [ ! -c "$port" ]; then
+ 			logger -t pejir-sms "AT-порт модема не найден, smsd не запущен"
+ 			return 0
+ 		fi
+-		logger -t pejir-sms "AT-порт не отвечает, берём $port из modeminfo"
++		logger -t pejir-sms "AT-порт не отвечает, берём подтверждённый $port"
+ 	fi
+ 
+ 	write_conf "$port"
+-- 
+2.39.5
+
