@@ -1,0 +1,67 @@
+From 8a8c04c2059a8bcf5cba3dc00c6bc4c10d3e9926 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 11:53:04 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-extroot:=20=D0=BD=D0=B5=20=D0=BF=D0=B8?=
+ =?UTF-8?q?=D1=81=D0=B0=D1=82=D1=8C=20=D1=81=D0=BE=D0=BE=D0=B1=D1=89=D0=B5?=
+ =?UTF-8?q?=D0=BD=D0=B8=D1=8F=20=D0=B2=20/etc/config/fstab?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+log() печатает в stdout, а блок, который записывает fstab, перенаправлен в
+сам файл. Вызовы log внутри блока приводили к тому, что строка вроде
+'Добавлен swap: /dev/sda2 (264 МБ)' оказывалась последней строкой
+/etc/config/fstab.
+
+Такое fstab не парсится: block.c сообщает
+  'unable to load configuration (fstab: Parse error (invalid command) at
+   line 20)'
+и отбрасывает fstab ЦЕЛИКОМ - вместе с секцией extroot и секцией swap.
+На устройстве это и происходило: overlay оставался на NAND, swap не
+включался, а настройки с USB-флешки не подхватывались.
+
+Теперь сообщения вызываются ПОСЛЕ блока записи. Добавлен тест
+tests/test-extroot.sh: в записанном fstab допустимы только строки UCI.
+---
+ package/pejir-extroot/files/pejir-extroot | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/package/pejir-extroot/files/pejir-extroot b/package/pejir-extroot/files/pejir-extroot
+index fb5be10..71e8fc9 100755
+--- a/package/pejir-extroot/files/pejir-extroot
++++ b/package/pejir-extroot/files/pejir-extroot
+@@ -219,18 +219,28 @@ do_setup() {
+ 	# Раздел swap на той же флешке: без явной секции fstools его не
+ 	# активирует, и на устройстве с 128 МБ RAM это заметная потеря.
+ 	# Секция swap в fstab обрабатывается block.c (swap_add).
++	#
++	# ВАЖНО: сообщения пользователю (log) пишутся в stdout, а весь блок
++	# ниже перенаправляется в $FSTAB. Если вызвать log ВНУТРИ блока,
++	# строка вроде "Добавлен swap: /dev/sda2 (264 МБ)" попадёт прямо в
++	# /etc/config/fstab - и fstab перестанет парситься ("Parse error at
++	# line 20"). Из-за этого extroot и swap не включались вообще: fstab
++	# отбрасывался целиком. Поэтому log вызывается ПОСЛЕ блока.
+ 	SWAPDEV="$(find_swap_part || true)"
+ 		if [ -n "$SWAPDEV" ]; then
+ 			echo ""
+ 			echo "config swap"
+ 			echo "	option device '$SWAPDEV'"
+ 			echo "	option enabled '1'"
+-			log "Добавлен swap: $SWAPDEV ($(dev_size_mb "$SWAPDEV") МБ)"
+-		else
+-			log "Раздела swap на флешке не найдено."
+ 		fi
+ 	} > "$FSTAB"
+ 
++	if [ -n "$SWAPDEV" ]; then
++		log "Добавлен swap: $SWAPDEV ($(dev_size_mb "$SWAPDEV") МБ)"
++	else
++		log "Раздела swap на флешке не найдено."
++	fi
++
+ 	log "Записан $FSTAB:"
+ 
+ 	# Переносим ТЕКУЩИЙ overlay на флешку.
+-- 
+2.39.5
+

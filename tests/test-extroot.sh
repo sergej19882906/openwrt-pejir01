@@ -149,6 +149,20 @@ else
 	fail "setup: нет delay_root"
 fi
 
+# --- тест 2a: в fstab нет посторонних строк --------------------------------
+# log() печатает в stdout, а блок записи fstab перенаправляется в файл.
+# Если log() вызвать ВНУТРИ блока, строка вроде "Добавлен swap: /dev/sda2
+# (264 МБ)" попадёт прямо в /etc/config/fstab. Тогда fstab не парсится
+# ("Parse error at line 20"), extroot и swap не включаются вообще, а
+# система молча остаётся с overlay на NAND. Поэтому в fstab допустимы
+# только строки UCI.
+bad_lines="$(grep -vE '^[[:space:]]*$|^[[:space:]]|^config[[:space:]]|^option[[:space:]]|^list[[:space:]]' /tmp/extroot-test/fstab 2>/dev/null)"
+if [ -z "$bad_lines" ]; then
+	ok "setup: в fstab только строки UCI (посторонних нет)"
+else
+	fail "setup: в fstab попали посторонние строки: $bad_lines"
+fi
+
 # --- тест 3: fstab скопирован на флешку ------------------------------------
 # Копия нужна в upper/etc/config - только оттуда он попадает в объединённый
 # /etc (lowerdir=/rom + upperdir=/overlay/upper).
