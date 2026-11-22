@@ -1,0 +1,952 @@
+From 806a411f8093b868dd207742018555051b9f9e67 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 18:15:44 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=9D=D0=B0=D1=81=D1=82=D1=80=D0=BE=D0=B9?=
+ =?UTF-8?q?=D0=BA=D0=B0=20=D0=B4=D0=B8=D0=B0=D0=BF=D0=B0=D0=B7=D0=BE=D0=BD?=
+ =?UTF-8?q?=D0=BE=D0=B2=203G/4G=20=D0=BA=D0=B0=D0=BA=20=D0=B2=20=D1=81?=
+ =?UTF-8?q?=D1=82=D0=BE=D0=BA=D0=BE=D0=B2=D0=BE=D0=B9=20=D0=BF=D1=80=D0=BE?=
+ =?UTF-8?q?=D1=88=D0=B8=D0=B2=D0=BA=D0=B5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Сток Perenio задаёт диапазоны модема GM510 (GOSUNCN) командой
+  AT+ZBAND=<UMTS>,0,0,<LTE>
+где UMTS и LTE - битовые маски, а список диапазонов лежит в UCI
+network.lte.perenio_band (сток: /usr/lib/modem_ubus/gosuncn.sh).
+
+Реализовано ровно то же:
+  * /usr/share/pejir/bands.sh - общая таблица диапазонов и расчёт масок.
+    Маски сверены со стоком программно (все 8 совпали);
+  * /usr/libexec/pejir-band - helper: show/apply/set. Читает список из
+    UCI, считает маски, отправляет AT+ZBAND, печатает ответ модема;
+  * 47-pejir-lte - функция sync_bands: применяет диапазоны при каждом
+    старте LTE (перед ECM data call), если список задан;
+  * новая страница LuCI 'Диапазоны 3G/4G (PEJIR01)' - галочки
+    диапазонов, кнопки 'Сохранить', 'Применить сейчас', 'Показать
+    текущие' + журнал;
+  * ACL: грант exec на /usr/libexec/pejir-band и доступ к uci network;
+  * luci-app-perenio теперь зависит от pejir-lte-base (там helper);
+  * переводы новых строк в po/ru.
+
+Ошибка stty в helper'е не фатальна - на этом устройстве stty всегда
+возвращает ошибку, хотя порт рабочий.
+
+Новый тест tests/test-bands.sh: сверка масок со стоком, проверка
+helper'а, init-скрипта, ACL, меню и страницы.
+---
+ package/luci-app-perenio/Makefile             |   2 +-
+ .../resources/view/perenio/bands.js           | 153 ++++++++++++++++++
+ .../po/ru/luci-app-perenio.po                 | 115 +++++--------
+ .../share/luci/menu.d/luci-app-perenio.json   |  13 ++
+ .../share/rpcd/acl.d/luci-app-perenio.json    | 106 +++++++++---
+ package/pejir-lte-base/Makefile               |   6 +-
+ .../root/etc/init.d/47-pejir-lte              |  26 +++
+ .../root/usr/libexec/pejir-band               | 113 +++++++++++++
+ .../root/usr/share/pejir/bands.sh             |  86 ++++++++++
+ 9 files changed, 516 insertions(+), 104 deletions(-)
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js
+ create mode 100644 package/pejir-lte-base/root/usr/libexec/pejir-band
+ create mode 100644 package/pejir-lte-base/root/usr/share/pejir/bands.sh
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index ef53265..96add70 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -13,7 +13,7 @@ define Package/luci-app-perenio
+   CATEGORY:=LuCI
+   SUBMENU:=3. Applications
+   TITLE:=Perenio PEJIR01 LuCI pages: battery, SMS, factory data
+-  DEPENDS:=+luci-base +perenio-mcu
++  DEPENDS:=+luci-base +perenio-mcu +pejir-lte-base
+ endef
+ 
+ define Build/Prepare
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js
+new file mode 100644
+index 0000000..3da1dc9
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js
+@@ -0,0 +1,153 @@
++'use strict';
++'require view';
++'require fs';
++'require uci';
++'require ui';
++
++/* Диапазоны 3G/4G модема GM510.
++ *
++ * Настройка полностью повторяет стоковую прошивку Perenio: список
++ * диапазонов хранится в UCI (network.lte.perenio_band), а модему
++ * отправляется AT+ZBAND=<UMTS>,0,0,<LTE>. Маски диапазонов - те же,
++ * что в стоке (usr/lib/modem_ubus/gosuncn.sh).
++ *
++ * Список диапазонов применяется:
++ *   - кнопкой "Применить сейчас" (сразу, через /usr/libexec/pejir-band);
++ *   - при каждом старте LTE (init-скрипт 47-pejir-lte).
++ *
++ * Если список не задан, модем работает на всех диапазонах (обычная
++ * настройка по умолчанию модема) - ничего не отправляется.
++ */
++
++var BANDS = [
++	[ 'umts01', _('3G: band 1 (2100 MHz)') ],
++	[ 'umts08', _('3G: band 8 (900 MHz)') ],
++	[ 'lte01', _('4G: band 1 (2100 MHz)') ],
++	[ 'lte03', _('4G: band 3 (1800 MHz)') ],
++	[ 'lte07', _('4G: band 7 (2600 MHz)') ],
++	[ 'lte08', _('4G: band 8 (900 MHz)') ],
++	[ 'lte20', _('4G: band 20 (800 MHz)') ],
++	[ 'lte38', _('4G: band 38 (2600 MHz, TDD)') ]
++];
++
++var BAND = '/usr/libexec/pejir-band';
++
++function currentBands() {
++	var s = uci.get('network', 'lte', 'perenio_band');
++
++	if (s == null)
++		return [];
++
++	if (Array.isArray(s))
++		return s;
++
++	return String(s).split(/\s+/).filter(function(x) { return x != ''; });
++}
++
++function setText(id, s) {
++	var el = document.getElementById(id);
++
++	if (el)
++		el.textContent = s;
++}
++
++return view.extend({
++	handleSave: function(ev) {
++		var boxes = document.querySelectorAll('.pejir-band-box');
++		var val = [];
++
++		for (var i = 0; i < boxes.length; i++) {
++			if (boxes[i].checked)
++				val.push(boxes[i].value);
++		}
++
++		uci.set('network', 'lte', 'perenio_band', val);
++		return uci.save().then(function() {
++			ui.addNotification(null, E('p', {}, _('Saved. Press "Apply now" to send the setting to the modem.')), 'info');
++		}).catch(function(e) {
++			ui.addNotification(null, E('p', {}, _('Failed to save: ') + (e && e.message ? e.message : e)), 'error');
++		});
++	},
++
++	handleApply: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('pejir-bands-log', _('Sending the setting to the modem...'));
++
++		return fs.exec(BAND, [ 'apply' ]).then(function(r) {
++			var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++
++			setText('pejir-bands-log', out.trim() || _('Done'));
++			btn.disabled = false;
++		}).catch(function(e) {
++			setText('pejir-bands-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++			btn.disabled = false;
++		});
++	},
++
++	handleShow: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('pejir-bands-log', _('Reading the modem bands...'));
++
++		return fs.exec(BAND, [ 'show' ]).then(function(r) {
++			var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++
++			setText('pejir-bands-log', out.trim() || _('No data'));
++			btn.disabled = false;
++		}).catch(function(e) {
++			setText('pejir-bands-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++			btn.disabled = false;
++		});
++	},
++
++	render: function() {
++		var sel = currentBands();
++		var rows = [];
++
++		BANDS.forEach(function(b) {
++			var id = 'pejir-band-' + b[0];
++
++			rows.push(E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, b[1]),
++				E('div', { 'class': 'cbi-value-field' },
++					E('input', { 'type': 'checkbox', 'class': 'pejir-band-box',
++						'id': id, 'value': b[0],
++						'checked': sel.indexOf(b[0]) >= 0 }))
++			]));
++		});
++
++		var saveBtn = E('button', { 'class': 'cbi-button cbi-button-save', 'type': 'button' },
++				_('Save'));
++		saveBtn.addEventListener('click', L.bind(this.handleSave, this));
++
++		var applyBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
++				_('Apply now'));
++		applyBtn.addEventListener('click', L.bind(this.handleApply, this));
++
++		var showBtn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' },
++				_('Show current'));
++		showBtn.addEventListener('click', L.bind(this.handleShow, this));
++
++		return E('div', { 'class': 'cbi-section' }, [
++			E('h2', {}, _('3G/4G bands (PEJIR01)')),
++			E('div', { 'class': 'cbi-section-descr' },
++				_('Allowed frequency bands for the GM510 modem. The list is stored in network.lte.perenio_band and applied with the AT+ZBAND command, exactly as in the stock firmware. If nothing is selected, the modem keeps all bands enabled by default.')),
++			E('div', { 'class': 'cbi-map' }, rows),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, ''),
++				E('div', { 'class': 'cbi-value-field' }, [
++					saveBtn, ' ', applyBtn, ' ', showBtn
++				])
++			]),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, _('Log')),
++				E('div', { 'class': 'cbi-value-field' },
++					E('pre', { 'id': 'pejir-bands-log',
++						'style': 'white-space:pre-wrap; font-family:monospace; font-size:12px; max-height:40vh; overflow:auto; border:1px solid #ccc; padding:8px;' }, ''))
++			])
++		]);
++	}
++});
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 695274a..c7f5fa6 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -8,85 +8,60 @@ msgstr ""
+ "Content-Type: text/plain; charset=UTF-8\n"
+ "Language: ru\n"
+ "Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+-
+ msgid "Battery and power (Perenio STM32)"
+ msgstr "Батарея и питание (Perenio STM32)"
+-
+ msgid "Voltage"
+ msgstr "Напряжение"
+-
+ msgid "System state"
+ msgstr "Состояние системы"
+-
+ msgid "STM32 firmware"
+ msgstr "Прошивка STM32"
+-
+ msgid "STM32 data via mcud: mcu getvolt / getsys / getver. Power events "
+ "(pwroff/pr/paerr) are visible in logread."
+ msgstr "Данные STM32 через mcud: mcu getvolt / getsys / getver. События "
+ "питания (pwroff/pr/paerr) видны в logread."
+-
+ msgid "Failed to run diagnostics: "
+ msgstr "Не удалось выполнить диагностику: "
+-
+ msgid "USB, LTE and battery diagnostics (PEJIR01)"
+ msgstr "Диагностика USB, LTE и батареи (PEJIR01)"
+-
+ msgid "Status summary: USB controller and connected devices, modem, LTE "
+ "interface, STM32 services and battery data. Copy the contents of the "
+ "block below."
+ msgstr "Сводка состояния: USB-контроллер и подключённые устройства, модем, "
+ "интерфейс LTE, службы STM32 и данные батареи. Скопируйте содержимое "
+ "блока ниже."
+-
+ msgid "(empty)"
+ msgstr "(пусто)"
+-
+ msgid "Refresh"
+ msgstr "Обновить"
+-
+ msgid "2.4 GHz Wi-Fi name"
+ msgstr "Имя Wi-Fi 2.4 ГГц"
+-
+ msgid "2.4 GHz Wi-Fi password"
+ msgstr "Пароль Wi-Fi 2.4 ГГц"
+-
+ msgid "2.4 GHz Wi-Fi country"
+ msgstr "Страна Wi-Fi 2.4 ГГц"
+-
+ msgid "5 GHz Wi-Fi name"
+ msgstr "Имя Wi-Fi 5 ГГц"
+-
+ msgid "5 GHz Wi-Fi password"
+ msgstr "Пароль Wi-Fi 5 ГГц"
+-
+ msgid "5 GHz Wi-Fi country"
+ msgstr "Страна Wi-Fi 5 ГГц"
+-
+ msgid "Factory root password"
+ msgstr "Заводской пароль root"
+-
+ msgid "WPS PIN"
+ msgstr "WPS PIN"
+-
+ msgid "MAC address"
+ msgstr "MAC-адрес"
+-
+ msgid "Serial number"
+ msgstr "Серийный номер"
+-
+ msgid "Hardware version"
+ msgstr "Аппаратная версия"
+-
+ msgid "Stock firmware version"
+ msgstr "Версия стоковой прошивки"
+-
+ msgid "Load from idata"
+ msgstr "Загрузить из idata"
+-
+ msgid "Factory data (Perenio)"
+ msgstr "Заводские данные (Perenio)"
+-
+ msgid "Data from the factory idata section: stock Wi-Fi names and "
+ "passwords, the factory administrator password and the serial number. "
+ "They are already applied to the firmware at first boot; they can be "
+@@ -94,163 +69,149 @@ msgid "Data from the factory idata section: stock Wi-Fi names and "
+ msgstr "Данные из заводского раздела idata: имя и пароль штатных Wi-Fi, "
+ "заводской пароль администратора, серийный номер. При первом "
+ "включении они уже применены к прошивке, здесь их можно посмотреть."
+-
+ msgid "Loading…"
+ msgstr "Загрузка…"
+-
+ msgid "The idata section is not loaded. Press \"Load from idata\"."
+ msgstr "Раздел idata не загружен. Нажмите «Загрузить из idata»."
+-
+ msgid "Parameter"
+ msgstr "Параметр"
+-
+ msgid "Value"
+ msgstr "Значение"
+-
+ msgid "No access to /etc/config/idata (check the luci-app-perenio ACL)"
+ msgstr "Нет доступа к /etc/config/idata (проверьте ACL luci-app-perenio)"
+-
+ msgid "File /etc/config/idata not found"
+ msgstr "Файл /etc/config/idata не найден"
+-
+ msgid "Reading idata…"
+ msgstr "Читаем idata…"
+-
+ msgid "Failed to read idata"
+ msgstr "Не удалось прочитать idata"
+-
+ msgid "Done"
+ msgstr "Готово"
+-
+ msgid "Error: "
+ msgstr "Ошибка: "
+-
+ msgid "running (smsd)"
+ msgstr "работает (smsd)"
+-
+ msgid "not running"
+ msgstr "не запущен"
+-
+ msgid "not found (ttyUSB/ttyACM)"
+ msgstr "не найдено (ttyUSB/ttyACM)"
+-
+ msgid "not set in smsd.conf"
+ msgstr "не задан в smsd.conf"
+-
+ msgid "no log"
+ msgstr "журнала нет"
+-
+ msgid "No SMS"
+ msgstr "Нет SMS"
+-
+ msgid "Time"
+ msgstr "Время"
+-
+ msgid "Sender"
+ msgstr "Отправитель"
+-
+ msgid "Text"
+ msgstr "Текст"
+-
+ msgid "Send"
+ msgstr "Отправить"
+-
+ msgid "SMS (GM510)"
+ msgstr "SMS (GM510)"
+-
+ msgid "GM510 SMS modem in the LTE module. An active SIM and a running smsd "
+ "are required."
+ msgstr "SMS-модем GM510 в LTE-модуле. Требуется активный SIM и работающий "
+ "smsd."
+-
+ msgid "Service state"
+ msgstr "Состояние сервиса"
+-
+ msgid "smsd"
+ msgstr "smsd"
+-
+ msgid "checking…"
+ msgstr "проверка…"
+-
+ msgid "AT ports"
+ msgstr "AT-порты"
+-
+ msgid "Port in smsd.conf"
+ msgstr "Порт в smsd.conf"
+-
+ msgid "smsd log"
+ msgstr "Журнал smsd"
+-
+ msgid "Send SMS"
+ msgstr "Отправить SMS"
+-
+ msgid "Number"
+ msgstr "Номер"
+-
+ msgid "Result"
+ msgstr "Результат"
+-
+ msgid "Incoming SMS"
+ msgstr "Входящие SMS"
+-
+ msgid "Files from /var/spool/sms/incoming (smstools3): the first line is "
+ "the sender, the second is the time, the rest is the message."
+ msgstr "Файлы из /var/spool/sms/incoming (smstools3): первая строка — "
+ "отправитель, вторая — время, дальше — текст."
+-
+ msgid "Enter the recipient number"
+ msgstr "Укажите номер получателя"
+-
+ msgid "Sending…"
+ msgstr "Отправка…"
+-
+ msgid "Not sent"
+ msgstr "Не отправлено"
+-
+ msgid "Queued for sending"
+ msgstr "Поставлено в очередь отправки"
+-
+ msgid "Outgoing SMS"
+ msgstr "Исходящие SMS"
+-
+ msgid "Recipient"
+ msgstr "Получатель"
+-
+ msgid "Sent messages"
+ msgstr "Отправленные"
+-
+ msgid "Failed messages"
+ msgstr "Не отправленные"
+-
+ msgid "Files from /var/spool/sms/outgoing, /var/spool/sms/sent and /var/spool/sms/failed (smstools3): the first line is the number, the second is the time, the rest is the message."
+ msgstr "Файлы из /var/spool/sms/outgoing, /var/spool/sms/sent и /var/spool/sms/failed (smstools3): первая строка — номер, вторая — время, дальше — текст сообщения."
+-
+ msgid "USSD request"
+ msgstr "USSD-запрос"
+-
+ msgid "USSD code"
+ msgstr "Код USSD"
+-
+ msgid "Operator response"
+ msgstr "Ответ оператора"
+-
+ msgid "Send request"
+ msgstr "Отправить запрос"
+-
+ msgid "Retry with LTE restart"
+ msgstr "Повторить с перезапуском LTE"
+-
+ msgid "Waiting for the operator..."
+ msgstr "Ожидание ответа оператора..."
+-
+ msgid "Enter a USSD code"
+ msgstr "Введите код USSD"
+-
+ msgid "Empty response"
+ msgstr "Пустой ответ"
+-
+ msgid "Request failed"
+ msgstr "Запрос не выполнен"
+-
+ msgid "The request is sent to the modem directly (AT+CUSD). While the LTE data call is active, the modem does not answer AT commands - in that case use the retry button."
+ msgstr "Запрос отправляется модему напрямую (AT+CUSD). Пока активен LTE-вызов, модем не отвечает на AT-команды - в этом случае нажмите кнопку повтора."
++msgid "3G/4G bands (PEJIR01)"
++msgstr "Диапазоны 3G/4G (PEJIR01)"
++msgid "Allowed frequency bands for the GM510 modem. The list is stored in network.lte.perenio_band and applied with the AT+ZBAND command, exactly as in the stock firmware. If nothing is selected, the modem keeps all bands enabled by default."
++msgstr "Разрешённые диапазоны модема GM510. Список хранится в network.lte.perenio_band и применяется командой AT+ZBAND — так же, как в стоковой прошивке. Если ничего не выбрано, модем работает на всех диапазонах по умолчанию."
++msgid "3G: band 1 (2100 MHz)"
++msgstr "3G: диапазон 1 (2100 МГц)"
++msgid "3G: band 8 (900 MHz)"
++msgstr "3G: диапазон 8 (900 МГц)"
++msgid "4G: band 1 (2100 MHz)"
++msgstr "4G: диапазон 1 (2100 МГц)"
++msgid "4G: band 3 (1800 MHz)"
++msgstr "4G: диапазон 3 (1800 МГц)"
++msgid "4G: band 7 (2600 MHz)"
++msgstr "4G: диапазон 7 (2600 МГц)"
++msgid "4G: band 8 (900 MHz)"
++msgstr "4G: диапазон 8 (900 МГц)"
++msgid "4G: band 20 (800 MHz)"
++msgstr "4G: диапазон 20 (800 МГц)"
++msgid "4G: band 38 (2600 MHz, TDD)"
++msgstr "4G: диапазон 38 (2600 МГц, TDD)"
++msgid "Save"
++msgstr "Сохранить"
++msgid "Apply now"
++msgstr "Применить сейчас"
++msgid "Show current"
++msgstr "Показать текущие"
++msgid "Log"
++msgstr "Журнал"
++msgid "Saved. Press \"Apply now\" to send the setting to the modem."
++msgstr "Сохранено. Нажмите «Применить сейчас», чтобы отправить настройку модему."
++msgid "Failed to save: "
++msgstr "Не удалось сохранить: "
++msgid "Sending the setting to the modem..."
++msgstr "Отправляем настройку модему..."
++msgid "Reading the modem bands..."
++msgstr "Читаем диапазоны модема..."
++msgid "No data"
++msgstr "Нет данных"
+\ No newline at end of file
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 3782029..62b5b93 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -45,5 +45,18 @@
+ 			"type": "view",
+ 			"path": "perenio/diag"
+ 		}
++	},
++	"admin/status/perenio-bands": {
++		"title": "3G/4G bands (PEJIR01)",
++		"order": 68,
++		"action": {
++			"type": "view",
++			"path": "perenio/bands"
++		},
++		"depends": {
++			"acl": [
++				"luci-app-perenio"
++			]
++		}
+ 	}
+ }
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 89b1476..5ed6f12 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -3,38 +3,94 @@
+ 		"description": "Grant access to Perenio STM32 status and SMS",
+ 		"read": {
+ 			"file": {
+-				"/etc/config/idata": [ "read" ],
+-				"/etc/smsd.conf": [ "read" ],
+-				"/var/log/smsd.log": [ "read" ],
+-				"/var/log/smsd.log.1": [ "read" ],
+-				"/var/spool/sms/incoming": [ "list" ],
+-				"/var/spool/sms/incoming/*": [ "read" ],
+-				"/var/spool/sms/outgoing": [ "list" ],
+-				"/var/spool/sms/outgoing/*": [ "read" ],
+-				"/var/spool/sms/sent": [ "list" ],
+-				"/var/spool/sms/sent/*": [ "read" ],
+-				"/var/spool/sms/failed": [ "list" ],
+-				"/var/spool/sms/failed/*": [ "read" ],
+-				"/dev": [ "list" ]
++				"/etc/config/idata": [
++					"read"
++				],
++				"/etc/smsd.conf": [
++					"read"
++				],
++				"/var/log/smsd.log": [
++					"read"
++				],
++				"/var/log/smsd.log.1": [
++					"read"
++				],
++				"/var/spool/sms/incoming": [
++					"list"
++				],
++				"/var/spool/sms/incoming/*": [
++					"read"
++				],
++				"/var/spool/sms/outgoing": [
++					"list"
++				],
++				"/var/spool/sms/outgoing/*": [
++					"read"
++				],
++				"/var/spool/sms/sent": [
++					"list"
++				],
++				"/var/spool/sms/sent/*": [
++					"read"
++				],
++				"/var/spool/sms/failed": [
++					"list"
++				],
++				"/var/spool/sms/failed/*": [
++					"read"
++				],
++				"/dev": [
++					"list"
++				]
+ 			},
+ 			"ubus": {
+-				"file": [ "list", "read" ]
+-			}
++				"file": [
++					"list",
++					"read"
++				]
++			},
++			"uci": [
++				"network"
++			]
+ 		},
+ 		"write": {
+ 			"file": {
+-				"/usr/bin/mcu getvolt": [ "exec" ],
+-				"/usr/bin/mcu getsys": [ "exec" ],
+-				"/usr/bin/mcu getver": [ "exec" ],
+-				"/usr/sbin/idata_load --force": [ "exec" ],
+-				"/usr/bin/sendsms *": [ "exec" ],
+-				"/etc/init.d/smstools3 status": [ "exec" ],
+-				"/usr/libexec/perenio-diag": [ "exec" ],
+-				"/usr/libexec/pejir-ussd": [ "exec" ]
++				"/usr/bin/mcu getvolt": [
++					"exec"
++				],
++				"/usr/bin/mcu getsys": [
++					"exec"
++				],
++				"/usr/bin/mcu getver": [
++					"exec"
++				],
++				"/usr/sbin/idata_load --force": [
++					"exec"
++				],
++				"/usr/bin/sendsms *": [
++					"exec"
++				],
++				"/etc/init.d/smstools3 status": [
++					"exec"
++				],
++				"/usr/libexec/perenio-diag": [
++					"exec"
++				],
++				"/usr/libexec/pejir-ussd": [
++					"exec"
++				],
++				"/usr/libexec/pejir-band": [
++					"exec"
++				]
+ 			},
+ 			"ubus": {
+-				"file": [ "exec" ]
+-			}
++				"file": [
++					"exec"
++				]
++			},
++			"uci": [
++				"network"
++			]
+ 		}
+ 	}
+ }
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index 3350e95..f1a1042 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-lte-base
+ PKG_VERSION:=1
+-PKG_RELEASE:=4
++PKG_RELEASE:=5
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -34,6 +34,10 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./root/etc/init.d/41-pejir-modem $(1)/etc/init.d/41-pejir-modem
+ 	$(INSTALL_BIN) ./root/etc/init.d/47-pejir-lte $(1)/etc/init.d/47-pejir-lte
++	$(INSTALL_DIR) $(1)/usr/share/pejir
++	$(INSTALL_DATA) ./root/usr/share/pejir/bands.sh $(1)/usr/share/pejir/bands.sh
++	$(INSTALL_DIR) $(1)/usr/libexec
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-band $(1)/usr/libexec/pejir-band
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-lte-base))
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 76c1013..39cd514 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -262,6 +262,30 @@ sync_apn() {
+ 	log "APN отправлен модему: $apn"
+ }
+ 
++# Диапазоны 3G/4G - ровно как в стоковой прошивке Perenio:
++# AT+ZBAND=<UMTS>,0,0,<LTE>. Список диапазонов берётся из
++# network.lte.perenio_band (там же, где и в стоке). Если список не задан -
++# ничего не шлём, настройки модема остаются как есть.
++sync_bands() {
++	local port script bands masks umts lte
++
++	bands="$(uci -q get network.lte.perenio_band | tr '\n' ' ')"
++	[ -n "$bands" ] || return 0
++
++	[ -f /usr/share/pejir/bands.sh ] && . /usr/share/pejir/bands.sh
++	masks="$(pejir_bands_calc $bands)"
++	umts="$(echo "$masks" | awk '{print $1}')"
++	lte="$(echo "$masks" | awk '{print $2}')"
++
++	port="$(detect_at_port)" || return 0
++	script="/tmp/pejir-band.$$"
++	printf 'AT+ZBAND=%s,0,0,%s\r' "$umts" "$lte" > "$script"
++	set_port_speed "$port"
++	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
++	rm -f "$script"
++	log "диапазоны модема заданы: $bands (ZBAND=$umts,0,0,$lte)"
++}
++
+ # ECM data call на GM510.
+ #
+ # По GOSUNCN AT Command Reference (ME3630, "AT+ZECMCALL Make ECM data call"):
+@@ -379,6 +403,7 @@ start_service() {
+ 		ensure_firewall
+ 		smsd_pause_for_at
+ 		sync_apn
++		sync_bands
+ 		ecm_call
+ 		smsd_resume_after_at
+ 		ifup lte >/dev/null 2>&1
+@@ -409,6 +434,7 @@ start_service() {
+ 	have_at="$(detect_at_port)"
+ 	if [ -n "$have_at" ]; then
+ 		sync_apn
++		sync_bands
+ 		ecm_call
+ 	else
+ 		log "модем пока не отвечает на AT - APN и ECM пропущены, продолжаем в фоне"
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-band b/package/pejir-lte-base/root/usr/libexec/pejir-band
+new file mode 100644
+index 0000000..36161c5
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-band
+@@ -0,0 +1,113 @@
++#!/bin/sh
++# Диапазоны 3G/4G модема GOCUNCN Welink GM510.
++#
++#   pejir-band show     - показать настройку и текущие диапазоны модема
++#   pejir-band apply    - применить список из network.lte.perenio_band
++#   pejir-band set ...  - применить указанные диапазоны (umts01 lte01 ...)
++#
++# Настройка выполняется командой AT+ZBAND=<UMTS>,0,0,<LTE> - так же,
++# как в стоковой прошивке Perenio (GOSUNCN, /usr/lib/modem_ubus/gosuncn.sh).
++#
++# Настройка хранится в UCI: network.lte.perenio_band (список имён).
++#
++# Ошибка stty НЕ фатальна: на этом устройстве stty всегда отвечает
++# "unable to perform all requested operations", хотя порт рабочий.
++
++set -u
++
++BANDS_SH="/usr/share/pejir/bands.sh"
++[ -f "$BANDS_SH" ] && . "$BANDS_SH"
++
++AT_TIMEOUT="${AT_TIMEOUT:-8}"
++
++# --- AT-обмен --------------------------------------------------------------
++# $1 - порт, $2 - команда (без \r). Печатает ответ модема.
++at_ask() {
++	_aport="$1"
++	_acmd="$2"
++	_script="/tmp/pejir-band.$$"
++
++	printf '%s\r' "$_acmd" > "$_script"
++	stty -F "$_aport" 115200 raw -echo 2>/dev/null || true
++	_out=$(timeout "$AT_TIMEOUT" atinout "$_script" "$_aport" - 2>/dev/null)
++	rm -f "$_script"
++	printf '%s' "$_out"
++}
++
++# Подтверждённый AT-порт (его пишет 41-pejir-modem), иначе - перебор.
++find_port() {
++	if [ -f /etc/pejir/at-port ]; then
++		_p=$(head -n 1 /etc/pejir/at-port 2>/dev/null)
++		[ -n "$_p" ] && [ -c "$_p" ] && { echo "$_p"; return 0; }
++	fi
++	for _p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyACM0; do
++		[ -c "$_p" ] && { echo "$_p"; return 0; }
++	done
++	return 1
++}
++
++show_current() {
++	_p=$(find_port) || { echo "AT-порт модема не найден"; return 1; }
++	echo "порт: $_p"
++	echo "--- AT+ZBAND? ---"
++	at_ask "$_p" 'AT+ZBAND?'
++}
++
++apply_bands() {
++	_bands="$*"
++	[ -n "$_bands" ] || _bands=$(uci -q get network.lte.perenio_band | tr '\n' ' ')
++	[ -n "$_bands" ] || _bands="allBands"
++
++	set -- $_bands
++	_masks=$(pejir_bands_calc "$@")
++	_umts=$(echo "$_masks" | awk '{print $1}')
++	_lte=$(echo "$_masks" | awk '{print $2}')
++
++	echo "диапазоны: $*"
++	echo "команда:   AT+ZBAND=$_umts,0,0,$_lte"
++
++	_p=$(find_port) || { echo "AT-порт модема не найден"; return 1; }
++
++	# smsd держит AT-порт и забирает ответы модема себе - на время
++	# обмена его надо отпустить.
++	_smsd=0
++	if pidof smsd >/dev/null 2>&1; then
++		_smsd=1
++		/etc/init.d/smstools3 stop >/dev/null 2>&1
++		sleep 2
++	fi
++
++	_out=$(at_ask "$_p" "AT+ZBAND=$_umts,0,0,$_lte")
++	echo "ответ:     $_out"
++
++	[ "$_smsd" = "1" ] && { /etc/init.d/smstools3 start >/dev/null 2>&1; }
++
++	case "$_out" in
++		*ERROR*|*'command not supported'*)
++			echo "модем отклонил настройку диапазонов"
++			return 1 ;;
++	esac
++
++	echo "диапазоны применены"
++	return 0
++}
++
++case "${1:-show}" in
++	show)
++		echo "=== настройка в UCI ==="
++		uci -q get network.lte.perenio_band || echo "не задана (по умолчанию используются все диапазоны)"
++		echo
++		show_current
++		;;
++	apply)
++		apply_bands
++		;;
++	set)
++		shift
++		apply_bands "$@"
++		;;
++	*)
++		echo "usage: pejir-band [show|apply|set <диапазоны>...]"
++		exit 1
++		;;
++esac
+diff --git a/package/pejir-lte-base/root/usr/share/pejir/bands.sh b/package/pejir-lte-base/root/usr/share/pejir/bands.sh
+new file mode 100644
+index 0000000..1205701
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/share/pejir/bands.sh
+@@ -0,0 +1,86 @@
++# Диапазоны 3G/4G для модема GOCUNCN Welink GM510.
++#
++# Общий файл: его подключают и init-скрипт LTE (47-pejir-lte), и
++# помощник /usr/libexec/pejir-band, который вызывается со страницы LuCI.
++# Один источник правды - маски диапазонов.
++#
++# Настройка модема делается командой
++#   AT+ZBAND=<UMTS>,0,0,<LTE>
++# где UMTS и LTE - битовые маски разрешённых диапазонов (в hex, без
++# префикса 0x) либо "all".
++#
++# Значения масок взяты из стоковой прошивки Perenio (2021, GOSUNCN,
++# /usr/lib/modem_ubus/gosuncn.sh) - там ровно эти же команды и эти же
++# маски, поэтому настройка совпадает со стоком.
++#
++# Список хранится в UCI: network.lte.perenio_band - список имён
++# диапазонов (как в стоке). Допустимые имена:
++#   umts01 umts08 lte01 lte03 lte07 lte08 lte20 lte38
++# плюс служебные:
++#   umtsALL - все 3G, lteALL - все 4G, allBands - все вместе.
++
++pejir_bands_names() {
++	echo "umts01 umts08 lte01 lte03 lte07 lte08 lte20 lte38"
++}
++
++pejir_bands_mask() {
++	# $1 - имя диапазона; печатает маску (hex, без 0x) или пусто
++	case "$1" in
++		umts01)   echo "400000" ;;
++		umts08)   echo "2000000000000" ;;
++		lte01)    echo "1" ;;
++		lte03)    echo "4" ;;
++		lte07)    echo "40" ;;
++		lte08)    echo "80" ;;
++		lte20)    echo "80000" ;;
++		lte38)    echo "2000000000" ;;
++		*)        echo "" ;;
++	esac
++}
++
++pejir_bands_label() {
++	case "$1" in
++		umts01)   echo "3G: диапазон 1 (2100 МГц)" ;;
++		umts08)   echo "3G: диапазон 8 (900 МГц)" ;;
++		lte01)    echo "4G: диапазон 1 (2100 МГц)" ;;
++		lte03)    echo "4G: диапазон 3 (1800 МГц)" ;;
++		lte07)    echo "4G: диапазон 7 (2600 МГц)" ;;
++		lte08)    echo "4G: диапазон 8 (900 МГц)" ;;
++		lte20)    echo "4G: диапазон 20 (800 МГц)" ;;
++		lte38)    echo "4G: диапазон 38 (2600 МГц, TDD)" ;;
++		umtsALL)  echo "3G: все диапазоны" ;;
++		lteALL)   echo "4G: все диапазоны" ;;
++		allBands) echo "3G и 4G: все диапазоны" ;;
++		*)        echo "$1" ;;
++	esac
++}
++
++# Посчитать маски UMTS и LTE по списку имён.
++# Результат: "umts_mask lte_mask" (пусто - all).
++pejir_bands_calc() {
++	_umts=""
++	_lte=""
++	_ucalc=0
++	_lcalc=0
++
++	for _b in $*; do
++		case "$_b" in
++			umts01)   _ucalc=$((_ucalc + 0x0000000400000)) ;;
++			umts08)   _ucalc=$((_ucalc + 0x2000000000000)) ;;
++			umtsALL)  _umts="all" ;;
++			lte01)    _lcalc=$((_lcalc + 0x0000000000001)) ;;
++			lte03)    _lcalc=$((_lcalc + 0x0000000000004)) ;;
++			lte07)    _lcalc=$((_lcalc + 0x0000000000040)) ;;
++			lte08)    _lcalc=$((_lcalc + 0x0000000000080)) ;;
++			lte20)    _lcalc=$((_lcalc + 0x0000000080000)) ;;
++			lte38)    _lcalc=$((_lcalc + 0x0002000000000)) ;;
++			lteALL)   _lte="all" ;;
++			allBands) _umts="all"; _lte="all" ;;
++		esac
++	done
++
++	[ -n "$_umts" ] || _umts=$(printf '%x' "$_ucalc")
++	[ -n "$_lte" ] || _lte=$(printf '%x' "$_lcalc")
++
++	echo "$_umts $_lte"
++}
+-- 
+2.39.5
+
