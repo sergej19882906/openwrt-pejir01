@@ -19,8 +19,10 @@
 
 set -u
 
-if [ -n "${OW_TEST:-}" ] && [ -d "$OW_TEST/package/modeminfo" ]; then
+if [ -n "${OW_TEST:-}" ]; then
+	# OW_TEST задан (в CI это всегда так): отсутствие пакета - ошибка.
 	DEFAULT_PKG="$OW_TEST/package/modeminfo"
+	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG"; exit 1; }
 else
 	DEFAULT_PKG="/workspace/ow-test/package/modeminfo"
 fi

@@ -17,13 +17,19 @@
 
 set -u
 
-if [ -n "${OW_TEST:-}" ] && [ -d "$OW_TEST/package/pejir-lte-base" ]; then
+if [ -n "${OW_TEST:-}" ]; then
+	# В CI OW_TEST всегда задан: если нужного пакета в дереве нет - это
+	# ошибка, а не повод молча искать пакет в /workspace/ow-test.
 	DEFAULT_PKG="$OW_TEST/package/pejir-lte-base"
+	DEFAULT_LUCI_PKG="$OW_TEST/package/luci-app-perenio"
+	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG"; exit 1; }
+	[ -d "$DEFAULT_LUCI_PKG" ] || { echo "FAIL: нет $DEFAULT_LUCI_PKG"; exit 1; }
 else
 	DEFAULT_PKG="/workspace/ow-test/package/pejir-lte-base"
+	DEFAULT_LUCI_PKG="/workspace/ow-test/package/luci-app-perenio"
 fi
 LTE_PKG="${PEJIR_PKG:-$DEFAULT_PKG}"
-LUCI_PKG="${PEJIR_LUCI_PKG:-/workspace/ow-test/package/luci-app-perenio}"
+LUCI_PKG="${PEJIR_LUCI_PKG:-$DEFAULT_LUCI_PKG}"
 
 BANDS_SH="$LTE_PKG/root/usr/share/pejir/bands.sh"
 HELPER="$LTE_PKG/root/usr/libexec/pejir-band"

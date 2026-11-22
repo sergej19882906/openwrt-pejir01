@@ -9,8 +9,10 @@ set -u
 
 # Пакет берём из применённого дерева OpenWrt (в CI переменная OW_TEST
 # указывает на него), иначе - из локального.
-if [ -n "${OW_TEST:-}" ] && [ -d "$OW_TEST/package/luci-app-perenio" ]; then
+if [ -n "${OW_TEST:-}" ]; then
+	# OW_TEST задан (в CI это всегда так): отсутствие пакета - ошибка.
 	DEFAULT_PKG="$OW_TEST/package/luci-app-perenio"
+	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG"; exit 1; }
 else
 	DEFAULT_PKG="/workspace/ow-test/package/luci-app-perenio"
 fi
