@@ -1,0 +1,144 @@
+From 11ec125b3bde7346b938c440b4376719fb1d9b29 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 16:04:00 +0000
+Subject: [PATCH] =?UTF-8?q?modeminfo:=20=D1=81=D1=82=D1=80=D0=B0=D0=BD?=
+ =?UTF-8?q?=D0=B8=D1=86=D0=B0=20LuCI=20'=D0=9C=D0=BE=D0=B4=D0=B5=D0=BC'=20?=
+ =?UTF-8?q?=D0=BF=D0=BE=D0=BA=D0=B0=D0=B7=D1=8B=D0=B2=D0=B0=D0=BB=D0=B0=20?=
+ =?UTF-8?q?=D0=BF=D1=83=D1=81=D1=82=D0=BE=D1=82=D1=83?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Три причины, по которым страница не показывала ни одного поля:
+
+1. В образе не было секции 'config modeminfo' - /usr/bin/modeminfo
+   берёт список секций из uci и при пустом списке выдаёт
+   {'modem': []}. Добавлен uci-defaults 60-perenio-modeminfo: создаёт
+   секцию с портом /dev/ttyUSB2 (подтверждённый AT-порт GM510 на этой
+   плате), если пользователь ещё ничего не настраивал.
+
+2. Профиль GOSUN (Gosuncnwelink GM510 - наш модем) был закомментирован
+   в Makefile пакета modeminfo, поэтому в образ не попадали ни
+   scripts/GOSUN, ни scripts/GOSUN.at - modeminfo не мог опросить
+   модем вообще. Строка включена, uci-defaults ставится в образ,
+   PKG_RELEASE поднят до 3.
+
+3. atinout не переводит порт в raw-режим, а модем без raw-режима на AT
+   не отвечает (проверено на устройстве: без stty - тишина, с
+   'stty -F <port> 115200 raw -echo' - ответ). Добавлен stty перед
+   каждым чтением модема.
+
+Заодно: профиль GOSUN читал decimail из несуществующей секции
+@generic - команда падала с 'integer expression expected'. Теперь
+@font general.
+
+Новый тест tests/test-modeminfo.sh: проверяет uci-defaults (на моке
+uci, включая что уже настроенный порт не перезаписывается), наличие
+stty, включение профиля GOSUN, профиль GM510 в modem.list и
+исправление decimail.
+---
+ package/modeminfo/Makefile                     |  9 +++++++--
+ .../root/etc/uci-defaults/60-perenio-modeminfo | 18 ++++++++++++++++++
+ .../root/usr/share/modeminfo/scripts/GOSUN     |  2 +-
+ .../root/usr/share/modeminfo/scripts/modeminfo |  6 ++++++
+ 4 files changed, 32 insertions(+), 3 deletions(-)
+ create mode 100755 package/modeminfo/root/etc/uci-defaults/60-perenio-modeminfo
+
+diff --git a/package/modeminfo/Makefile b/package/modeminfo/Makefile
+index 728a8b8..66dd5bd 100644
+--- a/package/modeminfo/Makefile
++++ b/package/modeminfo/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=modeminfo
+ PKG_VERSION:=0.4.8
+-PKG_RELEASE:=2
++PKG_RELEASE:=3
+ PKG_MAINTAINER:=Konstantine Shevlakov <shevlakov@132lan.ru>
+ 
+ include $(INCLUDE_DIR)/package.mk
+@@ -70,6 +70,11 @@ define Package/$(PKG_NAME)/install
+ 	$(CP) ./root/usr/share/modeminfo/scripts/modeminfo  $(1)/usr/share/modeminfo/scripts/
+ 	$(CP) ./root/usr/share/modeminfo/scripts/GENERIC* $(1)/usr/share/modeminfo/scripts/
+ 	$(CP) ./root/etc/config/* $(1)/etc/config
++	# Секция config modeminfo с AT-портом: без неё /usr/bin/modeminfo
++	# выдаёт пустой {"modem": []}, и страница LuCI "Модем" пуста.
++	$(INSTALL_DIR) $(1)/etc/uci-defaults
++	$(INSTALL_BIN) ./root/etc/uci-defaults/60-perenio-modeminfo \
++		$(1)/etc/uci-defaults/60-perenio-modeminfo
+ endef
+ 
+ define Package/$(PKG_NAME)-telegram/install
+@@ -89,7 +94,7 @@ $(eval $(call SerialPlugin,meig,+kmod-usb-serial-option,MEIGLink SLM750-R2/SLM82
+ $(eval $(call SerialPlugin,sierra,+kmod-usb-serial-qualcomm,Sierra Wireless EM7455,SIERRA))
+ #$(eval $(call SerialPlugin,styx,+kmod-usb-serial-option,STYX MG8224,STYX))
+ $(eval $(call SerialPlugin,dell,+kmod-usb-serial-option,Dell DW5821e,DELL))
+-#$(eval $(call SerialPlugin,gosun,+kmod-usb-serial-option,Gosuncnwelink GM510,GOSUN))
++$(eval $(call SerialPlugin,gosun,+kmod-usb-serial-option,Gosuncnwelink GM510,GOSUN))
+ #$(eval $(call SerialPlugin,tw,+kmod-usb-serial-option,ThinkWill ML7820+,THINKWILL))
+ #$(eval $(call SerialPlugin,yuge,+kmod-usb-serial-option,Yuge CLM920,YUGE))
+ #$(eval $(call SerialPlugin,zte,+kmod-usb-serial-option,ZTE MF823/MF823D,ZTE))
+diff --git a/package/modeminfo/root/etc/uci-defaults/60-perenio-modeminfo b/package/modeminfo/root/etc/uci-defaults/60-perenio-modeminfo
+new file mode 100755
+index 0000000..039bfa5
+--- /dev/null
++++ b/package/modeminfo/root/etc/uci-defaults/60-perenio-modeminfo
+@@ -0,0 +1,18 @@
++#!/bin/sh
++# Создаём секцию config modeminfo для пакета modeminfo (LuCI "Модем").
++#
++# Без этой секции /usr/bin/modeminfo выдаёт пустой {"modem": []},
++# и все поля страницы остаются пустыми. Порт по умолчанию - подтверждённый
++# AT-порт модема GM510 на этой плате (ttyUSB2). Если у пользователя секция
++# уже создана (через LuCI -> Модем -> Настройка), ничего не меняем.
++
++[ -n "$(uci -q get modeminfo.@modeminfo[0].device)" ] && exit 0
++
++uci -q delete modeminfo.@modeminfo[0] 2>/dev/null
++uci set modeminfo.@modeminfo[0]='modeminfo'
++uci set modeminfo.@modeminfo[0].device='/dev/ttyUSB2'
++uci set modeminfo.@modeminfo[0].qmi_mode='0'
++uci set modeminfo.@modeminfo[0].decimail='1'
++uci commit modeminfo
++
++exit 0
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN b/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN
+index 114dc14..ce46e9b 100644
+--- a/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/GOSUN
+@@ -46,7 +46,7 @@ function modem_data(){
+ 			
+ 		;;
+ 	esac
+-	if [ $(uci -q get modeminfo.@generic[0].decimail) -eq 1 ]; then
++	if [ "$(uci -q get modeminfo.@general[0].decimail)" = "1" ]; then
+                 LAC=$(printf %d 0x$LAC)
+                 CID=$(printf %d 0x$CID)
+         fi	
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo b/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
+index e865049..36ee7b1 100644
+--- a/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
+@@ -13,6 +13,9 @@ function get_device_info() {
+ 	esac
+ 	modem_family
+ 	GSCRIPT="$RES/scripts/${FAMILY}.at"
++	# Модем не отвечает на AT, пока порт не переведён в raw-режим
++	# без эха (иначе ответы не приходят вовсе).
++	stty -F "$DEVPORT" 115200 raw -echo 2>/dev/null
+ 	O=$(atinout $GSCRIPT $DEVPORT - |grep -v '^$')
+ }
+ 
+@@ -27,6 +30,9 @@ function get_port() {
+ 			fi
+ 		done
+ 	DEVPORT=$(uci -q get modeminfo.@modeminfo[${s}].device)
++	# Модем не отвечает на AT, пока порт не переведён в raw-режим
++	# без эха (иначе ответы не приходят вовсе).
++	stty -F "$DEVPORT" 115200 raw -echo 2>/dev/null
+ 	O=$(atinout $GSCRIPT $DEVPORT - |grep -v '^$')
+ }
+ 
+-- 
+2.39.5
+

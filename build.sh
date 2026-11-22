@@ -363,6 +363,10 @@ CONFIG_PACKAGE_usb-modeswitch=y
 CONFIG_PACKAGE_atinout=y
 CONFIG_PACKAGE_luci-app-atinout=y
 CONFIG_PACKAGE_luci-app-modeminfo=y
+# Профиль модема Gosuncnwelink GM510 (наш LTE-модем). Без него в образе
+# нет /usr/share/modeminfo/scripts/GOSUN.at, и modeminfo не может опросить
+# модем, даже если секция config modeminfo создана.
+CONFIG_PACKAGE_modeminfo-serial-gosun=y
 CONFIG_PACKAGE_pingcontrol=y
 CONFIG_PACKAGE_qminfo=y
 CONFIG_PACKAGE_xmm-modem=y
@@ -563,7 +567,10 @@ if [ -n "$SU" ]; then
         # pingcontrol ставится в /bin (в 25.12 /bin — настоящий каталог,
         # а не ссылка на /usr/bin), поэтому путь именно bin/pingcontrol.
         for f in usr/bin/qminfo usr/bin/atinout bin/pingcontrol \
-                 lib/netifd/proto/xmm.sh etc/gcom/xmm-connect.gcom; do
+                 lib/netifd/proto/xmm.sh etc/gcom/xmm-connect.gcom \
+                 usr/bin/modeminfo usr/share/modeminfo/scripts/GOSUN.at \
+                 usr/share/modeminfo/scripts/GOSUN \
+                 etc/uci-defaults/60-perenio-modeminfo; do
           echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || MODEM_MISSING="$MODEM_MISSING $f"
         done
         if [ -n "$MODEM_MISSING" ]; then
@@ -571,7 +578,7 @@ if [ -n "$SU" ]; then
           echo "ОШИБКА: модемные утилиты не попали в образ ($MODEM_MISSING)"
           exit 1
         fi
-        echo "  модемные утилиты (qminfo/atinout/pingcontrol/xmm-modem): OK"
+        echo "  модемные утилиты (qminfo/atinout/pingcontrol/xmm-modem/modeminfo+GOSUN): OK"
 
         # Тема Argon и русские переводы LuCI.
         #
