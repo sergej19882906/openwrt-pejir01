@@ -70,6 +70,36 @@ write=false
 `port=/dev/umxtty1` — это EFR32: `uartmuxd` мультиплексирует `/dev/ttyS1` в
 `umxtty0` (STM32/MCU), `umxtty1` (Zigbee) и `umxtty2` (Z-Wave).
 
+**Рабочий конфиг PEJIR01 (из стоковой прошивки, лежит в overlay и переживает
+OTA):**
+
+```ini
+[zigbee]
+adapter=ezsp
+port=/dev/umxtty1
+baudrate=115200
+panid=0xb7f7
+channel=11
+reset=soft
+write=true
+```
+
+**Про `write=true`:** при `write=false` HOMEd не может перенастроить
+координатор — если сетевой ключ в EFR32 не совпадает с заданным, он пишет
+«Adapter configuration can't be changed, write protection enabled» и сеть не
+поднимает (`ezsp.cpp`, ветка `startNetwork()`). С `write=true` HOMEd сам
+заливает в адаптер PAN ID и сетевой ключ. На PEJIR01 `write=true` нужен.
+
+**PAN ID менять нельзя:** `panid` и сетевой ключ привязывают уже спаренные
+Zigbee-устройства — после смены они не переподключатся к сети. Поэтому
+`zigbee-setup.sh` **не трогает** существующий `/etc/homed/homed-zigbee.conf`
+(он и так переживает OTA вместе с overlay), а пишет свой только если конфига
+нет. Перед установкой полезно снять факты с устройства:
+
+```sh
+cat /etc/homed/homed-zigbee.conf
+```
+
 `reset=soft` — обязательно: GPIO-сброс EFR32 на PEJIR01 идёт через STM32 и
 прямому GPIO не доступен.
 
