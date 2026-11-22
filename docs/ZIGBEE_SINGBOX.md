@@ -22,6 +22,31 @@ apk update
 apk add homed-zigbee homed-automation homed-web
 ```
 
+**Фид уже прописан в образе:** `pejir-homed-feed` кладёт ключ
+`/etc/apk/keys/homed.pem` и uci-defaults `40-homed-feed`, который пишет
+`/etc/apk/repositories.d/homed.list` вида
+`https://apk.homed.dev/$(cat /etc/apk/arch)/packages.adb`.
+На PEJIR01 `/etc/apk/arch` = `mipsel_24kc`, и в фиде **есть** сборка под нашу
+архитектуру: `homed-zigbee-3.16.4.apk` (305 КБ), `homed-qt-5.15.4.9.apk`
+(4 МБ — HOMEd везёт свой Qt), `homed-web` (829 КБ), `homed-automation` (120 КБ).
+Ключ в образе побайтово совпадает с `apk.key` на сервере, поэтому проверка
+подписи проходит.
+
+**Внимание:** uci-defaults выполняется один раз и потом удаляется (whiteout).
+Если overlay когда-то пересоздавался, а файл `homed.list` при этом не
+появился, фид не зарегистрируется — тогда добавьте его руками:
+
+```sh
+echo "https://apk.homed.dev/$(cat /etc/apk/arch)/packages.adb" > /etc/apk/repositories.d/homed.list
+```
+
+Готовый скрипт установки (в релиз `.28` как ассет `zigbee-setup.sh`) делает
+всё сразу: регистрирует фид, ставит пакеты, правит конфиг, включает сервис.
+
+**Места хватает в NAND:** пакеты ~4,4 МБ в сжатом виде, развёрнутые — десятки
+МБ; том `rootfs_data` — 83 МБ. На extroot выносить нужно только `sing-box`
+(50 МБ), а не HOMEd.
+
 ## 3. Конфигурация HOMEd ZigBee (координатор EFR32 на umxtty1)
 
 `/etc/homed/homed-zigbee.conf` — секция [zigbee]:
@@ -31,9 +56,19 @@ apk add homed-zigbee homed-automation homed-web
 adapter=ezsp
 port=/dev/umxtty1
 baudrate=115200
+panid=
+channel=11
 reset=soft
 write=false
 ```
+
+**Конфиг из пакета по умолчанию рассчитан на Raspberry Pi** (`adapter=znp`,
+`port=/dev/ttyUSB0`) — на PEJIR01 его надо заменить на `ezsp` + `/dev/umxtty1`,
+иначе координатор не поднимется. Секция `[gpio]` остаётся с `-1`: прямого
+доступа к GPIO EFR32 нет.
+
+`port=/dev/umxtty1` — это EFR32: `uartmuxd` мультиплексирует `/dev/ttyS1` в
+`umxtty0` (STM32/MCU), `umxtty1` (Zigbee) и `umxtty2` (Z-Wave).
 
 `reset=soft` — обязательно: GPIO-сброс EFR32 на PEJIR01 идёт через STM32 и
 прямому GPIO не доступен.
@@ -44,6 +79,10 @@ logread -e homed
 ```
 
 Панель HOMEd Web: `http://192.168.1.1:8080` (если ставили homed-web).
+
+У HOMEd есть **своя страница в LuCI**: *Администрирование → HOMEd → ZigBee
+Service Configuration* (пакет кладёт `menu.d/luci-app-homed-zigbee.json` и
+`view/homed/zigbee.js`).
 
 ## 4. Если EFR32 без прошивки NCP / с заводской вендорской
 
