@@ -275,6 +275,13 @@ CONFIG_PACKAGE_kmod-usb-storage=y
 CONFIG_PACKAGE_kmod-usb-storage-uas=y
 CONFIG_PACKAGE_e2fsprogs=y
 CONFIG_PACKAGE_coreutils-stty=y
+# bind-host даёт /usr/bin/host. LuCI DDNS проверяет наличие host/khost/drill
+# (переменная has_bindhost в rpcd/ucode/ddns.uc) и, если их нет, не
+# показывает опцию "Force TCP on DNS" и ругается подсказкой про
+# bind-host/knot-host/drill. BusyBox-nslookup не умеет TCP и не
+# корректно работает с заданным DNS-сервером, поэтому для DDNS нужен
+# именно bind-host.
+CONFIG_PACKAGE_bind-host=y
 CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
 CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
 CONFIG_PACKAGE_kmod-usb-serial-option=y
@@ -469,6 +476,21 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  вендорные бинари и symlink'и libubox/libubus: OK"
+
+        # bind-host (команда host) нужен странице DDNS: LuCI проверяет
+        # наличие host/khost/drill (has_bindhost) и без них не даёт
+        # включить "Force TCP on DNS" и неверно определяет зарегистрированный
+        # IP. Если пакета нет в образе - DDNS работает вслепую.
+        HOST_MISSING=""
+        for f in usr/bin/host; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || HOST_MISSING="$HOST_MISSING $f"
+        done
+        if [ -n "$HOST_MISSING" ]; then
+          ann error "build.sh: DDNS" "в образе нет bind-host:$HOST_MISSING"
+          echo "ОШИБКА: bind-host не попал в образ ($HOST_MISSING)"
+          exit 1
+        fi
+        echo "  bind-host (host) в образе: OK"
 
         # Файлы страниц LuCI порта, init-скриптов и uci-defaults.
         #

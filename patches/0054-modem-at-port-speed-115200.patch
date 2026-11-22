@@ -1,0 +1,260 @@
+From 6138b5d9a60f00e68c30ad5cdfa5a263e060780d Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 07:39:52 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=9C=D0=BE=D0=B4=D0=B5=D0=BC:=20=D0=B2=D1=8B?=
+ =?UTF-8?q?=D1=81=D1=82=D0=B0=D0=B2=D0=BB=D1=8F=D1=82=D1=8C=20=D1=81=D0=BA?=
+ =?UTF-8?q?=D0=BE=D1=80=D0=BE=D1=81=D1=82=D1=8C=20=D0=BF=D0=BE=D1=80=D1=82?=
+ =?UTF-8?q?=D0=B0=20115200=20=D0=BF=D0=B5=D1=80=D0=B5=D0=B4=20AT-=D0=BE?=
+ =?UTF-8?q?=D0=B1=D0=BC=D0=B5=D0=BD=D0=BE=D0=BC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Причина: atinout порт не настраивает. В его коде только
+fopen(dev, "r+b") - ни tcsetattr, ни baud, ни raw-режима. Порты
+USB-серийных (ttyUSB* у GM510) поднимаются с дефолтом tty - 9600,
+а модем ждёт 115200. В итоге модем на "AT" не отвечает, AT-порт не
+находится, и вся цепочка LTE/SMS упирается в "модем не отвечает":
+
+  * 40-pejir-sms не переписывает /etc/smsd.conf, поэтому там остаётся
+    стоковый конфиг (секция [GSM1] закомментирована, logfile = 1).
+    smsd запускается без устройства и молча перезапускается procd -
+    страница SMS показывает "порт не задан" и "журнала нет";
+  * 47-pejir-lte не шлёт AT+CGDCONT и AT+ZECMCALL - LTE не поднимается;
+  * 41-pejir-modem записывает в /etc/config/modeminfo порт /dev/ttyUSB0
+    (фолбэк "не нашли"), и страница "Модем" показывает пустые данные.
+
+У вендора это работало: его gcom-профили перед обменом делают
+"set com 115200n81".
+
+Исправление:
+  * в 40-pejir-sms, 47-pejir-lte и mdm-at перед каждым вызовом atinout
+    выставляется скорость: stty -F <порт> 115200 raw -echo
+    (переменные AT_BAUD / PEJIR_AT_BAUD / MDM_AT_BAUD);
+  * 41-pejir-modem больше не доверяет сохранённому порту вслепую: если
+    модем на нём не отвечает, порт переопределяется найденным (на GM510
+    это ttyUSB2 вместо ошибочного ttyUSB0);
+  * в DEPENDS пакетов добавлен coreutils-stty.
+
+Добавлен тест tests/test-at-speed.sh: статические проверки (stty перед
+каждым atinout, проверка сохранённого порта) и функциональная - с
+моками stty/atinout модем отвечает "OK" только на 115200, поэтому на
+старом коде тест падает (9 провалов), на новом проходит.
+---
+ package/pejir-lte-base/Makefile               |  2 +-
+ .../root/etc/init.d/41-pejir-modem            | 25 ++++++++++++++++---
+ .../root/etc/init.d/47-pejir-lte              | 20 +++++++++++++++
+ package/pejir-lte-base/root/usr/bin/mdm-at    | 19 ++++++++++++++
+ package/pejir-sms/Makefile                    |  2 +-
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    | 20 +++++++++++++++
+ 6 files changed, 82 insertions(+), 6 deletions(-)
+
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index 144a6e6..4ff9cea 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -10,7 +10,7 @@ define Package/pejir-lte-base
+   SECTION:=utils
+   CATEGORY:=Utilities
+   TITLE:=PEJIR01 LTE base: auto wan/wan6 on the modem NIC + AT helper
+-  DEPENDS:=+kmod-usb-net-cdc-ether +kmod-usb-net-cdc-ncm +kmod-usb-serial-option +atinout +coreutils-timeout
++  DEPENDS:=+kmod-usb-net-cdc-ether +kmod-usb-net-cdc-ncm +kmod-usb-serial-option +atinout +coreutils-timeout +coreutils-stty
+ endef
+ 
+ define Package/pejir-lte-base/description
+diff --git a/package/pejir-lte-base/root/etc/init.d/41-pejir-modem b/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
+index 23dc878..4ad37ff 100644
+--- a/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
++++ b/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
+@@ -11,20 +11,37 @@ STOP=0
+ write_modeminfo() {
+ 	local port="$1"
+ 
+-	# Свой конфиг пользователя не трогаем.
+-	uci -q get modeminfo.@modeminfo[0].device >/dev/null 2>&1 && return 0
+-
+ 	uci set modeminfo.modeminfo='modeminfo'
+ 	uci set modeminfo.modeminfo.device="$port"
+ 	uci commit modeminfo
+ }
+ 
++# Порт отвечает AT-командой?
++port_alive() {
++	local p="$1"
++
++	[ -n "$p" ] || return 1
++	[ -c "$p" ] || return 1
++	mdm-at "AT" "$p" 2>/dev/null | grep -q "OK"
++}
++
+ start_service() {
+-	local port
++	local port saved
+ 
+ 	port="$(mdm-at --port 2>/dev/null)"
+ 	[ -n "$port" ] || port="/dev/ttyUSB0"
+ 
++	saved="$(uci -q get modeminfo.@modeminfo[0].device)"
++
++	# Сохранённый пользователем порт не трогаем - но только если модем на
++	# нём действительно отвечает. Раньше порт записывался вслепую: если
++	# AT-порт определить не удалось, подставлялся /dev/ttyUSB0, и он
++	# сохранялся навсегда. Теперь такой порт при следующей загрузке
++	# заменяется найденным (на GM510 это ttyUSB2).
++	if [ -n "$saved" ] && port_alive "$saved"; then
++		return 0
++	fi
++
+ 	write_modeminfo "$port"
+ }
+ 
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 13844c6..4c8b67b 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -79,6 +79,23 @@ detect_ifname() {
+ # timeout: порт, который не ответил, просто пропускаем.
+ AT_TIMEOUT="${AT_TIMEOUT:-5}"
+ 
++# Скорость линии модема.
++#
++# atinout порт не настраивает: в его коде только fopen(dev, "r+b") - ни
++# tcsetattr, ни скорости, ни raw-режима. Порты USB-серийных поднимаются
++# с дефолтом tty (9600), а GM510 ждёт 115200: модем на "AT" не
++# отвечает, порт не находится, и весь LTE (CGDCONT, ZECMCALL) не
++# отрабатывает. У вендора это работало - его gcom-профили перед
++# обменом делают "set com 115200n81".
++#
++# Поэтому перед каждой AT-командой выставляем скорость через stty.
++AT_BAUD="${PEJIR_AT_BAUD:-115200}"
++
++set_port_speed() {
++	[ -c "$1" ] || return 1
++	stty -F "$1" "$AT_BAUD" raw -echo 2>/dev/null
++}
++
+ # APN оператора по умолчанию. Без него PDP-контекст не создаётся и
+ # модем не поднимает передачу данных: sync_apn() при пустом APN
+ # просто выходит, а AT+CGDCONT без APN модем отвергает.
+@@ -94,6 +111,7 @@ detect_at_port() {
+ 	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 \
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
++		set_port_speed "$p"
+ 		out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
+ 		case "$out" in
+ 			*OK*) rm -f "$script"; echo "$p"; return 0 ;;
+@@ -183,6 +201,7 @@ sync_apn() {
+ 	port="$(detect_at_port)" || return 0
+ 	script="/tmp/pejir-apn.$$"
+ 	printf 'AT+CGDCONT=1,"IP","%s"\n' "$apn" > "$script"
++	set_port_speed "$port"
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "APN отправлен модему: $apn"
+@@ -221,6 +240,7 @@ ecm_call() {
+ 	fi
+ 	# Ошибку игнорируем: на модемах без ECM-поддержки вызов не нужен,
+ 	# а AT+CGDCONT уже отработал.
++	set_port_speed "$port"
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "ECM data call (AT+ZECMCALL=1${apn:+,}$apn) отправлен модему"
+diff --git a/package/pejir-lte-base/root/usr/bin/mdm-at b/package/pejir-lte-base/root/usr/bin/mdm-at
+index 9031823..a1b16ec 100755
+--- a/package/pejir-lte-base/root/usr/bin/mdm-at
++++ b/package/pejir-lte-base/root/usr/bin/mdm-at
+@@ -24,6 +24,23 @@
+ TTY=${2:-auto}
+ PROBE_TIMEOUT="${MDM_AT_TIMEOUT:-5}"
+ 
++# Скорость линии модема.
++#
++# atinout порт не настраивает: в его коде только fopen(dev, "r+b") - ни
++# tcsetattr, ни скорости, ни raw-режима. Порты USB-серийных поднимаются
++# с дефолтом tty (9600), а GM510 ждёт 115200 - модем на "AT" молчит,
++# порт не находится, и весь LTE/SMS упирается в "модем не отвечает".
++# У вендора это работало, потому что его gcom-профили делают
++# "set com 115200n81" перед обменом.
++#
++# Поэтому перед каждой AT-командой выставляем скорость через stty.
++AT_BAUD="${MDM_AT_BAUD:-115200}"
++
++set_port_speed() {
++	[ -c "$1" ] || return 1
++	stty -F "$1" "$AT_BAUD" raw -echo 2>/dev/null
++}
++
+ detect_port() {
+ 	local p out script="/tmp/mdm-at-probe.$$"
+ 
+@@ -32,6 +49,7 @@ detect_port() {
+ 	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyUSB3 \
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
++		set_port_speed "$p"
+ 		out="$(timeout "$PROBE_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
+ 		case "$out" in
+ 			*OK*)
+@@ -50,6 +68,7 @@ run_command() {
+ 	local cmd="$1" dev="$2" out script="/tmp/mdm-at-cmd.$$"
+ 
+ 	printf '%s\r\n' "$cmd" > "$script"
++	set_port_speed "$dev"
+ 	out="$(timeout "$PROBE_TIMEOUT" atinout "$script" "$dev" - 2>/dev/null)"
+ 	rm -f "$script"
+ 
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+index 0099f59..7ed0508 100644
+--- a/package/pejir-sms/Makefile
++++ b/package/pejir-sms/Makefile
+@@ -10,7 +10,7 @@ define Package/pejir-sms
+   SECTION:=utils
+   CATEGORY:=Utilities
+   TITLE:=PEJIR01 SMS: smstools3 config for GM510
+-  DEPENDS:=+smstools3 +pejir-lte-base +coreutils-timeout
++  DEPENDS:=+smstools3 +pejir-lte-base +coreutils-timeout +coreutils-stty
+ endef
+ 
+ define Package/pejir-sms/description
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index f746c26..14a0822 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -45,6 +45,25 @@ DEFAULT_PORT="/dev/ttyUSB2"
+ # smsd не был бы запущен.
+ AT_TIMEOUT="${AT_TIMEOUT:-5}"
+ 
++# Скорость линии модема.
++#
++# atinout порт не настраивает: в его коде только fopen(dev, "r+b") - ни
++# tcsetattr, ни скорости, ни raw-режима. Порты USB-серийных поднимаются
++# с дефолтом tty (9600), а GM510 ждёт 115200: модем на "AT" не
++# отвечает, порт не находится, /etc/smsd.conf остаётся стоковым
++# (секция [GSM1] закомментирована), smsd остаётся без устройства, и
++# страница SMS показывает "порт не задан" и "журнала нет".
++# У вендора это работало - его gcom-профили перед обменом делают
++# "set com 115200n81".
++#
++# Поэтому перед каждой AT-командой выставляем скорость через stty.
++AT_BAUD="${PEJIR_AT_BAUD:-115200}"
++
++set_port_speed() {
++	[ -c "$1" ] || return 1
++	stty -F "$1" "$AT_BAUD" raw -echo 2>/dev/null
++}
++
+ detect_at_port() {
+ 	local p out script="/tmp/pejir-sms-probe.$$"
+ 
+@@ -53,6 +72,7 @@ detect_at_port() {
+ 	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 \
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
++		set_port_speed "$p"
+ 		out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
+ 		case "$out" in
+ 			*OK*) rm -f "$script"; echo "$p"; return 0 ;;
+-- 
+2.39.5
+
