@@ -1,4 +1,4 @@
-From 0bef2990fb3fe8ce1de65ef828d07c43e91c0fbc Mon Sep 17 00:00:00 2001
+From b3ca18178f9d764c438329165b314636a9ddc860 Mon Sep 17 00:00:00 2001
 From: pejir <pejir@local>
 Date: Mon, 23 Nov 2026 19:53:37 +0000
 Subject: [PATCH] =?UTF-8?q?pejir-sync:=20=D0=B2=D0=BE=D1=81=D1=81=D1=82?=
@@ -32,9 +32,9 @@ Content-Transfer-Encoding: 8bit
 вычищается из верхнего слоя.
 ---
  package/pejir-sync/Makefile                   |  47 +++++
- .../pejir-sync/root/etc/init.d/41-pejir-sync  | 180 ++++++++++++++++++
+ .../pejir-sync/root/etc/init.d/41-pejir-sync  | 190 ++++++++++++++++++
  .../root/etc/uci-defaults/80-pejir-sync       |  14 ++
- 3 files changed, 241 insertions(+)
+ 3 files changed, 251 insertions(+)
  create mode 100644 package/pejir-sync/Makefile
  create mode 100755 package/pejir-sync/root/etc/init.d/41-pejir-sync
  create mode 100755 package/pejir-sync/root/etc/uci-defaults/80-pejir-sync
@@ -94,10 +94,10 @@ index 0000000..49faa54
 +$(eval $(call BuildPackage,pejir-sync))
 diff --git a/package/pejir-sync/root/etc/init.d/41-pejir-sync b/package/pejir-sync/root/etc/init.d/41-pejir-sync
 new file mode 100755
-index 0000000..810437b
+index 0000000..e8fa3c2
 --- /dev/null
 +++ b/package/pejir-sync/root/etc/init.d/41-pejir-sync
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,190 @@
 +#!/bin/sh /etc/rc.common
 +# Самовосстановление файлов пакетов из /rom.
 +#
@@ -191,7 +191,19 @@ index 0000000..810437b
 +# исполняемых файлов нужен бит +x, иначе rpcd не сможет запустить
 +# helper ("Permission denied", код 127).
 +restore_file() {
-+	local rel="$1" upper="$2" mode
++	local rel="$1" upper="$2" mode cur
++
++	mode="$(rom_mode "$rel")"
++
++	# Права сверяем ВСЕГДА, даже если содержимое совпадает с образом.
++	# Файл, скопированный в overlay через wget (0644), содержимо имеет
++	# правильное, но исполнять его нельзя - "Permission denied". Для
++	# init-скриптов и helper'ов это означает, что они просто не
++	# запустятся.
++	cur="$(stat -c %a "$ROOT_DIR$rel" 2>/dev/null)"
++	if [ -n "$cur" ] && [ "$cur" != "$mode" ]; then
++		chmod "$mode" "$ROOT_DIR$rel" 2>/dev/null
++	fi
 +
 +	# Файл в merged совпадает с образом - он свежий и лежит в нижнем
 +	# слое (squashfs). Копировать его в верхний слой НЕЛЬЗЯ: такая
@@ -200,8 +212,6 @@ index 0000000..810437b
 +	if [ -e "$ROOT_DIR$rel" ] && cmp -s "$ROM_DIR$rel" "$ROOT_DIR$rel"; then
 +		return 0
 +	fi
-+
-+	mode="$(rom_mode "$rel")"
 +
 +	# В merged файл отличается от образа (протухшая копия в верхнем
 +	# слое) или его там нет вовсе. Записываем свежую версию в верхний

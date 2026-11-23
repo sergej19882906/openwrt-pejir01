@@ -106,6 +106,14 @@ printf '#!/bin/sh\n# СВЕЖИЙ helper\n' > "$ROOT/usr/libexec/pejir-band"
 touch -t 202001010000 "$ROOT/usr/libexec/pejir-band"
 BAND_MTIME_BEFORE="$(stat -c %Y "$ROOT/usr/libexec/pejir-band")"
 
+# Файл совпадает с образом по СОДЕРЖИМОМУ, но потерял бит исполнения:
+# именно так выглядит init-скрипт, скопированный в overlay через wget
+# (0644). Содержимое свежее, а выполнить его нельзя - "Permission denied".
+printf '#!/bin/sh /etc/rc.common\n# СВЕЖИЙ, но без бита +x\n' > "$ROM/etc/init.d/41-pejir-test"
+printf '#!/bin/sh /etc/rc.common\n# СВЕЖИЙ, но без бита +x\n' > "$ROOT/etc/init.d/41-pejir-test"
+chmod 755 "$ROM/etc/init.d/41-pejir-test"
+chmod 644 "$ROOT/etc/init.d/41-pejir-test"
+
 # Протухшая копия в верхнем слое, но merged уже совпадает с образом -
 # перезаписывать её нельзя (merged отдаёт верхний слой).
 printf '#!/bin/sh\n# ПРОТУХШАЯ копия в upper, но merged свежий\n' > "$UPPER/usr/libexec/pejir-ussd"
@@ -120,6 +128,7 @@ printf 'config cron "cron"\n\toption enabled "1"\n' > "$ROOT/etc/config/cron"
 # --- списки файлов пакетов (как их видит apk на устройстве) --------------
 cat > "$PKG/pejir-sms.list" <<'LISTEOF'
 /etc/init.d/40-pejir-sms
+/etc/init.d/41-pejir-test
 LISTEOF
 
 cat > "$PKG/luci-app-perenio.list" <<'LISTEOF'
@@ -219,6 +228,16 @@ if [ "$(stat -c %Y "$ROOT/usr/libexec/pejir-ussd")" = "$USSD_MTIME_BEFORE" ]; th
 	ok "протухшая копия в upper не перезаписана, если merged уже свежий"
 else
 	fail "файл перезаписан, хотя merged совпадал с образом"
+fi
+
+# --- 5c) потерянный бит исполнения восстановлен ---------------------------
+# Содержимое совпадает с образом, поэтому копировать файл не нужно -
+# но права должны быть как в образе, иначе файл не запустится
+# ("Permission denied").
+if [ -x "$ROOT/etc/init.d/41-pejir-test" ]; then
+	ok "потерянный бит исполнения восстановлен (файл в образе 0755)"
+else
+	fail "бит исполнения не восстановлен - файл из образа 0755, а в merged нет +x (Permission denied)"
 fi
 
 # --- 6) пользовательский конфиг в /etc/config не тронут ------------------
