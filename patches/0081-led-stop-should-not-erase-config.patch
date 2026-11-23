@@ -1,0 +1,82 @@
+From 3ef7188baed0e399443f3d8df7c58a7c0c21c7d9 Mon Sep 17 00:00:00 2001
+From: pejir-build <pejir@local>
+Date: Mon, 23 Nov 2026 20:27:52 GMT
+Subject: =?utf-8?b?bHVjaS1hcHAtcGVyZW5pbzog0LjQvdC00LjQutCw0YbQuNGPIExFRCDQvdC1INGB?=
+ =?utf-8?b?0YLQuNGA0LDQtdGC0YHRjyDQv9GA0Lgg0L7RgdGC0LDQvdC+0LLQutC1INGB0LU=?=
+ =?utf-8?b?0YDQstC40YHQsA==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Индикация LED "слетала" после каждой перезагрузки устройства: авто-режим
+не включался, светодиоды не загорались по расписанию.
+
+Причина: в /etc/init.d/pejir-led функция stop_service() вызывала
+/usr/libexec/pejir-led off. Но команда "off" не только гасит железо,
+но и записывает в /etc/pejir/led.conf режим manual со значением 0 для
+всех семи индикаторов (conf_set "$l" manual "0" ""). Init-скрипт
+вызывается при остановке сервиса, а значит и при перезагрузке, -
+конфиг авто-режима затирался при каждом старте.
+
+Исправление:
+  - в helper pejir-led добавлена команда blank - гасит индикаторы
+    через apply "$l" "0,s10", но НЕ трогает led.conf;
+  - stop_service() теперь вызывает pejir-led blank вместо off;
+  - команда off остаётся для ручного выключения из веб-интерфейса,
+    где стирание настроек - ожидаемое поведение.
+
+Тест tests/test-led.sh дополнен проверками: остановка сервиса не
+стирает настройки, blank гасит все семь индикаторов, в init-скрипте
+нет вызова "pejir-led off".
+
+diff --git a/package/luci-app-perenio/root/etc/init.d/pejir-led b/package/luci-app-perenio/root/etc/init.d/pejir-led
+index 064f40c..3424782 100755
+--- a/package/luci-app-perenio/root/etc/init.d/pejir-led
++++ b/package/luci-app-perenio/root/etc/init.d/pejir-led
+@@ -24,5 +24,8 @@ start_service() {
+ }
+ 
+ stop_service() {
+-	/usr/libexec/pejir-led off >/dev/null 2>&1
++	# Гасим светодиоды, но НЕ трогаем led.conf: команда "off" стирает
++	# настройки (ставит всем "manual 0"), а остановка сервиса происходит
++	# при каждой перезагрузке - после неё авто-режим был потерян.
++	/usr/libexec/pejir-led blank >/dev/null 2>&1
+ }
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-led b/package/luci-app-perenio/root/usr/libexec/pejir-led
+index f7936f0..4c01836 100755
+--- a/package/luci-app-perenio/root/usr/libexec/pejir-led
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-led
+@@ -231,6 +231,20 @@ cmd_off() {
+ 	echo "OK all off"
+ }
+ 
++# Погасить светодиоды, НЕ трогая настройки.
++#
++# Нужно при остановке сервиса (init-скрипт pejir-led, STOP=98).
++# Раньше там вызывалась команда "off", а она переписывает led.conf,
++# ставя всем индикаторам "manual 0". Остановка сервиса происходит при
++# каждой перезагрузке - после неё авто-режим был потерян, и индикация
++# "слетала". Теперь гасим только железо, настройки остаются.
++cmd_blank() {
++	for l in $LEDS; do
++		apply "$l" "0,s10"
++	done
++	echo "OK all blank"
++}
++
+ cmd_demo() {
+ 	secs="${1:-10}"
+ 	pattern="wrgbmyco"
+@@ -254,9 +268,10 @@ auto)
+ 	fi
+ 	;;
+ off) cmd_off ;;
++blank) cmd_blank ;;
+ demo) shift; cmd_demo "$@" ;;
+ *)
+-	echo "Использование: pejir-led status|set <имя> <цвет> [режим]|auto <имя> on|off|off|demo [сек]|auto"
++	echo "Использование: pejir-led status|set <имя> <цвет> [режим]|auto <имя> on|off|off|blank|demo [сек]|auto"
+ 	exit 1
+ 	;;
+ esac

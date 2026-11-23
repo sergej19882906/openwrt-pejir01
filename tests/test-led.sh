@@ -146,7 +146,44 @@ else
 	fail "индикатор не перекрашен при включении авто-режима"
 fi
 
+# --- 5a) остановка сервиса не стирает настройки --------------------------------
+# Дефект: init-скрипт pejir-led в stop_service() вызывал "pejir-led off",
+# а команда "off" переписывает /etc/pejir/led.conf, ставя всем индикаторам
+# "manual 0". Остановка сервиса происходит при каждой перезагрузке - после
+# неё авто-режим был потерян, и индикация "слетала".
+#
+# Правильное поведение: гасить светодиоды, но настройки сохранять.
+printf 'l auto g\n' > "$CONF"
+: > "$LOG"
+run_led blank >/dev/null
+if grep -q '^l auto g *$' "$CONF"; then
+	ok "команда blank не стирает настройки индикаторов"
+else
+	fail "команда blank стёрла настройки: $(cat "$CONF" 2>/dev/null | tr '\n' '|')"
+fi
+
+# При этом светодиоды должны быть погашены.
+BLANKED="$(grep -c '=0,s10' "$LOG" 2>/dev/null || echo 0)"
+if [ "$BLANKED" -eq 7 ]; then
+	ok "blank гасит все 7 индикаторов"
+else
+	fail "blank погасил $BLANKED индикаторов вместо 7"
+fi
+
+# Итог: init-скрипт при остановке зовёт blank, а не off.
+if grep -q 'pejir-led blank' "$INITD"; then
+	ok "init-скрипт при остановке вызывает blank (настройки сохраняются)"
+else
+	fail "init-скрипт не вызывает blank при остановке"
+fi
+
 # --- 6) упаковка в образ, ACL и меню -----------------------------------------
+if grep -qE 'pejir-led[[:space:]]+off' "$INITD"; then
+	fail "init-скрипт вызывает 'pejir-led off' - команда стирает настройки (conf_set manual 0)"
+else
+	ok "init-скрипт не вызывает 'pejir-led off' (настройки не стираются)"
+fi
+
 if grep -q 'pejir-led' "$MAKEFILE"; then
 	ok "helper и init-скрипт ставятся в образ"
 else

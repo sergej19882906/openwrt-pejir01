@@ -161,6 +161,70 @@ else
 fi
 
 
+# Сценарий: ответ оператора приходит в UCS2 (UTF-16BE) - так отвечает
+# GM510 на русском тексте. Без декодирования пользователь видит вместо
+# ответа "кучу непонятных символов" (мусорные байты).
+if python3 - "$HELPER" <<'UCS2CASE'
+import os, pty, subprocess, sys, threading
+
+helper = sys.argv[1]
+master, slave = pty.openpty()
+slave_name = os.ttyname(slave)
+stop = False
+
+# Ответ оператора в UCS2: "Баланс" = U+0411 U+0430 ...
+text = "Баланс 100"
+ucs2 = text.encode('utf-16-be')
+
+def modem():
+	buf = b''
+	while not stop:
+		try:
+			data = os.read(master, 4096)
+		except OSError:
+			break
+		if not data:
+			break
+		buf += data
+		while b'\r' in buf:
+			cmd, buf = buf.split(b'\r', 1)
+			cmd = cmd.strip()
+			if cmd == b'AT':
+				os.write(master, b'\r\nOK\r\n')
+			elif cmd.startswith(b'AT+CUSD'):
+				# Формат: +CUSD: <status>,"<rspstr>",<dcs>; dcs=15 - UCS2
+				body = b'\r\n+CUSD: 1,"' + ucs2 + b'",15\r\n'
+				os.write(master, body)
+			elif cmd.startswith(b'AT+CGDCONT'):
+				os.write(master, b'\r\nOK\r\n')
+
+t = threading.Thread(target=modem, daemon=True)
+t.start()
+
+p = subprocess.run([helper, '-p', slave_name, '*100#'],
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   timeout=60)
+stop = True
+
+out = p.stdout.decode('utf-8', 'replace').strip()
+rc = p.returncode
+
+if rc != 0:
+	print("FAIL: helper вернул код %d, stdout=%r" % (rc, out))
+	sys.exit(1)
+
+if 'Баланс' not in out:
+	print("FAIL: ответ в UCS2 не декодирован: %r" % out)
+	sys.exit(1)
+
+print("OK: ответ в UCS2 декодирован: %r" % out)
+UCS2CASE
+then
+	:
+else
+	fail "helper: ответ оператора в UCS2 не декодируется в читаемый текст"
+fi
+
 # Сценарий: stty возвращает ошибку (на живом устройстве он всегда
 # возвращает "unable to perform all requested operations", хотя порт
 # рабочий). Helper обязан продолжить обмен и вернуть ответ оператора.

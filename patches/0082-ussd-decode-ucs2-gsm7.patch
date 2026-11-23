@@ -1,0 +1,334 @@
+From d549562959dfcca014fc800431ae0ef971f3422f Mon Sep 17 00:00:00 2001
+From: pejir-build <pejir@local>
+Date: Mon, 23 Nov 2026 20:27:52 GMT
+Subject: =?utf-8?b?bHVjaS1hcHAtcGVyZW5pbzog0LrQvtGA0YDQtdC60YLQvdC+0LUg0LTQtdC60L4=?=
+ =?utf-8?b?0LTQuNGA0L7QstCw0L3QuNC1INC+0YLQstC10YLQsCBVU1NEIChVQ1MyL0dTTS03?=
+ =?utf-8?b?KQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Страница USSD показывала "кучу непонятных символов" вместо ответа
+оператора.
+
+Причины:
+  1. Ответ модема читался командной подстановкой $(...), которая
+     теряет NUL-байты. Ответ в UCS2 - это UTF-16BE, то есть каждый
+     символ занимает два байта, и младший байт у неASCII-символов
+     равен нулю. Такие байты выбрасывались, и текст искажался.
+  2. Байты выводились как есть, без учёта схемы кодирования,
+     указанной полем dcs в ответе +CUSD.
+
+Исправление:
+  - ответ модема читается во временный файл (NUL-safe), а не через
+    командную подстановку;
+  - файл переводится в hex-строку функцией bytes_to_hex: сначала
+    пробуется hexdump (есть в busybox-образе), затем od (есть в
+    GNU coreutils в среде сборки CI). Ни один из них не доступен
+    одновременно везде, поэтому нужны оба пути;
+  - ответ разбирается по схеме DCS так же, как в стоковом
+    /usr/lib/modem_ubus/dcs.sh: схема (dcs/4)&3, где 0 - GSM-7,
+    1 - 8 bit, 2 - UCS2. Ответ дополнительно проверяется на
+    NUL-байты - однозначный признак UCS2;
+  - UCS2 (UTF-16BE) переводится в UTF-8, GSM-7 и 8-bit выводятся
+    байт за байтом;
+  - скрипт работает с локалью C: в UTF-8-локали gawk перекодирует
+    байты через sprintf("%c", ...) и русский текст удваивается.
+
+Тест tests/test-ussd.sh проверяет оба случая: ответ оператора в
+GSM-7 ("Balance 100") и в UCS2 ("Баланс 100"), а также что ошибка
+stty не прерывает работу.
+
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-ussd b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+index 93d4799..b74095a 100755
+--- a/package/luci-app-perenio/root/usr/libexec/pejir-ussd
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+@@ -1,6 +1,11 @@
+ #!/bin/sh
+ # /usr/libexec/pejir-ussd - USSD-запрос к модему (AT+CUSD).
+ #
++# Локаль C: gawk должен работать с байтами как есть. В UTF-8-локали
++# sprintf("%c", ...) перекодирует байты, и русский текст удваивается.
++LC_ALL=C
++export LC_ALL
++#
+ # Использование:
+ #   pejir-ussd [-p ПОРТ] [--restart-lte] КОД
+ #
+@@ -81,14 +86,21 @@ candidates() {
+ 	echo /dev/ttyACM0
+ }
+ 
+-# Обмен с модемом: отправить команду и прочитать ответ. Чтение идёт
+-# порциями по секунде и прерывается, как только в ответе встретился
+-# маркер want (если он задан), иначе - по истечении secs секунд.
++# Обмен с модемом: отправить команду и прочитать ответ В ФАЙЛ.
++#
++# Почему файл, а не переменная оболочки: ответ в UCS2 содержит NUL-байты
++# (UTF-16BE), а командная подстановка $(...) их удаляет - русский текст
++# превращался в мусор. Файл сохраняет байты как есть, а разбор идёт
++# через hexdump.
++#
++# $1 - порт, $2 - команда, $3 - секунд ждать, $4 - маркер (если задан),
++# $5 - файл, куда писать ответ.
+ at_send_read() {
+ 	_aport="$1"
+ 	_acmd="$2"
+ 	_secs="$3"
+ 	_want="${4:-}"
++	_outfile="${5:-/tmp/pejir-ussd-out.$$}"
+ 
+ 	# stty на этом устройстве возвращает ошибку ("unable to perform all
+ 	# requested operations"), хотя порт при этом полностью рабочий:
+@@ -98,39 +110,208 @@ at_send_read() {
+ 	stty -F "$_aport" 115200 raw -echo 2>/dev/null || true
+ 	printf '%s\r' "$_acmd" > "$_aport" 2>/dev/null || return 1
+ 
+-	_out=""
++	: > "$_outfile"
+ 	_i=0
+ 
+ 	while [ "$_i" -lt "$_secs" ]; do
+-		_chunk=$(timeout 1 cat "$_aport" 2>/dev/null)
+-		_out="$_out$_chunk"
++		timeout 1 cat "$_aport" 2>/dev/null >> "$_outfile"
+ 
+ 		if [ -n "$_want" ]; then
+-			case "$_out" in
+-				*"$_want"*) break ;;
+-			esac
++			grep -q "$_want" "$_outfile" 2>/dev/null && break
+ 		fi
+ 
+ 		_i=$((_i + 1))
+ 	done
+ 
+-	printf '%s' "$_out"
++	return 0
++}
++
++# Перевести файл в hex-строку (без разделителей).
++#
++# Нужен для разбора ответа USSD: UCS2 содержит NUL-байты, которые
++# теряются в переменной оболочки, а hex сохраняет всё байт в байт.
++#
++# hexdump есть в busybox-образе, но не в среде сборки CI; od (GNU
++# coreutils) есть везде. Поэтому пробуем оба.
++bytes_to_hex() {
++	_f="$1"
++	[ -f "$_f" ] || return 1
++
++	if command -v hexdump >/dev/null 2>&1; then
++		hexdump -v -e '1/1 "%02x"' "$_f" 2>/dev/null && return 0
++	fi
++
++	if command -v od >/dev/null 2>&1; then
++		od -An -v -tx1 "$_f" 2>/dev/null | tr -d ' \n' && return 0
++	fi
++
++	if command -v busybox >/dev/null 2>&1; then
++		busybox hexdump -v -e '1/1 "%02x"' "$_f" 2>/dev/null && return 0
++	fi
++
++	return 1
+ }
+ 
+ # Достать текст USSD из ответа вида  +CUSD: 1,"Balance 100",0
++#
++# Ответ оператора может прийти в трёх схемах кодирования (DCS, 3GPP
++# 27.005):
++#
++#   dcs 0..3  - GSM 7-bit (в т.ч. 7-битный упакованный текст)
++#   dcs 4..7  - data 8 bit
++#   dcs 8..15 - UCS2 (UTF-16BE); модем чаще всего присылает dcs=15
++#
++# Без разбора схемы модем отдаёт русский текст в UCS2, и пользователь
++# видит вместо ответа "кучу непонятных символов" - это ровно тот
++# симптом, который мы чиним. Логика выбора схемы - как в заводской
++# прошивке (usr/lib/modem_ubus/dcs.sh).
++#
++# $1 - файл с ответом. Разбор идёт по HEX-строке (hexdump): так
++# сохраняются NUL-байты, которые несёт UCS2.
+ parse_ussd() {
+-	printf '%s\n' "$1" | awk '
+-		match($0, /\+CUSD: *[0-9]+, *"/) {
+-		s = substr($0, RSTART + RLENGTH)
+-		q = index(s, "\"")
+-		if (q > 0) {
+-			s = substr(s, 1, q - 1)
+-			gsub(/\\r|\\n/, " ", s)
+-			gsub(/\\"/, "\"", s)
+-			print s
+-			exit
++	_file="$1"
++	[ -f "$_file" ] || return 1
++
++	_hex="$(bytes_to_hex "$_file")"
++	[ -n "$_hex" ] || return 1
++
++	printf '%s\n' "$_hex" | awk '
++function hexval(h,   i, c, v, n) {
++	v = 0
++	n = length(h)
++	for (i = 1; i <= n; i++) {
++		c = index("0123456789ABCDEF", toupper(substr(h, i, 1))) - 1
++		if (c < 0) return -1
++		v = v * 16 + c
++	}
++	return v
++}
++
++# Символ UTF-8 по кодовому значению.
++function utf8(cp) {
++	if (cp < 0x80) return sprintf("%c", cp)
++	if (cp < 0x800) return sprintf("%c%c", 192 + int(cp / 64), 128 + (cp % 64))
++	return sprintf("%c%c%c", 224 + int(cp / 4096), 128 + int(cp / 64) % 64, 128 + (cp % 64))
++}
++
++# GSM-7 / 8-bit: каждый байт - один символ.
++function bytes_text(hx,   out, i, c, n) {
++	out = ""
++	n = length(hx)
++	for (i = 1; i + 1 <= n; i += 2) {
++		c = hexval(substr(hx, i, 2))
++		if (c < 0) break
++		if (c == 10 || c == 13) { out = out " "; continue }
++		out = out utf8(c)
++	}
++	return out
++}
++
++# UCS2 (UTF-16BE) - по 4 hex-символа на символ.
++function ucs2_text(hx,   out, i, hi, lo, cp) {
++	out = ""
++	for (i = 1; i + 3 <= length(hx); i += 4) {
++		hi = hexval(substr(hx, i, 2))
++		lo = hexval(substr(hx, i + 2, 2))
++		if (hi < 0 || lo < 0) break
++		cp = hi * 256 + lo
++		if (cp == 0) { out = out " "; continue }
++		out = out utf8(cp)
++	}
++	return out
++}
++
++# NUL-байты - признак UCS2.
++function has_nul(hx,   i) {
++	for (i = 1; i + 1 <= length(hx); i += 2) {
++		if (substr(hx, i, 2) == "00") return 1
++	}
++	return 0
++}
++
++# Все байты - печатный ASCII?
++function all_printable(hx,   i, c) {
++	for (i = 1; i + 1 <= length(hx); i += 2) {
++		c = hexval(substr(hx, i, 2))
++		if (c < 32 || c > 126) return 0
++	}
++	return 1
++}
++
++# ASCII-цифры, пришедшие как hex-байты ("30" = символ '0'), -> число.
++function ascii_num(s,   i, c, v, n) {
++	v = 0
++	n = length(s)
++	for (i = 1; i + 1 <= n; i += 2) {
++		c = hexval(substr(s, i, 2))
++		if (c < 48 || c > 57) return -1
++		v = v * 10 + (c - 48)
++	}
++	return v
++}
++
++# Разбор ответа +CUSD: <status>,"<rspstr>",<dcs>
++{
++	hx = $0
++
++	# "+CUSD:" в hex - 2b435553443a.
++	p = index(hx, "2b435553443a")
++	if (p == 0) next
++	rest = substr(hx, p + 12)
++
++	# Убираем хвостовые CR/LF.
++	while (length(rest) >= 2) {
++		t = substr(rest, length(rest) - 1, 2)
++		if (t == "0d" || t == "0a") rest = substr(rest, 1, length(rest) - 2)
++		else break
++	}
++
++	# status: число до запятой.
++	c = index(rest, "2c")
++	if (c == 0) next
++	rest = substr(rest, c + 2)
++
++	# Пробелы перед открывающей кавычкой, затем сама кавычка "22".
++	while (substr(rest, 1, 2) == "20") rest = substr(rest, 3)
++	if (substr(rest, 1, 2) != "22") next
++	rest = substr(rest, 3)
++
++	# Хвост ",<dcs>": dcs - ASCII-цифры, поэтому ищем "2c" + "3X".
++	dcs = -1
++	qpos = 0
++	if (match(rest, /2c(3[0-9])+$/)) {
++		dcs = ascii_num(substr(rest, RSTART + 2, RLENGTH - 2))
++		qpos = RSTART - 2
++	} else {
++		# dcs нет - закрывающая кавычка последняя.
++		for (i = 1; i + 1 <= length(rest); i += 2) {
++			if (substr(rest, i, 2) == "22") qpos = i
+ 		}
+-	}'
++	}
++
++	if (qpos < 1) next
++	payload = substr(rest, 1, qpos - 1)
++
++	# Схема по DCS (биты 3-2), как в стоковом dcs.sh.
++	if (dcs >= 0) scheme = int(dcs / 4) % 4
++	else scheme = 3
++
++	if (all_printable(payload)) {
++		ans = bytes_text(payload)
++	} else if (has_nul(payload)) {
++		ans = ucs2_text(payload)
++	} else if (scheme == 0 || scheme == 1) {
++		ans = bytes_text(payload)
++	} else {
++		ans = ucs2_text(payload)
++	}
++
++	if (ans == "") ans = bytes_text(payload)
++
++	print ans
++	exit
++}
++'
+ }
+ 
+ smsd_stop() {
+@@ -155,17 +336,17 @@ try_ports() {
+ 	for _p in $(candidates); do
+ 		[ -c "$_p" ] || continue
+ 		case "$_p" in
+-			*' '*|*'	'*) continue ;;
++		*' '*|*'	'*) continue ;;
+ 		esac
+ 
+-		_probe=$(at_send_read "$_p" 'AT' 3 'OK')
+-		case "$_probe" in
+-			*OK*) ;;
+-			*) continue ;;
+-		esac
++		_probe="$(at_send_read "$_p" 'AT' 3 'OK' "/tmp/pejir-ussd-probe.$$")"
++		grep -q 'OK' "/tmp/pejir-ussd-probe.$$" 2>/dev/null || continue
++		rm -f "/tmp/pejir-ussd-probe.$$"
+ 
+-		_out=$(at_send_read "$_p" "AT+CUSD=1,\"$CODE\",15" 20 '+CUSD')
++		_out="/tmp/pejir-ussd-raw.$$"
++		at_send_read "$_p" "AT+CUSD=1,\"$CODE\",15" 20 '+CUSD' "$_out"
+ 		_ans=$(parse_ussd "$_out")
++		rm -f "$_out"
+ 
+ 		if [ -n "$_ans" ]; then
+ 			printf '%s\n' "$_ans"
