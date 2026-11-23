@@ -1,0 +1,61 @@
+From c2cb8547e72ca2c8543fea8710c524035b0e71ec Mon Sep 17 00:00:00 2001
+From: v <v@local>
+Date: Mon, 23 Nov 2026 16:38:16 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-autosetup:=20=D0=BF=D0=B8=D0=BD=D1=83?=
+ =?UTF-8?q?=D0=B5=D0=BC=20=D0=B2=D0=B5=D1=80=D1=81=D0=B8=D0=B8=20HOMEd=20?=
+ =?UTF-8?q?=D0=B2=20zigbee-setup.sh?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ package/pejir-autosetup/files/zigbee-setup.sh | 23 +++++++++++++++----
+ 1 file changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/package/pejir-autosetup/files/zigbee-setup.sh b/package/pejir-autosetup/files/zigbee-setup.sh
+index e2e5606..055d7b9 100644
+--- a/package/pejir-autosetup/files/zigbee-setup.sh
++++ b/package/pejir-autosetup/files/zigbee-setup.sh
+@@ -38,6 +38,14 @@ CHANNEL="${ZIGBEE_CHANNEL:-11}"
+ WRITE="${ZIGBEE_WRITE:-true}"
+ WITH_WEB="${WITH_WEB:-1}"
+ WITH_AUTOMATION="${WITH_AUTOMATION:-1}"
++# Пиновые версии HOMEd на момент релиза .47 (см. apk.homed.dev/mipsel_24kc/).
++# Непинованный apk add в один день молча тянет свежий выпуск с новыми
++# конфигами/зависимостями - образ перестаёт воспроизводиться.
++# HOMED_PIN=no - exception-режим: ставим последние версии из фида.
++PIN_ZIGBEE="${HOMED_PV_ZIGBEE:-3.16.4}"
++PIN_COMMON="${HOMED_PV_COMMON:-1.3.0}"
++PIN_WEB="${HOMED_PV_WEB:-2.25.1}"
++PIN_AUTOMATION="${HOMED_PV_AUTOMATION:-2.9.0}"
+ 
+ log() { echo "[zigbee] $*"; }
+ err() { echo "[zigbee] ОШИБКА: $*" >&2; }
+@@ -63,13 +71,20 @@ log "обновляем индексы пакетов..."
+ apk update 2>&1 | tail -3
+ 
+ # --- 2) установка ----------------------------------------------------------
+-PKGS="homed-zigbee homed-common"
+-[ "$WITH_WEB" = "1" ] && PKGS="$PKGS homed-web"
+-[ "$WITH_AUTOMATION" = "1" ] && PKGS="$PKGS homed-automation"
++if [ "${HOMED_PIN:-yes}" = "no" ]; then
++	PKGS="homed-zigbee homed-common"
++	[ "$WITH_WEB" = "1" ] && PKGS="$PKGS homed-web"
++	[ "$WITH_AUTOMATION" = "1" ] && PKGS="$PKGS homed-automation"
++	log "HOMED_PIN=no - ставим последние версии из фида"
++else
++	PKGS="homed-zigbee=$PIN_ZIGBEE homed-common=$PIN_COMMON"
++	[ "$WITH_WEB" = "1" ] && PKGS="$PKGS homed-web=$PIN_WEB"
++	[ "$WITH_AUTOMATION" = "1" ] && PKGS="$PKGS homed-automation=$PIN_AUTOMATION"
++fi
+ 
+ log "ставим: $PKGS (homed-qt подтянется зависимостью, ~4 МБ)"
+ if apk add $PKGS; then
+-	log "пакеты установлены."
++	log "пакеты установлены: $PKGS"
+ else
+ 	err "apk add не удался. Проверьте сеть и ключ фида."
+ 	exit 1
+-- 
+2.47.3
+

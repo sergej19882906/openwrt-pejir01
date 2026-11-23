@@ -257,6 +257,37 @@ else
 	fail "modeminfo (анонимный раздел): нет данных модема: $out_anon"
 fi
 
+# --- dispatcher: ветка qmi_mode, отсутствие kill -9, timeout на atinout -------
+# Ловит: 1) [ $qmi_mode ] - truthy-сравнение, при пустом значении из uci ветка
+# уходила не туда; 2) cleanup()/kill -9 (pgrep atinout) убивали чужие процессы:
+# другие экземпляры modeminfo и ВСЕ бюджетные atinout, в том числе из LuCI
+# приложения atcommands; 3) atinout висит бесконечно на молчащем порту.
+DISPATCH="$PKG/root/usr/share/modeminfo/modeminfo"
+
+if grep -Eq '\[ "\$qmi_mode" = "1" \]' "$DISPATCH"; then
+	ok "dispatcher: ветка qmi_mode сравнивается как строка (= \"1\")"
+else
+	fail "dispatcher: нет [ \"\$qmi_mode\" = \"1\" ] - truthy-сравнение [ \$qmi_mode ] ложно при пустом значении"
+fi
+
+if grep -q 'pgrep' "$DISPATCH"; then
+	fail "dispatcher: остался kill -9 (pgrep atinout) - убивает чужие процессы"
+else
+	ok "dispatcher: kill -9 (pgrep atinout) удалён"
+fi
+
+if grep -q 'cleanup()' "$DISPATCH"; then
+	fail "dispatcher: осталась cleanup() с убийством процессов"
+else
+	ok "dispatcher: cleanup() с kill -9 удалена"
+fi
+
+if grep -q 'timeout 90 atinout' "$SCRIPTS/modeminfo"; then
+	ok "scripts/modeminfo: вызовы atinout обёрнуты в timeout 90"
+else
+	fail "scripts/modeminfo: atinout без timeout - зависает на молчащем порту"
+fi
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
 	echo "Все тесты modeminfo пройдены"

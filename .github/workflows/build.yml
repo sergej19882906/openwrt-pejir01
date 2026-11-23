@@ -116,6 +116,8 @@ jobs:
           sh tests/test-luci-requires.sh
           sh tests/test-at-probe.sh
           sh tests/test-modeminfo.sh
+          sh tests/test-lte-terminators.sh
+          sh tests/test-atinout-wrapper.sh
           sh tests/test-ota-acl.sh
           sh tests/test-sms-outbox.sh
           sh tests/test-ussd.sh

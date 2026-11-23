@@ -53,6 +53,9 @@ STOCK_FW_URL="https://router-pejir-openwrt-firmware.s3.eu-central-1.amazonaws.co
 STOCK_SHA256="842f10d78d9d5d28063d72331bbf9b35d1983c713bebe24d9cabfb98a47c0c67"
 BLOBS_URL="https://github.com/sergej19882906/openwrt-pejir01/releases/download/v25.12.6-pejir01.5/pejir-vendor-blobs-9.0.4.zip"
 BLOBS_URL_ALT="https://github.com/sergej19882906/openwrt-pejir01/releases/latest/download/pejir-vendor-blobs-9.0.4.zip"
+# sha256 ассета с вендорскими блобами (v25.12.6-pejir01.5). Без проверки
+# некто с правом на изменение релиза мог бы подменить бинарники - supply chain.
+BLOBS_SHA256="eb6d846f8ce4055400229a959940438c89312b97da9b00ee877704f6489b64b6"
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 step "1. Build dependencies (Debian/Ubuntu)"
@@ -153,6 +156,26 @@ if [ ! -f "$MCU_DIR/mcu" ]; then
   fi
 
   if [ -f "$ZIP" ]; then
+    if command -v sha256sum >/dev/null && [ -n "$BLOBS_SHA256" ]; then
+      got="$(sha256sum "$ZIP" | cut -d' ' -f1)"
+      if [ "$got" != "$BLOBS_SHA256" ]; then
+        if [ "${PEJIR_ALLOW_BROKEN_BLOBS:-0}" = "1" ]; then
+          echo "    WARNING: sha256 of vendor blobs differs (PEJIR_ALLOW_BROKEN_BLOBS=1)"
+          echo "            expected $BLOBS_SHA256"
+          echo "            got      $got"
+        else
+          ann error "build.sh: sha256 ассета с вендорскими блобами не совпал" \
+              "ожидался $BLOBS_SHA256, получен $got. Блобы могли быть подменены. \
+Если это осознанная замена ассета - обновите BLOBS_SHA256 в build.sh или \
+запустите сборку с PEJIR_ALLOW_BROKEN_BLOBS=1"
+          exit 2
+        fi
+      else
+        echo "    vendor blobs sha256 OK"
+      fi
+    elif [ -z "$BLOBS_SHA256" ]; then
+      echo "    WARNING: BLOBS_SHA256 не задан - блобы не проверены"
+    fi
     echo "    using vendor blobs from release asset"
     rm -rf /tmp/pejir-vendor-blobs-9.0.4
     ( cd /tmp && unzip -q pejir-vendor-blobs.zip )
@@ -163,10 +186,18 @@ if [ ! -f "$MCU_DIR/mcu" ]; then
     if command -v sha256sum >/dev/null; then
       got="$(sha256sum "$SW" | cut -d' ' -f1)"
       if [ "$got" != "$STOCK_SHA256" ]; then
-        echo "    WARNING: sha256 of stock firmware differs"
-        echo "            expected $STOCK_SHA256"
-        echo "            got      $got"
-        echo "            vendor binaries will be extracted from an unverified image"
+        if [ "${PEJIR_ALLOW_BROKEN_STOCK:-0}" = "1" ]; then
+          echo "    WARNING: sha256 of stock firmware differs (PEJIR_ALLOW_BROKEN_STOCK=1)"
+          echo "            expected $STOCK_SHA256"
+          echo "            got      $got"
+          echo "            vendor binaries will be extracted from an unverified image"
+        else
+          ann error "build.sh: sha256 заводской прошивки не совпал" \
+              "ожидался $STOCK_SHA256, получен $got. Файл мог быть подменён или \
+это другая версия прошивки. Если заводской образ обновлён сознательно - \
+обновите STOCK_SHA256 в build.sh или запустите с PEJIR_ALLOW_BROKEN_STOCK=1"
+          exit 2
+        fi
       else
         echo "    stock firmware sha256 OK"
       fi

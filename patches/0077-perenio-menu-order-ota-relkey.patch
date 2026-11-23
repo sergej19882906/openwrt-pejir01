@@ -1,0 +1,95 @@
+From da6e5efb6452b969a7a80e76eb6ec7c0c363e020 Mon Sep 17 00:00:00 2001
+From: v <v@local>
+Date: Mon, 23 Nov 2026 16:38:16 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-perenio/pejir-ota:=20order=2070=20?=
+ =?UTF-8?q?=D0=B4=D0=BB=D1=8F=20bands=20=D0=B8=20relkey-=D1=81=D1=80=D0=B0?=
+ =?UTF-8?q?=D0=B2=D0=BD=D0=B5=D0=BD=D0=B8=D0=B5=20=D0=B2=D0=B5=D1=80=D1=81?=
+ =?UTF-8?q?=D0=B8=D0=B9=20OTA?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../share/luci/menu.d/luci-app-perenio.json   |  2 +-
+ package/pejir-ota/files/pejir-ota             | 31 ++++++++++++++-----
+ 2 files changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 29d2126..0b46939 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -61,7 +61,7 @@
+ 	},
+ 	"admin/status/perenio-bands": {
+ 		"title": "3G/4G bands (PEJIR01)",
+-		"order": 68,
++		"order": 70,
+ 		"action": {
+ 			"type": "view",
+ 			"path": "perenio/bands"
+diff --git a/package/pejir-ota/files/pejir-ota b/package/pejir-ota/files/pejir-ota
+index c3dd012..20d4372 100644
+--- a/package/pejir-ota/files/pejir-ota
++++ b/package/pejir-ota/files/pejir-ota
+@@ -46,8 +46,25 @@ case "$SELF" in
+ 	*)  SELF="$(command -v "$SELF" 2>/dev/null || echo /usr/bin/pejir-ota)" ;;
+ esac
+ 
+-# Числовой счётчик релиза: 25.12.6-pejir01.11 -> 11
+-relnum() { echo "$1" | sed -n 's/.*pejir01\.\([0-9][0-9]*\)$/\1/p'; }
++# Ключ релиза из четырёх чисел: v25.12.6-pejir01.11 -> "25 12 6 11".
++# Один только счётчик (.11) ломает сравнение, когда поменяется мажор/минор:
++# "25.12.6-pejir01.100" > "25.12.6-pejir01.46", но "25.13.0-pejir01.5"
++# должна быть новее "25.12.6-pejir01.46".
++relkey() {
++	echo "$1" | sed -n 's/^v\{0,1\}\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)-pejir01\.\([0-9][0-9]*\)$/\1 \2 \3 \4/p'
++}
++
++# a новее b?
++rel_newer() {
++	awk -v a="$1" -v b="$2" 'BEGIN {
++		split(a, x, " "); split(b, y, " ")
++		for (i = 1; i <= 4; i++) {
++			if (x[i] + 0 > y[i] + 0) exit 0
++			if (x[i] + 0 < y[i] + 0) exit 1
++		}
++		exit 1
++	}'
++}
+ 
+ # Тег последнего релиза, например v25.12.6-pejir01.11
+ latest_tag() {
+@@ -57,7 +74,7 @@ latest_tag() {
+ }
+ 
+ cmd_check() {
+-	local tag cur cur_n lat_n
++	local tag cur cur_k lat_k
+ 
+ 	tag="$(latest_tag)"
+ 	if [ -z "$tag" ]; then
+@@ -70,17 +87,17 @@ cmd_check() {
+ 	fi
+ 
+ 	cur="$INSTALLED"
+-	cur_n="$(relnum "$cur")"
+-	lat_n="$(relnum "$tag")"
++	cur_k="$(relkey "$cur")"
++	lat_k="$(relkey "$tag")"
+ 
+ 	echo "installed=$cur"
+ 	echo "latest=$tag"
+ 	echo "url=https://github.com/$REPO/releases/tag/$tag"
+ 
+-	if [ -z "$cur_n" ] || [ -z "$lat_n" ]; then
++	if [ -z "$cur_k" ] || [ -z "$lat_k" ]; then
+ 		echo "available=yes"
+ 		echo "note=Версия в образе неизвестна, обновление рекомендуется"
+-	elif [ "$lat_n" -gt "$cur_n" ]; then
++	elif rel_newer "$lat_k" "$cur_k"; then
+ 		echo "available=yes"
+ 	else
+ 		echo "available=no"
+-- 
+2.47.3
+

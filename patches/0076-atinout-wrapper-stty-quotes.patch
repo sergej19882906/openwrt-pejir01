@@ -1,0 +1,30 @@
+From 1255cb06a3bad02aa9230aa236f37267b8a7d088 Mon Sep 17 00:00:00 2001
+From: v <v@local>
+Date: Mon, 23 Nov 2026 16:38:15 +0000
+Subject: [PATCH] =?UTF-8?q?luci-app-atinout:=20wrapper=20=D1=81=D0=BE=20st?=
+ =?UTF-8?q?ty=20raw=20+=20=D0=BA=D0=B0=D0=B2=D1=8B=D1=87=D0=BA=D0=B0=D0=BC?=
+ =?UTF-8?q?=D0=B8?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ package/luci-app-atinout/root/usr/bin/luci-app-atinout | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/package/luci-app-atinout/root/usr/bin/luci-app-atinout b/package/luci-app-atinout/root/usr/bin/luci-app-atinout
+index f823a57..58d986c 100755
+--- a/package/luci-app-atinout/root/usr/bin/luci-app-atinout
++++ b/package/luci-app-atinout/root/usr/bin/luci-app-atinout
+@@ -1,3 +1,7 @@
+ #!/bin/sh
+ 
+-echo $1 | atinout - $2 -
++# LuCI передаёт неэкранированные аргументы: команда и порт могут содержать
++# пробелы/кавычки, а порт к тому же надо перевести в raw-режим без эха,
++# иначе модем молчит (тот же трюк, что в scripts/modeminfo).
++stty -F "$2" 115200 raw -echo 2>/dev/null
++echo "$1" | atinout - "$2" -
+-- 
+2.47.3
+

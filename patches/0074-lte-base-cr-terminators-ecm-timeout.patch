@@ -1,0 +1,60 @@
+From daad329bc43626f2bd1e9aa59a7209be73d215c1 Mon Sep 17 00:00:00 2001
+From: v <v@local>
+Date: Mon, 23 Nov 2026 16:38:15 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-lte-base:=20CR-=D1=82=D0=B5=D1=80=D0=BC?=
+ =?UTF-8?q?=D0=B8=D0=BD=D0=B0=D1=82=D0=BE=D1=80=D1=8B=20=D0=B4=D0=BB=D1=8F?=
+ =?UTF-8?q?=20CGDCONT/ZECMCALL=20=D0=B8=20=D0=BE=D1=82=D0=B4=D0=B5=D0=BB?=
+ =?UTF-8?q?=D1=8C=D0=BD=D1=8B=D0=B9=20=D1=82=D0=B0=D0=B9=D0=BC=D0=B0=D1=83?=
+ =?UTF-8?q?=D1=82=20ECM?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ package/pejir-lte-base/root/etc/init.d/47-pejir-lte | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 39cd514..2d73d4c 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -78,6 +78,9 @@ detect_ifname() {
+ # init-скрипт не доходит до конца. Поэтому каждый вызов обёрнут в
+ # timeout: порт, который не ответил, просто пропускаем.
+ AT_TIMEOUT="${AT_TIMEOUT:-5}"
++# AT+ZECMCALL может набирать сеанс заметно дольше обычных AT-опросов:
++# общий AT_TIMEOUT=5 режет вызов на полуобороте, поэтому набор сеанса живёт на собственном таймауте.
++ECM_TIMEOUT="${ECM_TIMEOUT:-30}"
+ 
+ # Скорость линии модема.
+ #
+@@ -255,7 +258,7 @@ sync_apn() {
+ 
+ 	port="$(detect_at_port)" || return 0
+ 	script="/tmp/pejir-apn.$$"
+-	printf 'AT+CGDCONT=1,"IP","%s"\n' "$apn" > "$script"
++	printf 'AT+CGDCONT=1,"IP","%s"\r' "$apn" > "$script"
+ 	set_port_speed "$port"
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+@@ -313,14 +316,14 @@ ecm_call() {
+ 	# Если APN неизвестен - отправляем без него, модем возьмёт текущий
+ 	# PDP-контекст.
+ 	if [ -n "$apn" ]; then
+-		printf 'AT+ZECMCALL=1,%s\n' "$apn" > "$script"
++		printf 'AT+ZECMCALL=1,%s\r' "$apn" > "$script"
+ 	else
+-		printf 'AT+ZECMCALL=1\n' > "$script"
++		printf 'AT+ZECMCALL=1\r' > "$script"
+ 	fi
+ 	# Ошибку игнорируем: на модемах без ECM-поддержки вызов не нужен,
+ 	# а AT+CGDCONT уже отработал.
+ 	set_port_speed "$port"
+-	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
++	timeout "$ECM_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "ECM data call (AT+ZECMCALL=1${apn:+,}$apn) отправлен модему"
+ }
+-- 
+2.47.3
+

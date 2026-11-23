@@ -1,0 +1,84 @@
+From 9365ee4cdd374066d055bab04fc9369b057285a2 Mon Sep 17 00:00:00 2001
+From: v <v@local>
+Date: Mon, 23 Nov 2026 16:38:15 +0000
+Subject: [PATCH] =?UTF-8?q?modeminfo:=20=D1=87=D0=B8=D0=BD=D0=B8=D0=BC=20?=
+ =?UTF-8?q?=D0=B2=D0=B5=D1=82=D0=BA=D1=83=20qmi=5Fmode,=20=D1=83=D0=B1?=
+ =?UTF-8?q?=D0=B8=D1=80=D0=B0=D0=B5=D0=BC=20kill=20-9=20=D0=B8=20=D0=B2?=
+ =?UTF-8?q?=D0=B5=D1=88=D0=B0=D0=B5=D0=BC=20timeout=20=D0=BD=D0=B0=20atino?=
+ =?UTF-8?q?ut?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ package/modeminfo/root/usr/share/modeminfo/modeminfo   | 10 ++--------
+ .../root/usr/share/modeminfo/scripts/modeminfo         |  5 +++--
+ 2 files changed, 5 insertions(+), 10 deletions(-)
+
+diff --git a/package/modeminfo/root/usr/share/modeminfo/modeminfo b/package/modeminfo/root/usr/share/modeminfo/modeminfo
+index 0dd9d7e..774cf7b 100755
+--- a/package/modeminfo/root/usr/share/modeminfo/modeminfo
++++ b/package/modeminfo/root/usr/share/modeminfo/modeminfo
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ 
+-trap 'cleanup >/dev/null 2>&1; exit 0' INT TERM
++trap 'exit 0' INT TERM
+ # Разделы config modeminfo. LuCI (вкладка "Настройка") создаёт ИМЕНОВАННЫЙ
+ # раздел - "config modeminfo 'modeminfo'". Прежний разбор брал номер
+ # индекса из вывода "uci show" и находил только анонимные разделы
+@@ -16,11 +16,6 @@ get_vars(){
+ }
+ 
+ 
+-cleanup(){
+-	CURRENT_PID=$$
+-	ps ww | grep "/bin/sh.*modeminfo" | grep -v grep | awk '{print $1}' | grep -v "^$CURRENT_PID\$" | xargs -r kill -9 >/dev/null 2>&1
+-	ps ww | grep "atinout" | grep -v grep | awk '{print $1}' | xargs -r kill -9 >/dev/null 2>&1
+-}
+ 
+ 
+ function json_status() {
+@@ -90,7 +85,7 @@ for s in $SECTIONS; do
+ 	i=$((i + 1))
+ 	m=$i
+ 	get_vars
+-	if [ $qmi_mode ]; then
++	if [ "$qmi_mode" = "1" ]; then
+ 		if [ "$s" ]; then
+ 			/usr/bin/qminfo $device_qmi --json --${qmi_trap} 
+ 		fi
+@@ -122,7 +117,6 @@ echo "]}"
+ 
+ DELAY=$(uci get modeminfo.@general[0].delay >/dev/null 2>&1)
+ 
+-kill -9 $(pgrep atinout) >/dev/null 2>&1
+ [ $DELAY ] || DELAY=0 && sleep $DELAY
+ 
+ exit 0
+diff --git a/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo b/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
+index 41ae160..1aed2c8 100644
+--- a/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
++++ b/package/modeminfo/root/usr/share/modeminfo/scripts/modeminfo
+@@ -16,7 +16,8 @@ function get_device_info() {
+ 	# Модем не отвечает на AT, пока порт не переведён в raw-режим
+ 	# без эха (иначе ответы не приходят вовсе).
+ 	stty -F "$DEVPORT" 115200 raw -echo 2>/dev/null
+-	O=$(atinout $GSCRIPT $DEVPORT - |grep -v '^$')
++	# обмен с модемом может виснуть на молчащем порту - ограничиваем время
++	O=$(timeout 90 atinout $GSCRIPT "$DEVPORT" - | grep -v '^$')
+ }
+ 
+ function get_port() {
+@@ -33,7 +34,7 @@ function get_port() {
+ 	# Модем не отвечает на AT, пока порт не переведён в raw-режим
+ 	# без эха (иначе ответы не приходят вовсе).
+ 	stty -F "$DEVPORT" 115200 raw -echo 2>/dev/null
+-	O=$(atinout $GSCRIPT $DEVPORT - |grep -v '^$')
++	O=$(timeout 90 atinout $GSCRIPT "$DEVPORT" - | grep -v '^$')
+ }
+ 
+ function modem_family() {
+-- 
+2.47.3
+
