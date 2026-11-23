@@ -10,6 +10,7 @@ BASE="$(cd "$(dirname "$0")" && pwd)"
 # Корень дерева OpenWrt с применёнными патчами.
 # По умолчанию — рабочее дерево, где патчи уже применены.
 OW="${OW_TEST:-${OPENWRT_TREE:-/workspace/ow-test}}"
+	[ -d "$OW" ] || { echo "FAIL: нет дерева OpenWrt $OW (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 INIT="$OW/package/pejir-lte-base/root/etc/init.d/47-pejir-lte"
 
 WORK="$(mktemp -d)"

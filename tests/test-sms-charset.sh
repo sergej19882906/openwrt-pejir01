@@ -47,9 +47,12 @@
 set -u
 
 if [ -n "${OW_TEST:-}" ]; then
+	# OW_TEST задан (в CI это всегда так): отсутствие дерева - ошибка.
 	DEFAULT_TREE="$OW_TEST"
+	[ -d "$DEFAULT_TREE" ] || { echo "FAIL: нет $DEFAULT_TREE"; exit 1; }
 else
 	DEFAULT_TREE="/workspace/ow-test"
+	[ -d "$DEFAULT_TREE" ] || { echo "FAIL: нет $DEFAULT_TREE (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 fi
 TREE="${PEJIR_TREE:-$DEFAULT_TREE}"
 INIT="$TREE/package/pejir-sms/root/etc/init.d/40-pejir-sms"

@@ -6,10 +6,13 @@ set -u
 
 # Скрипт ищем в применённом дереве OpenWrt (в CI переменная OW_TEST
 # указывает на него), иначе - в локальном дереве.
-if [ -n "${OW_TEST:-}" ] && [ -f "$OW_TEST/package/pejir-extroot/files/pejir-extroot" ]; then
+if [ -n "${OW_TEST:-}" ]; then
+	# OW_TEST задан (в CI это всегда так): отсутствие пакета - ошибка.
 	DEFAULT_SCRIPT="$OW_TEST/package/pejir-extroot/files/pejir-extroot"
+	[ -f "$DEFAULT_SCRIPT" ] || { echo "FAIL: нет $DEFAULT_SCRIPT"; exit 1; }
 else
 	DEFAULT_SCRIPT="/workspace/ow-test/package/pejir-extroot/files/pejir-extroot"
+	[ -f "$DEFAULT_SCRIPT" ] || { echo "FAIL: нет $DEFAULT_SCRIPT (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 fi
 SCRIPT="${1:-$DEFAULT_SCRIPT}"
 FAILED=0

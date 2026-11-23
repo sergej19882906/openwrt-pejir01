@@ -14,6 +14,7 @@ set -e
 
 BASE="$(cd "$(dirname "$0")" && pwd)"
 OW="${OW_TEST:-${OPENWRT_TREE:-/workspace/ow-test}}"
+	[ -d "$OW" ] || { echo "FAIL: нет дерева OpenWrt $OW (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 
 fail() { echo "FAIL: $1"; exit 1; }
 

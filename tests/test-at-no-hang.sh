@@ -18,6 +18,7 @@ set -u
 # (переменная выставляется workflow), локально - рабочее дерево.
 # Без этого тест искал бы файлы по жёстко зашитому пути и падал в CI.
 OW="${OW_TEST:-${OPENWRT_TREE:-/workspace/ow-test}}"
+	[ -d "$OW" ] || { echo "FAIL: нет дерева OpenWrt $OW (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 LTE="${LTE:-$OW/package/pejir-lte-base/root/etc/init.d/47-pejir-lte}"
 SMS="${SMS:-$OW/package/pejir-sms/root/etc/init.d/40-pejir-sms}"
 MDMAT="${MDMAT:-$OW/package/pejir-lte-base/root/usr/bin/mdm-at}"

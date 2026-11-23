@@ -13,6 +13,7 @@ set -u
 
 BASE="$(cd "$(dirname "$0")" && pwd)"
 OW="${OW_TEST:-${OPENWRT_TREE:-/workspace/ow-test}}"
+	[ -d "$OW" ] || { echo "FAIL: нет дерева OpenWrt $OW (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 EXTROOT="$OW/package/pejir-extroot/files/pejir-extroot"
 AUTOINIT="$OW/package/pejir-autosetup/files/pejir-autosetup.init"
 ZIGBEE="$OW/package/pejir-autosetup/files/zigbee-setup.sh"

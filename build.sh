@@ -420,6 +420,8 @@ CONFIG_PACKAGE_ddns-scripts=y
 CONFIG_PACKAGE_ddns-scripts-services=y
 CONFIG_PACKAGE_luci-app-ddns=y
 CONFIG_PACKAGE_dropbear=y
+# ccache: ускоряет пересборку в CI (кеш-путь openwrt/.ccache в build.yml)
+CONFIG_CCACHE=y
 EOF
 make defconfig
 

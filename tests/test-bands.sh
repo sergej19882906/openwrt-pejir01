@@ -27,6 +27,8 @@ if [ -n "${OW_TEST:-}" ]; then
 else
 	DEFAULT_PKG="/workspace/ow-test/package/pejir-lte-base"
 	DEFAULT_LUCI_PKG="/workspace/ow-test/package/luci-app-perenio"
+	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
+	[ -d "$DEFAULT_LUCI_PKG" ] || { echo "FAIL: нет $DEFAULT_LUCI_PKG (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 fi
 LTE_PKG="${PEJIR_PKG:-$DEFAULT_PKG}"
 LUCI_PKG="${PEJIR_LUCI_PKG:-$DEFAULT_LUCI_PKG}"

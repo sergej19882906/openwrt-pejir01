@@ -20,6 +20,7 @@ if [ -n "${OW_TEST:-}" ]; then
 	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG"; exit 1; }
 else
 	DEFAULT_PKG="/workspace/ow-test/package/luci-app-perenio"
+	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 fi
 PKG="${PEJIR_PKG:-$DEFAULT_PKG}"
 HELPER="$PKG/root/usr/libexec/pejir-ussd"

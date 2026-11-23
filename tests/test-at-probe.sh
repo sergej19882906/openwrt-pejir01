@@ -21,6 +21,7 @@
 set -u
 
 OW="${OW_TEST:-${OPENWRT_TREE:-/workspace/ow-test}}"
+	[ -d "$OW" ] || { echo "FAIL: нет дерева OpenWrt $OW (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 LTE="${LTE:-$OW/package/pejir-lte-base/root/etc/init.d/47-pejir-lte}"
 SMS="${SMS:-$OW/package/pejir-sms/root/etc/init.d/40-pejir-sms}"
 

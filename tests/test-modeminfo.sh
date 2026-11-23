@@ -25,6 +25,7 @@ if [ -n "${OW_TEST:-}" ]; then
 	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG"; exit 1; }
 else
 	DEFAULT_PKG="/workspace/ow-test/package/modeminfo"
+	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 fi
 PKG="${PEJIR_PKG:-$DEFAULT_PKG}"
 DEFAULTS="$PKG/root/etc/uci-defaults/60-perenio-modeminfo"
@@ -49,10 +50,11 @@ else
 	fail "uci-defaults: нет секции modeminfo.@modeminfo[0]"
 fi
 
-if grep -q "device='/dev/ttyUSB2'" "$DEFAULTS"; then
-	ok "uci-defaults: порт по умолчанию /dev/ttyUSB2"
+if grep -q 'head -n 1 /etc/pejir/at-port' "$DEFAULTS" && \
+   grep -q 'device="\$PORT"' "$DEFAULTS"; then
+	ok "uci-defaults: приоритет /etc/pejir/at-port, fallback /dev/ttyUSB2"
 else
-	fail "uci-defaults: нет порта по умолчанию /dev/ttyUSB2"
+	fail "uci-defaults: нет чтения /etc/pejir/at-port (портом по умолчанию)"
 fi
 
 # Мок uci: проверяем, что скрипт действительно создаёт секцию и НЕ трогает

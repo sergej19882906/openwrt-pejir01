@@ -18,6 +18,7 @@ if [ -n "${OW_TEST:-}" ]; then
 	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG"; exit 1; }
 else
 	DEFAULT_PKG="/workspace/ow-test/package/pejir-ota"
+	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 fi
 PKG="${PEJIR_PKG:-$DEFAULT_PKG}"
 ACL="$PKG/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json"

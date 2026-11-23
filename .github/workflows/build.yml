@@ -87,17 +87,13 @@ jobs:
             ${{ env.WORKDIR }}/openwrt/dl
             ${{ env.WORKDIR }}/openwrt/build_dir
             ${{ env.WORKDIR }}/openwrt/staging_dir
+            ${{ env.WORKDIR }}/openwrt/.ccache
           key: pejir-${{ hashFiles('patches/*.patch', 'build.sh') }}
-          restore-keys: |
-            pejir-
 
       - name: Build
         run: |
           set -o pipefail
-          # build.sh в репозитории не имеет бита исполнения, поэтому
-          # запускаем его через bash (иначе exit 126: Permission denied).
-          chmod +x build.sh
-          bash build.sh 2>&1 | tee build.log
+          ./build.sh 2>&1 | tee build.log
 
       # Тесты репозитория гоняем на ТОМ дереве, из которого собран образ
       # (патчи уже применены build.sh). Если патч ломает логику uci или
@@ -118,6 +114,7 @@ jobs:
           sh tests/test-modeminfo.sh
           sh tests/test-lte-terminators.sh
           sh tests/test-atinout-wrapper.sh
+          sh tests/test-hygiene.sh
           sh tests/test-ota-acl.sh
           sh tests/test-sms-outbox.sh
           sh tests/test-ussd.sh
