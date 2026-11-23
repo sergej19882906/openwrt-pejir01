@@ -336,6 +336,10 @@ CONFIG_PACKAGE_luci-proto-amneziawg=y
 CONFIG_PACKAGE_pejir-lte-base=y
 CONFIG_PACKAGE_smstools3=y
 CONFIG_PACKAGE_pejir-sms=y
+# Восстановление файлов пакетов из /rom при загрузке: верхний слой
+# overlay переживает sysupgrade, и протухшие копии файлов пакетов
+# перекрывают свежие файлы нового образа.
+CONFIG_PACKAGE_pejir-sync=y
 CONFIG_PACKAGE_pejir-homed-feed=y
 # stock migration: Wi-Fi SSID/keys, country, root password from idata
 CONFIG_PACKAGE_pejir-idata=y

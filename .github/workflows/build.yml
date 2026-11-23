@@ -123,6 +123,7 @@ jobs:
           sh tests/test-diag.sh
           sh tests/test-diag-js.sh
           sh tests/test-sms-charset.sh
+          sh tests/test-ovl-sync.sh
           sh tests/test-led.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом

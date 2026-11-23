@@ -8,8 +8,25 @@
 > Разделение прошивок A1/Perenio больше не требуется — один образ на оба бренда.
 > **Калибровка Wi-Fi и MAC не затрагиваются** (раздел `factory`/`idata` — read-only).
 
-> 🔖 **Актуальный релиз — `25.12.6-pejir01.48`**: гигиена безопасности и сборки (SMS-обёртки без wildcard-грантов, ccache в CI, строгие тесты). Подробности — [docs/CHANGELOG.md](docs/CHANGELOG.md).
-> ![release](https://img.shields.io/badge/release-25.12.6--pejir01.48-blue)
+> 🔖 **Актуальный релиз — `25.12.6-pejir01.49`**: самовосстановление файлов пакетов из `/rom` при загрузке — протухшие копии в overlay больше не перекрывают свежие файлы образа. Подробности — [docs/CHANGELOG.md](docs/CHANGELOG.md).
+> ![release](https://img.shields.io/badge/release-25.12.6--pejir01.49-blue)
+
+
+**Релиз `25.12.6-pejir01.49`** (патч 0080): добавлен пакет `pejir-sync`
+со службой `41-pejir-sync` (`START=90`, раньше `40-pejir-sms` на
+`START=92`). При `sysupgrade` верхний слой overlay **не пересоздаётся**,
+поэтому файлы, однажды попавшие в `/overlay/upper`, переживают прошивку.
+Ранние горячие фиксы (`apply_fixes.sh`, `led_hotfix.sh`,
+`battery_hotfix.sh`) клали туда целые каталоги с файлами пакетов —
+версии `.45`. После обновления образа эти протухшие копии перекрывали
+свежие файлы из squashfs: отработал **старый** `/etc/init.d/40-pejir-sms`
+без `update_charset_options()` (в `/etc/smsd.conf` не появлялись опции
+`alphabet = utf`, и русский текст в исходящих SMS снова ломался), а
+merged-ACL терял грант `exec` на `/rom/usr/libexec/perenio-diag`.
+Теперь служба сверяет файлы наших пакетов с `/rom` — squashfs текущего
+образа — и возвращает свежую версию, если merged-копия протухшая.
+Пользовательские настройки в `/etc/config` и `/etc/uci-defaults` не
+трогаются.
 
 
 **Релиз `25.12.6-pejir01.34`**: тема **Argon** (остальные

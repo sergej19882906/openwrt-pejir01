@@ -1,0 +1,300 @@
+From 0bef2990fb3fe8ce1de65ef828d07c43e91c0fbc Mon Sep 17 00:00:00 2001
+From: pejir <pejir@local>
+Date: Mon, 23 Nov 2026 19:53:37 +0000
+Subject: [PATCH] =?UTF-8?q?pejir-sync:=20=D0=B2=D0=BE=D1=81=D1=81=D1=82?=
+ =?UTF-8?q?=D0=B0=D0=BD=D0=BE=D0=B2=D0=BB=D0=B5=D0=BD=D0=B8=D0=B5=20=D1=84?=
+ =?UTF-8?q?=D0=B0=D0=B9=D0=BB=D0=BE=D0=B2=20=D0=BF=D0=B0=D0=BA=D0=B5=D1=82?=
+ =?UTF-8?q?=D0=BE=D0=B2=20=D0=B8=D0=B7=20/rom=20=D0=BF=D1=80=D0=B8=20?=
+ =?UTF-8?q?=D0=B7=D0=B0=D0=B3=D1=80=D1=83=D0=B7=D0=BA=D0=B5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+При sysupgrade верхний слой overlay не пересоздаётся (патч 0037), поэтому
+файлы, однажды попавшие в /overlay/upper, переживают прошивку. Ранние
+горячие фиксы (apply_fixes.sh, led_hotfix.sh, battery_hotfix.sh) клали
+туда целые каталоги с файлами пакетов - версии .45. После обновления
+образа протухшие копии перекрывали свежие файлы из squashfs:
+
+  * /etc/init.d/40-pejir-sms (лежит в /etc, значит попадал в бэкап
+    sysupgrade) - отработал старый write_conf() без
+    update_charset_options(), в /etc/smsd.conf не появились опции
+    "alphabet = utf", и русский текст в исходящих SMS снова ломался;
+  * /usr/share/rpcd/acl.d/luci-app-perenio.json - остался в upper от
+    старого led_hotfix.sh, merged-ACL без гранта exec на
+    /rom/usr/libexec/perenio-diag.
+
+Новый пакет pejir-sync со службой 41-pejir-sync (START=90, раньше
+40-pejir-sms на START=92) сверяет файлы наших пакетов с /rom - squashfs
+текущего образа - и возвращает свежую версию, если merged-копия
+протухшая. Файлы в /etc/config и /etc/uci-defaults не трогаются:
+там пользовательские настройки. Файл, удалённый из образа, наоборот
+вычищается из верхнего слоя.
+---
+ package/pejir-sync/Makefile                   |  47 +++++
+ .../pejir-sync/root/etc/init.d/41-pejir-sync  | 180 ++++++++++++++++++
+ .../root/etc/uci-defaults/80-pejir-sync       |  14 ++
+ 3 files changed, 241 insertions(+)
+ create mode 100644 package/pejir-sync/Makefile
+ create mode 100755 package/pejir-sync/root/etc/init.d/41-pejir-sync
+ create mode 100755 package/pejir-sync/root/etc/uci-defaults/80-pejir-sync
+
+diff --git a/package/pejir-sync/Makefile b/package/pejir-sync/Makefile
+new file mode 100644
+index 0000000..49faa54
+--- /dev/null
++++ b/package/pejir-sync/Makefile
+@@ -0,0 +1,47 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-sync
++PKG_VERSION:=1.0.0
++PKG_RELEASE:=1
++
++PKG_LICENSE:=Apache-2.0
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-sync
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=PEJIR01: restore package files from /rom at boot
++  DEPENDS:=+pejir-sms
++endef
++
++define Package/pejir-sync/description
++  Restores files of the PEJIR01 packages from /rom (the squashfs of the
++  currently running image) at every boot.
++
++  The overlay upper layer is not recreated by sysupgrade, so files that
++  were once copied into it survive a firmware update. Those stale copies
++  shadow the fresh files of the new image: an outdated
++  /etc/init.d/40-pejir-sms writes smsd.conf without the UTF-8 charset
++  options, and an outdated ACL loses the /rom diagnostic grant.
++
++  This service compares the files of our packages with /rom and restores
++  the fresh ones where the merged copy is stale. User configuration in
++  /etc/config and /etc/uci-defaults is never touched.
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-sync/install
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/41-pejir-sync $(1)/etc/init.d/41-pejir-sync
++	$(INSTALL_DIR) $(1)/etc/uci-defaults
++	$(INSTALL_BIN) ./root/etc/uci-defaults/80-pejir-sync \
++		$(1)/etc/uci-defaults/80-pejir-sync
++endef
++
++$(eval $(call BuildPackage,pejir-sync))
+diff --git a/package/pejir-sync/root/etc/init.d/41-pejir-sync b/package/pejir-sync/root/etc/init.d/41-pejir-sync
+new file mode 100755
+index 0000000..810437b
+--- /dev/null
++++ b/package/pejir-sync/root/etc/init.d/41-pejir-sync
+@@ -0,0 +1,180 @@
++#!/bin/sh /etc/rc.common
++# Самовосстановление файлов пакетов из /rom.
++#
++# Зачем это нужно.
++#
++# При sysupgrade верхний слой overlay (rootfs_data) НЕ пересоздаётся
++# (патч 0037): файлы, которые хоть раз попали в /overlay/upper, переживают
++# прошивку. Ранние горячие фиксы (apply_fixes.sh, led_hotfix.sh,
++# battery_hotfix.sh) копировали туда целые каталоги с файлами наших
++# пакетов - версии .45. После обновления образа эти протухшие копии
++# перекрывают свежие файлы из squashfs, и merged-файлы пакетов остаются
++# старыми:
++#
++#   * /etc/init.d/40-pejir-sms лежит в /etc, значит попадал в бэкап
++#     sysupgrade и восстанавливался оттуда. Отработал СТАРЫЙ write_conf()
++#     без update_charset_options() - в /etc/smsd.conf не появились
++#     опции "alphabet = utf", и русский текст в исходящих SMS снова
++#     ломался ("Cannot convert N character to GSM").
++#   * /usr/share/rpcd/acl.d/luci-app-perenio.json лежит вне /etc, в бэкап
++#     не попадал, но остался в upper от старого led_hotfix.sh - merged-ACL
++#     без гранта exec на /rom/usr/libexec/perenio-diag.
++#
++# Что делает сервис.
++#
++# /rom - это squashfs ТЕКУЩЕГО образа (его монтирует procd при старте),
++# то есть эталон свежих версий всех файлов пакетов. Сервис сверяет
++# файлы наших пакетов с /rom и, если в merged лежит протухшая копия,
++# возвращает свежую версию из образа - и в верхний слой, и в merged.
++#
++# Важно: файлы в /etc/config и /etc/uci-defaults НЕ трогаем - там
++# пользовательские настройки, которые не должны затираться. Файл,
++# которого в новом образе уже нет (пакет его удалил), наоборот -
++# вычищается из верхнего слоя, иначе он продолжит перекрывать образ.
++#
++# Порядок запуска: START=90 - раньше 40-pejir-sms (START=92). Иначе
++# smsd-конфиг успел бы записаться старым скриптом до восстановления.
++
++START=90
++STOP=0
++
++ROM_DIR="${PEJIR_SYNC_ROM_DIR:-/rom}"
++UPPER_DIR="${PEJIR_SYNC_UPPER_DIR:-}"
++ROOT_DIR="${PEJIR_SYNC_ROOT_DIR:-}"
++PKG_DIR="${PEJIR_SYNC_PKG_DIR:-/lib/apk/packages}"
++
++# Наши пакеты: только их файлы синхронизируем.
++PEJIR_SYNC_PKGS="${PEJIR_SYNC_PKGS:-pejir-sms luci-app-perenio luci-app-atinout pejir-lte-base pejir-ota}"
++
++# Файлы, которые нельзя затирать: пользовательские настройки.
++is_protected() {
++	case "$1" in
++	/etc/config/*|/etc/uci-defaults/*|/etc/sysupgrade.conf) return 0 ;;
++	esac
++	return 1
++}
++
++# Верхний слой overlay: ищем в /proc/mounts (на устройстве это rootfs_data).
++find_upper_dir() {
++	local m dir
++
++	[ -n "$UPPER_DIR" ] && { echo "$UPPER_DIR"; return 0; }
++
++	# mount с типом overlay: в опциях есть upperdir=...
++	m="$(grep -E '[[:space:]]overlay[[:space:]].*upperdir=' /proc/mounts 2>/dev/null | head -1)"
++	if [ -n "$m" ]; then
++		dir="$(echo "$m" | sed -n 's/.*upperdir=\([^,]*\).*/\1/p')"
++		[ -n "$dir" ] && { echo "$dir"; return 0; }
++	fi
++
++	# Запасной вариант - стандартные пути.
++	for dir in /overlay/upper /overlay/root/upper; do
++		[ -d "$dir" ] && { echo "$dir"; return 0; }
++	done
++
++	return 1
++}
++
++# Режим файла в образе - чтобы восстановленный файл имел те же права.
++rom_mode() {
++	local f="$1" mode
++
++	mode="$(stat -c %a "$ROM_DIR$f" 2>/dev/null)"
++	[ -n "$mode" ] || mode=644
++	echo "$mode"
++}
++
++# Записать файл из образа в верхний слой и в merged.
++#
++# Запись идёт в $UPPER (тогда он виден в merged сам), а если верхнего
++# слоя нет - прямо в merged. Права выставляем по образу: для
++# исполняемых файлов нужен бит +x, иначе rpcd не сможет запустить
++# helper ("Permission denied", код 127).
++restore_file() {
++	local rel="$1" upper="$2" mode
++
++	# Файл в merged совпадает с образом - он свежий и лежит в нижнем
++	# слое (squashfs). Копировать его в верхний слой НЕЛЬЗЯ: такая
++	# копия пережила бы следующий sysupgrade и снова перекрыла бы файл
++	# нового образа - ровно тот дефект, который мы чиним.
++	if [ -e "$ROOT_DIR$rel" ] && cmp -s "$ROM_DIR$rel" "$ROOT_DIR$rel"; then
++		return 0
++	fi
++
++	mode="$(rom_mode "$rel")"
++
++	# В merged файл отличается от образа (протухшая копия в верхнем
++	# слое) или его там нет вовсе. Записываем свежую версию в верхний
++	# слой - там она и переживёт перезагрузку.
++	if [ -n "$upper" ]; then
++		mkdir -p "$upper$(dirname "$rel")" 2>/dev/null
++		cat "$ROM_DIR$rel" > "$upper$rel" 2>/dev/null || return 1
++		chmod "$mode" "$upper$rel" 2>/dev/null
++	fi
++
++	# На случай, если верхнего слоя нет или запись в него не удалась -
++	# правим и сам merged-путь.
++	if [ ! -e "$ROOT_DIR$rel" ] || ! cmp -s "$ROM_DIR$rel" "$ROOT_DIR$rel"; then
++		mkdir -p "$ROOT_DIR$(dirname "$rel")" 2>/dev/null
++		cat "$ROM_DIR$rel" > "$ROOT_DIR$rel" 2>/dev/null || return 1
++		chmod "$mode" "$ROOT_DIR$rel" 2>/dev/null
++	fi
++
++	return 0
++}
++
++# Файл есть в upper, но в образе его уже нет - вычищаем.
++remove_stale() {
++	local rel="$1" upper="$2"
++
++	[ -n "$upper" ] || return 0
++	[ -e "$upper$rel" ] || return 0
++	rm -f "$upper$rel" 2>/dev/null
++}
++
++sync_package() {
++	local pkg="$1" list="$PKG_DIR/$pkg.list" rel
++
++	[ -f "$list" ] || return 0
++
++	while IFS= read -r rel; do
++		case "$rel" in
++		/*) ;;
++		*) continue ;;
++		esac
++
++		is_protected "$rel" && continue
++
++		# В списке пакета могут быть каталоги и не-регулярные файлы -
++		# их нечего копировать.
++		[ -f "$ROM_DIR$rel" ] || {
++			remove_stale "$rel" "$upper"
++			continue
++		}
++
++		if [ -e "$ROM_DIR$rel" ]; then
++			restore_file "$rel" "$upper"
++		else
++			remove_stale "$rel" "$upper"
++		fi
++	done < "$list"
++}
++
++start_service() {
++	local upper
++
++	# Без /rom сверять не с чем - это не squashfs-система.
++	[ -d "$ROM_DIR" ] || return 0
++
++	upper="$(find_upper_dir)"
++
++	for pkg in $PEJIR_SYNC_PKGS; do
++		sync_package "$pkg"
++	done
++
++	return 0
++}
++
++stop_service() {
++	return 0
++}
+diff --git a/package/pejir-sync/root/etc/uci-defaults/80-pejir-sync b/package/pejir-sync/root/etc/uci-defaults/80-pejir-sync
+new file mode 100755
+index 0000000..7a9e93d
+--- /dev/null
++++ b/package/pejir-sync/root/etc/uci-defaults/80-pejir-sync
+@@ -0,0 +1,14 @@
++#!/bin/sh
++
++# Включаем сервис восстановления файлов пакетов из /rom.
++#
++# Симлинк в /etc/rc.d создаёт сам rc.common при установке пакета, но
++# только для скриптов, уже перечисленных в /etc/rc.d. Для надёжности
++# включаем сервис явно - он должен стартовать ДО 40-pejir-sms (START=92),
++# иначе конфиг smsd успеет записаться старым init-скриптом.
++
++[ -x /etc/init.d/41-pejir-sync ] || exit 0
++
++/etc/init.d/41-pejir-sync enable >/dev/null 2>&1
++
++exit 0
