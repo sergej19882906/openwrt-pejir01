@@ -586,7 +586,12 @@ if [ -n "$SU" ]; then
                  www/luci-static/resources/view/perenio/diag.js \
                  usr/share/luci/menu.d/luci-app-perenio.json \
                  usr/share/rpcd/acl.d/luci-app-perenio.json \
-                 usr/libexec/perenio-diag; do
+                 usr/libexec/perenio-diag \
+                 usr/libexec/pejir-ussd \
+                 usr/libexec/pejir-led \
+                 etc/init.d/pejir-led \
+                 etc/init.d/41-pejir-sync \
+                 etc/uci-defaults/80-pejir-sync; do
           echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || PERENIO_MISSING="$PERENIO_MISSING $f"
         done
         if [ -n "$PERENIO_MISSING" ]; then
