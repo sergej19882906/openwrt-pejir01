@@ -1,0 +1,133 @@
+From 010136387d66f0dc32cba98a4fbf7557db6439af Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 03:15:10 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=94=D0=B8=D0=B0=D0=B3=D0=BD=D0=BE=D1=81?=
+ =?UTF-8?q?=D1=82=D0=B8=D0=BA=D0=B0:=20=D0=B7=D0=B0=D0=BF=D0=B0=D1=81?=
+ =?UTF-8?q?=D0=BD=D0=BE=D0=B9=20=D0=BF=D1=83=D1=82=D1=8C=20/rom,=20=D0=B5?=
+ =?UTF-8?q?=D1=81=D0=BB=D0=B8=20helper=20=D0=B2=20overlay=20=D0=BD=D0=B5?=
+ =?UTF-8?q?=20=D0=B7=D0=B0=D0=BF=D1=83=D1=81=D0=BA=D0=B0=D0=B5=D1=82=D1=81?=
+ =?UTF-8?q?=D1=8F?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+На устройстве корневая ФС - overlay, верхний слой лежит на флешке
+extroot. Если файл helper'а оказался в верхнем слое (например, там
+осталась копия от горячего фикса, скачанная wget'ом), exec отдаёт
+EACCES, а rpcd - code 127. Страница показывала "(empty)", хотя
+helper на месте и имел права 0755.
+
+Копия в /rom лежит в squashfs образа, overlay её не перекрывает, и она
+всегда исполняема. Страница теперь при неудаче основного пути
+обращается к /rom/usr/libexec/perenio-diag, а если и он не отработал -
+показывает ошибку вместо пустоты. В ACL добавлен грант exec на /rom.
+---
+ .../resources/view/perenio/diag.js            | 61 +++++++++++++++----
+ .../po/ru/luci-app-perenio.po                 |  2 +
+ .../share/rpcd/acl.d/luci-app-perenio.json    |  3 +
+ 3 files changed, 55 insertions(+), 11 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+index 5997383..8e2a4c4 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+@@ -17,19 +17,58 @@
+    проблемы: аргументов нет, путь один и известный. */
+ var DIAG = '/usr/libexec/perenio-diag';
+ 
++/* Запасной путь - неизменяемая копия образа в /rom.
++   На устройстве корневая ФС - overlay: верхний слой лежит на флешке
++   extroot. Если он смонтирован с noexec (или в верхнем слое осталась
++   "висящая" копия файла от горячего фикса), exec файла из объединённого
++   пути возвращает EACCES, а rpcd отдаёт code 127 - страница показывала
++   "(empty)", хотя helper на месте. Копия в /rom лежит в squashfs образа,
++   который не перекрывается overlay, и всегда исполняема. */
++var DIAG_ROM = '/rom/usr/libexec/perenio-diag';
++
++/* Запуск helper'а диагностики.
++   fs.exec в LuCI 25.12 возвращает объект {code, stdout, stderr}.
++   Считаем запуск удачным, только если код 0 и вывод непустой: пустой
++   stdout означает, что helper отработал вхолостую, и тогда есть смысл
++   попробовать запасной путь. */
++function runDiag(path) {
++	return fs.exec(path, []).then(function(r) {
++		var out = (r && r.stdout ? r.stdout : '');
++		var err = (r && r.stderr ? r.stderr : '');
++		var code = (r && typeof r.code !== 'undefined') ? r.code : 0;
++
++		if (code === 0 && out.length > 0)
++			return { ok: true, text: out + (err ? '\n' + err : '') };
++
++		return {
++			ok: false,
++			text: '',
++			err: (code !== 0 ? 'exit code ' + code : '') +
++				(err ? (code !== 0 ? ': ' : '') + err : (code !== 0 ? '' : 'empty output'))
++		};
++	}).catch(function(e) {
++		return {
++			ok: false,
++			text: '',
++			err: (e && e.message ? e.message : String(e || ''))
++		};
++	});
++}
++
+ return view.extend({
+ 	load: function() {
+-		/* fs.exec в LuCI 25.12 возвращает объект {code, stdout, stderr},
+-		 * а не строку. Если принять его за текст, страница покажет
+-		 * "[object Object]" вместо вывода диагностики. */
+-		return fs.exec(DIAG, []).then(function(r) {
+-			var out = (r && r.stdout ? r.stdout : '');
+-			var err = (r && r.stderr ? r.stderr : '');
+-
+-			return [ out + (err ? '\n' + err : '') ];
+-		}).catch(function(e) {
+-			return [ _('Failed to run diagnostics: ') +
+-				(e && e.message ? e.message : String(e || '')) ];
++		return runDiag(DIAG).then(function(r) {
++			if (r.ok)
++				return [ r.text ];
++
++			/* Основной путь не сработал - пробуем /rom. */
++			return runDiag(DIAG_ROM).then(function(r2) {
++				if (r2.ok)
++					return [ r2.text ];
++
++				return [ _('Failed to run diagnostics: ') +
++					(r2.err ? r2.err : r.err ? r.err : _('unknown error')) ];
++			});
+ 		});
+ 	},
+ 
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 6b3e3aa..f6b17a7 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -34,6 +34,8 @@ msgstr "Данные STM32 через mcud: mcu getvolt / getsys / getver. Со
+ "питания (pwroff/pr/paerr) видны в logread."
+ msgid "Failed to run diagnostics: "
+ msgstr "Не удалось выполнить диагностику: "
++msgid "unknown error"
++msgstr "неизвестная ошибка"
+ msgid "USB, LTE and battery diagnostics (PEJIR01)"
+ msgstr "Диагностика USB, LTE и батареи (PEJIR01)"
+ msgid "Status summary: USB controller and connected devices, modem, LTE "
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 636e8eb..1b4ade4 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -76,6 +76,9 @@
+ 				"/usr/libexec/perenio-diag": [
+ 					"exec"
+ 				],
++				"/rom/usr/libexec/perenio-diag": [
++					"exec"
++				],
+ 				"/usr/libexec/pejir-ussd": [
+ 					"exec"
+ 				],
+-- 
+2.39.5
+

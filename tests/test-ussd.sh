@@ -164,7 +164,7 @@ fi
 # возвращает "unable to perform all requested operations", хотя порт
 # рабочий). Helper обязан продолжить обмен и вернуть ответ оператора.
 if python3 - "$HELPER" <<'USSDCASE'
-import os, pty, subprocess, sys, threading
+import os, pty, subprocess, sys, tempfile, threading
 
 helper = sys.argv[1]
 master, slave = pty.openpty()
@@ -192,9 +192,10 @@ def modem():
 t = threading.Thread(target=modem, daemon=True)
 t.start()
 
-# mock stty: всегда возвращает ошибку (как на живом устройстве)
-mockbin = os.path.join(os.path.dirname(helper), '.mockbin')
-os.makedirs(mockbin, exist_ok=True)
+# mock stty: всегда возвращает ошибку (как на живом устройстве).
+# Мок создаётся во ВРЕМЕННОМ каталоге: раньше он клался рядом с helper'ом
+# (в дереве пакета), из-за чего попадал в git и в патчи.
+mockbin = tempfile.mkdtemp(prefix='pejir-mockbin-')
 with open(os.path.join(mockbin, 'stty'), 'w') as f:
 	f.write('#!/bin/sh\necho "stty: unable to perform all requested operations" >&2\nexit 1\n')
 os.chmod(os.path.join(mockbin, 'stty'), 0o755)
@@ -219,6 +220,15 @@ then
 	:
 else
 	fail "helper: падает, когда stty возвращает ошибку"
+fi
+
+# --- 6) чистота дерева пакета ----------------------------------------------
+# Моки тестов не должны оставаться в дереве пакета: иначе они попадают
+# в git-коммиты серии патчей (случилось с .mockbin/stty).
+if [ -d "$PKG/root/usr/libexec/.mockbin" ]; then
+	fail "в дереве пакета остался тестовый каталог .mockbin - он попадёт в патчи"
+else
+	ok "в дереве пакета нет тестовых артефактов (.mockbin)"
 fi
 
 echo ""

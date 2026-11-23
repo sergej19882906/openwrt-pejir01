@@ -122,6 +122,8 @@ jobs:
           sh tests/test-bands.sh
           sh tests/test-battery.sh
           sh tests/test-diag.sh
+          sh tests/test-diag-js.sh
+          sh tests/test-sms-charset.sh
           sh tests/test-led.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом

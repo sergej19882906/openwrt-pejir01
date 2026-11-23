@@ -1,0 +1,156 @@
+From e54828254faf62c6834f594519884c9db9713b61 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 03:13:08 +0000
+Subject: [PATCH] =?UTF-8?q?SMS:=20=D0=BA=D0=BE=D0=B4=D0=B8=D1=80=D0=BE?=
+ =?UTF-8?q?=D0=B2=D0=BA=D0=B0=20UTF-8=20(smsd=20alphabet=20=3D=20utf)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Русский текст в исходящих SMS доходил до телефона нечитаемым.
+
+Корень (разобрано по исходникам smsd 3.1.21 и подтверждено бинарём
+smsd из образа):
+
+  * /usr/bin/sendsms (штатный скрипт smstools3) пишет тело сообщения
+    сырым UTF-8 и БЕЗ заголовка "Alphabet:" - заголовок добавляется
+    только если в системе есть iconv, а в образе его нет.
+  * smsd при чтении файла очереди без заголовка "Alphabet:" берёт
+    default_alphabet, а он по умолчанию ALPHABET_ISO (ISO-8859-15).
+    Кириллицы в ISO-8859-15 нет, поэтому символы выбрасываются
+    ("Cannot convert N character to GSM"), а не кодируются.
+  * Ветка авто-UCS2 в smsd есть только для ALPHABET_UTF8: если символы
+    не помещаются в GSM 03.38, smsd сам переводит сообщение в UCS2
+    (DCS 0x08) и отправляет его как unicode-текст.
+
+Фикс: глобальные опции smsd.conf
+  alphabet = utf
+  outgoing_utf8 = yes
+  incoming_utf8 = yes
+Они меняют default_alphabet на ALPHABET_UTF8 - и исходящие, и входящие
+сообщения читаются как UTF-8. Отдельный iconv в образе не нужен.
+
+Опции глобальные: smsd читает их только ДО первой секции "[...]"
+(cfgfile.c: my_getline возвращает 0 на строке, начинающейся с "["),
+а в секции устройства дают "Unknown setting for modem" и smsd не
+стартует. Поэтому в новом конфиге они стоят выше [GM510], а для
+уже настроенного устройства добавлена update_charset_options(): старые
+значения вычищаются (в том числе ошибочно попавшие в секцию
+устройства), канонические вставляются сразу после строки-маркера, то
+есть в глобальной части файла. Чужой конфиг, правленный пользователем,
+не трогаем.
+---
+ package/pejir-sms/Makefile                    |  2 +-
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    | 71 ++++++++++++++++++-
+ 2 files changed, 71 insertions(+), 2 deletions(-)
+
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+index 4fe4c27..6ebbf70 100644
+--- a/package/pejir-sms/Makefile
++++ b/package/pejir-sms/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-sms
+ PKG_VERSION:=1
+-PKG_RELEASE:=4
++PKG_RELEASE:=5
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index 13811d9..c183c84 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -185,12 +185,74 @@ spawn_retry() {
+ SMS_TRIES="${PEJIR_SMS_TRIES:-90}"
+ SMS_SLEEP="${PEJIR_SMS_SLEEP:-10}"
+ 
++# Канонические глобальные опции кодировки SMS.
++#
++# Зачем они нужны (разобрано по исходникам smsd 3.1.21 и подтверждено
++# бинарём smsd из образа):
++#
++#   * /usr/bin/sendsms (штатный скрипт smstools3) пишет тело сообщения
++#     СЫРЫМ UTF-8 и без заголовка "Alphabet:" - заголовок добавляется
++#     только если в системе есть iconv, а его в образе нет.
++#   * smsd при чтении файла очереди без заголовка "Alphabet:" берёт
++#     default_alphabet (smsd.c, readSMSheader), а он по умолчанию
++#     ALPHABET_ISO (ISO-8859-15). Кириллицы в этом наборе нет, поэтому
++#     символы выбрасываются с записью в журнал "Cannot convert N character
++#     to GSM" - русский текст доходит до телефона нечитаемым.
++#   * Опция "alphabet = utf" переводит default_alphabet в ALPHABET_UTF8.
++#     Тогда smsd сначала пробует GSM 03.38, а если символы не помещаются
++#     (кириллица), сам переводит сообщение в UCS2 (DCS 0x08) и отправляет
++#     его как unicode-текст. Отдельный iconv в системе не нужен.
++#   * incoming_utf8 = yes нужен для входящих: иначе входящий UCS2
++#     переводится в ISO-8859-15, где кириллицы тоже нет, и в списке
++#     входящих в LuCI русский текст нечитаем.
++#   * outgoing_utf8 = yes - значение по умолчанию, но задаём явно:
++#     оно включает разбор UTF-8 при конвертации в GSM.
++#
++# ВАЖНО: это ГЛОБАЛЬНЫЕ опции. smsd читает их только ДО первой секции
++# "[...]" (cfgfile.c: my_getline возвращает 0 на строке, начинающейся
++# с "["), а в секции устройства они недопустимы: smsd печатает
++# "Unknown setting for modem" и не стартует.
++CHARSET_OPTIONS="alphabet = utf
++outgoing_utf8 = yes
++incoming_utf8 = yes"
++
++# Приводит глобальные опции кодировки к каноническому виду.
++#
++# Старые значения удаляются - в том числе из секции устройства, где они
++# недопустимы и ломают запуск smsd. Канонические добавляются сразу после
++# строки-маркера: она находится в глобальной части файла, до первой
++# секции, - ровно там, где smsd ждёт глобальные опции.
++update_charset_options() {
++	local tmp line
++
++	sed -i -e '/^[[:space:]]*alphabet[[:space:]]*=/d' \
++	       -e '/^[[:space:]]*outgoing_utf8[[:space:]]*=/d' \
++	       -e '/^[[:space:]]*incoming_utf8[[:space:]]*=/d' "$CONF"
++
++	# Номер строки с маркером: она в глобальной части файла, до первой
++	# секции "[...]" - ровно там, где smsd ждёт глобальные опции.
++	line="$(grep -n "$MARKER" "$CONF" | head -1 | cut -d: -f1)"
++	[ -n "$line" ] || return 0
++
++	tmp="/tmp/pejir-sms-charset.$$"
++	{
++		sed -n "1,${line}p" "$CONF"
++		printf '%s\n' "$CHARSET_OPTIONS"
++		sed -n "$((line + 1)),\$p" "$CONF"
++	} > "$tmp"
++
++	# Пишем через cat, а не mv: сохраняем права и владельца файла.
++	cat "$tmp" > "$CONF"
++	rm -f "$tmp"
++}
++
+ write_conf() {
+ 	local port="$1"
+ 
+-	# Наш конфиг — обновляем только порт.
++	# Наш конфиг — обновляем порт и опции кодировки.
+ 	if [ -f "$CONF" ] && grep -q "$MARKER" "$CONF"; then
+ 		sed -i "s|^device = .*|device = $port|" "$CONF"
++		update_charset_options
+ 		return 0
+ 	fi
+ 
+@@ -210,6 +272,13 @@ write_conf() {
+ #
+ $MARKER
+ 
++# Кодировка SMS: UTF-8. smsd сам переведёт сообщение в UCS2, если
++# символы не помещаются в GSM 03.38 (иначе кириллица теряется).
++# Опции глобальные - должны стоять до секции [GM510].
++alphabet = utf
++outgoing_utf8 = yes
++incoming_utf8 = yes
++
+ devices = GM510
+ incoming = /var/spool/sms/incoming
+ outgoing = /var/spool/sms/outgoing
+-- 
+2.39.5
+

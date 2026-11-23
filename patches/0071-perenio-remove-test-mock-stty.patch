@@ -1,0 +1,32 @@
+From c6f62e37a4fc002a0276f1474bf17a8d634357dc Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 03:12:55 +0000
+Subject: [PATCH] =?UTF-8?q?=D0=A7=D0=B8=D1=81=D1=82=D0=BA=D0=B0=20=D0=B4?=
+ =?UTF-8?q?=D0=B5=D1=80=D0=B5=D0=B2=D0=B0=20=D0=BF=D0=B0=D0=BA=D0=B5=D1=82?=
+ =?UTF-8?q?=D0=B0:=20=D1=83=D0=B1=D1=80=D0=B0=D0=BD=20=D1=82=D0=B5=D1=81?=
+ =?UTF-8?q?=D1=82=D0=BE=D0=B2=D1=8B=D0=B9=20=D0=BC=D0=BE=D0=BA=20stty=20(.?=
+ =?UTF-8?q?mockbin)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Мок stty создавался тестом рядом с helper'ом, то есть внутри дерева
+пакета, и попадал в git-коммиты серии патчей. Теперь мок живёт во
+временном каталоге, а в дереве пакета тестовых артефактов нет.
+---
+ package/luci-app-perenio/root/usr/libexec/.mockbin/stty | 3 ---
+ 1 file changed, 3 deletions(-)
+ delete mode 100755 package/luci-app-perenio/root/usr/libexec/.mockbin/stty
+
+diff --git a/package/luci-app-perenio/root/usr/libexec/.mockbin/stty b/package/luci-app-perenio/root/usr/libexec/.mockbin/stty
+deleted file mode 100755
+index b99f78e..0000000
+--- a/package/luci-app-perenio/root/usr/libexec/.mockbin/stty
++++ /dev/null
+@@ -1,3 +0,0 @@
+-#!/bin/sh
+-echo "stty: unable to perform all requested operations" >&2
+-exit 1
+-- 
+2.39.5
+
