@@ -1,4 +1,4 @@
-From 9e0676ddca55535957493892a06f2d1335323b2b Mon Sep 17 00:00:00 2001
+From 1c7e072f77d42139482ed92e4a628a294d6df81d Mon Sep 17 00:00:00 2001
 From: MCode <mcode@local>
 Date: Tue, 24 Nov 2026 18:52:07 GMT
 Subject: =?utf-8?b?cGVqaXItbHRlOiDQvdCw0YHRgtGA0L7QudC60LAgQVBOINGBINC70L7Qs9C40L3Q?=
@@ -48,16 +48,19 @@ ACL получил гранты на запуск pejir-lte-apn и переза�
 
 Проверено тестом tests/test-lte-apn.sh: для каждой комбинации
 настроек проверяется точная строка AT-команды, включая запрет
-передачи пароля без логина.
+передачи пароля без логина, а также что install-рецепт пакета
+pejir-lte-base ставит хелпер в образ (без этого хелпер остался бы
+в дереве и не попал бы в прошивку).
 ---
  package/luci-app-perenio/Makefile             |   2 +-
  .../luci-static/resources/view/perenio/lte.js | 164 ++++++++++++++++++
  .../po/ru/luci-app-perenio.po                 |  40 ++++-
  .../share/luci/menu.d/luci-app-perenio.json   |   8 +
  .../share/rpcd/acl.d/luci-app-perenio.json    |   6 +
+ package/pejir-lte-base/Makefile               |   3 +-
  .../root/etc/init.d/47-pejir-lte              |  26 ++-
  .../root/usr/libexec/pejir-lte-apn            |  61 +++++++
- 7 files changed, 299 insertions(+), 8 deletions(-)
+ 8 files changed, 301 insertions(+), 9 deletions(-)
  create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
  create mode 100755 package/pejir-lte-base/root/usr/libexec/pejir-lte-apn
 
@@ -335,6 +338,27 @@ index 2141495..7f81e05 100644
  				]
  			},
  			"ubus": {
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index f1a1042..9224568 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-lte-base
+ PKG_VERSION:=1
+-PKG_RELEASE:=5
++PKG_RELEASE:=6
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -38,6 +38,7 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_DATA) ./root/usr/share/pejir/bands.sh $(1)/usr/share/pejir/bands.sh
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-band $(1)/usr/libexec/pejir-band
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-lte-apn $(1)/usr/libexec/pejir-lte-apn
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-lte-base))
 diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
 index e2fe215..af7b826 100644
 --- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte

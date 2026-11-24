@@ -244,6 +244,20 @@ if [ -f "$PO" ]; then
 	done
 fi
 
+# --- 10) Makefile обязан ставить хелпер в образ ----------------------------
+# У нас уже был случай: файл лежит в дереве пакета, но его нет в
+# install-рецепте - в образ он не попадает, и всё молча не работает.
+MK="$OW/package/pejir-lte-base/Makefile"
+if [ -f "$MK" ]; then
+	if grep -q 'pejir-lte-apn' "$MK"; then
+		ok "Makefile pejir-lte-base ставит pejir-lte-apn в образ"
+	else
+		fail "Makefile pejir-lte-base НЕ ставит pejir-lte-apn - в образе хелпера не будет"
+	fi
+else
+	fail "нет $MK"
+fi
+
 rm -rf "$WORK"
 
 if [ "$FAILED" -eq 0 ]; then
