@@ -1,0 +1,176 @@
+From dcb5bbc56eeb2e596a8c7a5421a951f6ec22e99f Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Tue, 24 Nov 2026 18:19:32 GMT
+Subject: =?utf-8?b?cGVqaXItc21zOiDQv9C+0YHRgtC+0Y/QvdC90LDRjyDQvtGH0LXRgNC10LTRjCBT?=
+ =?utf-8?b?TVMgKGJpbmQtbW91bnQg0L3QsCDRhNC70LXRiNC60YMp?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+В OpenWrt /var - симлинок на /tmp, а /tmp смонтирован как tmpfs, то
+есть живёт в оперативной памяти. Очередь smsd (/var/spool/sms/*)
+поэтому в RAM, и принятые SMS после перезагрузки пропадают (на
+SIM-карте модема остаются).
+
+Новый init-скрипт /etc/init.d/pejir-sms-spool (START=91, раньше
+40-pejir-sms с START=92 и smstools3 со START=94) кладёт очередь на
+постоянное хранилище и делает bind-mount поверх /var/spool/sms.
+
+Почему bind-mount, а не смена путей в smsd.conf: от /var/spool/sms/...
+зависят веб-интерфейс (sms.js), ACL LuCI и helper pejir-sms-clean.
+Симлинк тоже не годится - rpcd проверяет права по ЦЕЛЕВОМУ пути, и
+грант на /var/spool/sms/incoming перестал бы работать. Bind-mount
+сохраняет путь прежним.
+
+Постоянный каталог: /overlay/pejir/sms (вне верхнего слоя overlay,
+если extroot смонтирован - то есть не попадает в бэкап sysupgrade) с
+запасным вариантом /overlay/upper/pejir/sms.
+
+Отказ bind-mount не ломает загрузку: SMS продолжают работать в tmpfs,
+просто без постоянства.
+---
+ package/pejir-sms/Makefile                    |   5 +-
+ .../pejir-sms/root/etc/init.d/pejir-sms-spool | 103 ++++++++++++++++++
+ 2 files changed, 107 insertions(+), 1 deletion(-)
+ create mode 100755 package/pejir-sms/root/etc/init.d/pejir-sms-spool
+
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+index 6ebbf70..7968c2b 100644
+--- a/package/pejir-sms/Makefile
++++ b/package/pejir-sms/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-sms
+ PKG_VERSION:=1
+-PKG_RELEASE:=5
++PKG_RELEASE:=6
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -18,6 +18,8 @@ define Package/pejir-sms/description
+   written into smsd.conf, the spool directories are created and smstools3
+   is enabled. Incoming SMS land in /var/spool/sms/incoming and are visible
+   in LuCI (luci-app-perenio).
++  The SMS spool itself is bind-mounted from the flash (extroot), so
++  received messages survive a reboot instead of living in tmpfs.
+ endef
+ 
+ define Build/Prepare
+@@ -29,6 +31,7 @@ endef
+ define Package/pejir-sms/install
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./root/etc/init.d/40-pejir-sms $(1)/etc/init.d/40-pejir-sms
++	$(INSTALL_BIN) ./root/etc/init.d/pejir-sms-spool $(1)/etc/init.d/pejir-sms-spool
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-sms))
+diff --git a/package/pejir-sms/root/etc/init.d/pejir-sms-spool b/package/pejir-sms/root/etc/init.d/pejir-sms-spool
+new file mode 100755
+index 0000000..0347609
+--- /dev/null
++++ b/package/pejir-sms/root/etc/init.d/pejir-sms-spool
+@@ -0,0 +1,103 @@
++#!/bin/sh /etc/rc.common
++# Постоянная очередь SMS.
++#
++# ЗАЧЕМ. В OpenWrt каталог /var - это симлинок на /tmp, а /tmp
++# смонтирован как tmpfs, то есть живёт в оперативной памяти. Очередь
++# smsd (/var/spool/sms/{incoming,outgoing,sent,failed,checked}) поэтому
++# тоже в RAM, и принятые SMS после перезагрузки пропадают (на
++# SIM-карте модема они остаются).
++#
++# КАК. Кладём очередь на постоянное хранилище (флешка extroot) и
++# делаем bind-mount этого каталога поверх /var/spool/sms.
++#
++# ПОЧЕМУ НЕ МЕНЯЕМ ПУТИ В smsd.conf. От /var/spool/sms/... зависят
++# веб-интерфейс (luci-app-perenio: sms.js), ACL LuCI
++# (luci-app-perenio.json) и helper pejir-sms-clean. Симлинк тоже не
++# годится: rpcd проверяет права по ЦЕЛЕВОМУ пути, и грант на
++# /var/spool/sms/incoming перестал бы работать. Bind-mount сохраняет
++# путь прежним - меняется только то, где он физически лежит.
++#
++# ПОРЯДОК. START=91 - раньше 40-pejir-sms (92) и smstools3 (94), чтобы
++# к моменту старта smsd очередь уже была постоянной.
++#
++# ОТКАЗ. Если постоянный каталог недоступен или bind-mount не удался,
++# скрипт НЕ ломает загрузку: SMS продолжают работать в tmpfs, просто
++# без постоянства.
++
++START=91
++STOP=0
++
++# Точка монтирования очереди (путь в smsd.conf и в LuCI не меняем).
++POOL="${PEJIR_SPOOL_POOL:-/var/spool/sms}"
++
++# Каталоги очереди smsd.
++SUBDIRS="incoming outgoing sent failed checked"
++
++# Постоянный каталог. Пусто - выбираем автоматически.
++PERSIST="${PEJIR_SPOOL_PERSIST:-}"
++
++log() {
++	logger -t pejir-spool "$*"
++}
++
++# Выбор постоянного каталога:
++#   /overlay/pejir/sms       - если /overlay смонтирован (extroot на
++#                              флешке). Лежит на флешке ВНЕ верхнего
++#                              слоя overlay, поэтому не попадает в
++#                              бэкап sysupgrade и не переносится в
++#                              новый образ.
++#   /overlay/upper/pejir/sms - запасной вариант (overlay на NAND).
++find_persist_dir() {
++	local d
++
++	if [ -z "$PERSIST" ]; then
++		for d in /overlay/pejir/sms /overlay/upper/pejir/sms; do
++			mkdir -p "$d" 2>/dev/null || continue
++			[ -w "$d" ] || continue
++			PERSIST="$d"
++			break
++		done
++	fi
++
++	[ -n "$PERSIST" ] || return 1
++	mkdir -p "$PERSIST" 2>/dev/null || return 1
++	[ -w "$PERSIST" ] || return 1
++	return 0
++}
++
++start_service() {
++	local sub
++
++	if ! find_persist_dir; then
++		log "постоянный каталог недоступен - очередь SMS остаётся в tmpfs"
++		return 0
++	fi
++
++	for sub in $SUBDIRS; do
++		mkdir -p "$PERSIST/$sub" 2>/dev/null
++	done
++
++	mkdir -p "$POOL" 2>/dev/null
++
++	if mount --bind "$PERSIST" "$POOL" 2>/dev/null; then
++		log "очередь SMS постоянная: $POOL -> $PERSIST"
++		return 0
++	fi
++
++	log "bind-mount $PERSIST -> $POOL не удался - очередь SMS остаётся в tmpfs"
++	return 0
++}
++
++stop_service() {
++	return 0
++}
++
++# Свой start()/stop() - см. патч 0085: start_service() вызывается
++# только при USE_PROCD=1, а procd-инстанс этому скрипту не нужен.
++start() {
++	start_service "$@"
++}
++
++stop() {
++	stop_service "$@"
++}
+

@@ -1,0 +1,306 @@
+From ee54b0b4d63a3d192b354caba7ffe9b9fa84ae42 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Tue, 24 Nov 2026 18:19:32 GMT
+Subject: =?utf-8?b?cGVqaXItb3RhOiDRgdGC0YDQsNC90LjRhtCwINC+0LHQvdC+0LLQu9C10L3QuNGP?=
+ =?utf-8?b?INC/0YDQvtGI0LjQstC60Lgg0L/QvtC70L3QvtGB0YLRjNGOINC00LLRg9GP0LfR?=
+ =?utf-8?b?i9GH0L3QsNGP?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Страница «Обновление прошивки (PEJIR01)» была частично английской, а
+ее собственные строки были записаны русскими литералами прямо в JS -
+то есть в английском режиме интерфейса страница оставалась русской.
+Каталога перевода у пакета pejir-ota не было вовсе.
+
+Что сделано:
+  * все строки ota.js переведены на английские msgid (как на остальных
+    наших страницах);
+  * добавлен po/ru/luci-app-pejir-ota.po с русскими переводами;
+  * каталог .lmo собирается штатным po2lmo и ставится в
+    /usr/lib/lua/luci/i18n/luci-app-pejir-ota.ru.lmo - так же, как это
+    делает пакет luci-app-perenio;
+  * заголовок пункта меню тоже стал msgid;
+  * переведен абзац про отсутствие автоматического обновления - он
+    оставался английским.
+
+Важно: msgid должен быть ОДНОЙ строкой. Склейка '_('a' + 'b')' не
+работает: каталог ищет полную склеенную строку, а не её часть, и
+перевод не находится.
+---
+ package/pejir-ota/Makefile                    | 10 ++-
+ .../luci-static/resources/view/perenio/ota.js | 53 ++++++-------
+ package/pejir-ota/po/ru/luci-app-pejir-ota.po | 74 +++++++++++++++++++
+ .../share/luci/menu.d/luci-app-pejir-ota.json |  2 +-
+ 4 files changed, 107 insertions(+), 32 deletions(-)
+ create mode 100644 package/pejir-ota/po/ru/luci-app-pejir-ota.po
+
+diff --git a/package/pejir-ota/Makefile b/package/pejir-ota/Makefile
+index dba4820..76d143c 100644
+--- a/package/pejir-ota/Makefile
++++ b/package/pejir-ota/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-ota
+ PKG_VERSION:=1.0.0
+-PKG_RELEASE:=1
++PKG_RELEASE:=2
+ 
+ PKG_LICENSE:=Apache-2.0
+ 
+@@ -51,6 +51,14 @@ define Package/pejir-ota/install
+ 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+ 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json \
+ 		$(1)/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
++	# Русский перевод страницы обновления прошивки. Исходные строки в
++	# JS - английские, поэтому в английском режиме интерфейса страница
++	# не остаётся русской. Каталог .lmo собираем из po/ru штатным
++	# po2lmo (его ставит luci-base как host-инструмент) - так же, как
++	# это делает package luci-app-perenio.
++	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
++	po2lmo ./po/ru/luci-app-pejir-ota.po \
++		$(1)/usr/lib/lua/luci/i18n/luci-app-pejir-ota.ru.lmo
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-ota))
+diff --git a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+index 803cab2..de2bad0 100644
+--- a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
++++ b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+@@ -32,12 +32,9 @@ function explain(err) {
+ 	var m = (err && err.message) ? err.message : String(err || '');
+ 
+ 	if (/denied|not permitted|Access/i.test(m))
+-		return _('Нет прав на запуск помощника обновления: в этой прошивке ACL ' +
+-			'выдан в секции read, а LuCI 25.12 требует write. Значит, у вас ' +
+-			'релиз старше .17 — обновитесь обычной страницей ' +
+-			'«Система → Обновление прошивки».');
++		return _('No permission to run the update helper: in this firmware the ACL is granted in the read section, but LuCI 25.12 requires write. That means your release is older than .17 - update via the regular "System -> Firmware update" page.');
+ 
+-	return m || _('Неизвестная ошибка');
++	return m || _('Unknown error');
+ }
+ 
+ function setText(id, s) {
+@@ -65,12 +62,12 @@ function watchUpdate() {
+ 
+ 			if (d.state == 'rebooting' || d.state == 'done') {
+ 				stop();
+-				setText('pejir-ota-status', _('Перезагрузка…'));
++				setText('pejir-ota-status', _('Rebooting...'));
+ 				ui.awaitReconnect(window.location.host, '192.168.1.1');
+ 			}
+ 			else if (d.state == 'failed') {
+ 				stop();
+-				setText('pejir-ota-status', _('Обновление не удалось, смотрите журнал ниже'));
++				setText('pejir-ota-status', _('Update failed, see the log below'));
+ 			}
+ 		}).catch(function() {});
+ 	});
+@@ -95,7 +92,7 @@ return view.extend({
+ 
+ 			if (res.code != 0) {
+ 				setText('pejir-ota-status',
+-					_('Не удалось связаться с сервером релизов') +
++					_('Could not reach the release server') +
+ 					(res.stderr ? ': ' + res.stderr.trim() : ''));
+ 				return;
+ 			}
+@@ -103,8 +100,8 @@ return view.extend({
+ 			setText('pejir-ota-installed', d.installed || '?');
+ 			setText('pejir-ota-latest', d.latest || '?');
+ 			setText('pejir-ota-status', d.available == 'yes'
+-				? _('Доступно обновление') + (d.note ? ' — ' + d.note : '')
+-				: _('Установленная версия актуальна'));
++				? _('An update is available') + (d.note ? ' - ' + d.note : '')
++				: _('The installed version is up to date'));
+ 
+ 			b = document.getElementById('pejir-ota-install');
+ 			if (b)
+@@ -118,20 +115,18 @@ return view.extend({
+ 
+ 	handleInstall: function(ev) {
+ 		return new Promise(function(resolve, reject) {
+-			ui.showModal(_('Установить обновление прошивки?'), [
+-				E('p', {}, _('The router will download the new firmware, verify the checksum ' +
+-					'and flash it. The device reboots during the installation — do not ' +
+-					'power it off.')),
++			ui.showModal(_('Install the firmware update?'), [
++				E('p', {}, _('The router will download the new firmware, verify the checksum and flash it. The device reboots during the installation - do not power it off.')),
+ 				E('div', { 'class': 'right' }, [
+ 					E('button', {
+ 						'class': 'btn',
+ 						'click': function() { ui.hideModal(); reject(); }
+-					}, [ _('Отмена') ]),
++					}, [ _('Cancel') ]),
+ 					' ',
+ 					E('button', {
+ 						'class': 'btn cbi-button-action important',
+ 						'click': function() { ui.hideModal(); resolve(); }
+-					}, [ _('Продолжить') ])
++					}, [ _('Continue') ])
+ 				])
+ 			]);
+ 		}).then(function() {
+@@ -139,11 +134,11 @@ return view.extend({
+ 		}).then(function(res) {
+ 			if (res.code != 0) {
+ 				ui.addNotification(null, E('p',
+-					_('Не удалось запустить обновление: ') + (res.stderr || '').trim()));
++					_('Could not start the update: ') + (res.stderr || '').trim()));
+ 				return;
+ 			}
+ 
+-			setText('pejir-ota-status', _('Обновление, подождите…'));
++			setText('pejir-ota-status', _('Updating, please wait...'));
+ 			watchUpdate();
+ 		}).catch(function(e) {
+ 			if (e)
+@@ -157,32 +152,32 @@ return view.extend({
+ 		var status = failed
+ 			? ((res && res.stderr && res.stderr.trim())
+ 				? res.stderr.trim()
+-				: _('Не удалось связаться с сервером релизов'))
+-			: (d.available == 'yes' ? _('Доступно обновление') : _('Установленная версия актуальна'));
++				: _('Could not reach the release server'))
++			: (d.available == 'yes' ? _('An update is available') : _('The installed version is up to date'));
+ 		var btnCheck = E('button', {
+ 			'class': 'cbi-button cbi-button-action',
+ 			'id': 'pejir-ota-check',
+ 			'click': ui.createHandlerFn(this, 'handleCheck')
+-		}, [ _('Проверить обновления') ]);
++		}, [ _('Check for updates') ]);
+ 		var btnInstall = E('button', {
+ 			'class': 'cbi-button cbi-button-action important',
+ 			'id': 'pejir-ota-install',
+ 			'click': ui.createHandlerFn(this, 'handleInstall')
+-		}, [ _('Установить обновление') ]);
++		}, [ _('Install update') ]);
+ 
+ 		btnInstall.disabled = (d.available != 'yes');
+ 
+ 		return E('div', { 'class': 'cbi-section' }, [
+-			E('h2', {}, _('Обновление прошивки (PEJIR01)')),
++			E('h2', {}, _('Firmware update (PEJIR01)')),
+ 			E('div', { 'class': 'cbi-section' }, [
+ 				E('table', { 'class': 'table' }, [
+ 					E('tr', { 'class': 'tr' }, [
+-						E('td', { 'class': 'td', 'width': '33%' }, _('Установленная версия')),
++						E('td', { 'class': 'td', 'width': '33%' }, _('Installed version')),
+ 						E('td', { 'class': 'td', 'id': 'pejir-ota-installed' },
+-							d.installed || _('неизвестно'))
++							d.installed || _('unknown'))
+ 					]),
+ 					E('tr', { 'class': 'tr' }, [
+-						E('td', { 'class': 'td' }, _('Последний релиз')),
++						E('td', { 'class': 'td' }, _('Latest release')),
+ 						E('td', { 'class': 'td', 'id': 'pejir-ota-latest' }, d.latest || '…')
+ 					])
+ 				]),
+@@ -198,12 +193,10 @@ return view.extend({
+ 					'style': 'max-height:320px; overflow:auto; white-space:pre-wrap'
+ 				}, ''),
+ 				E('div', { 'class': 'cbi-value-description' },
+-					_('There is no automatic update: the new firmware is downloaded and installed ' +
+-					  'only when you press "Install update". The router reboots by itself when ' +
+-					  'the installation is finished.')),
++					_('There is no automatic update: the new firmware is downloaded and installed only when you press "Install update". The router reboots by itself when the installation is finished.')),
+ 				E('div', { 'class': 'cbi-value-description' },
+ 					E('a', { 'href': L.env.cgi_base + '/admin/system/upgrade' },
+-						_('Обычная страница обновления прошивки (работает всегда)')))
++						_('Regular firmware update page (always available)')))
+ 			])
+ 		]);
+ 	}
+diff --git a/package/pejir-ota/po/ru/luci-app-pejir-ota.po b/package/pejir-ota/po/ru/luci-app-pejir-ota.po
+new file mode 100644
+index 0000000..cbf9f60
+--- /dev/null
++++ b/package/pejir-ota/po/ru/luci-app-pejir-ota.po
+@@ -0,0 +1,74 @@
++# Russian translation for the PEJIR01 firmware update page
++# (luci-app-pejir-ota).
++#
++# The source strings are English; this file provides the Russian
++# version, so the page follows the interface language.
++#
++msgid ""
++msgstr ""
++"Content-Type: text/plain; charset=UTF-8\n"
++"Language: ru\n"
++"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
++
++msgid "Firmware update (PEJIR01)"
++msgstr "Обновление прошивки (PEJIR01)"
++
++msgid "Installed version"
++msgstr "Установленная версия"
++
++msgid "Latest release"
++msgstr "Последний релиз"
++
++msgid "unknown"
++msgstr "неизвестно"
++
++msgid "Check for updates"
++msgstr "Проверить обновления"
++
++msgid "Install update"
++msgstr "Установить обновление"
++
++msgid "An update is available"
++msgstr "Доступно обновление"
++
++msgid "The installed version is up to date"
++msgstr "Установленная версия актуальна"
++
++msgid "Could not reach the release server"
++msgstr "Не удалось связаться с сервером релизов"
++
++msgid "Install the firmware update?"
++msgstr "Установить обновление прошивки?"
++
++msgid "The router will download the new firmware, verify the checksum and flash it. The device reboots during the installation - do not power it off."
++msgstr "Роутер скачает новую прошивку, проверит контрольную сумму и установит её. Устройство перезагрузится во время установки - не отключайте питание."
++
++msgid "Cancel"
++msgstr "Отмена"
++
++msgid "Continue"
++msgstr "Продолжить"
++
++msgid "Could not start the update: "
++msgstr "Не удалось запустить обновление: "
++
++msgid "Updating, please wait..."
++msgstr "Обновление, подождите…"
++
++msgid "Rebooting..."
++msgstr "Перезагрузка…"
++
++msgid "Update failed, see the log below"
++msgstr "Обновление не удалось, смотрите журнал ниже"
++
++msgid "Unknown error"
++msgstr "Неизвестная ошибка"
++
++msgid "No permission to run the update helper: in this firmware the ACL is granted in the read section, but LuCI 25.12 requires write. That means your release is older than .17 - update via the regular \"System -> Firmware update\" page."
++msgstr "Нет прав на запуск помощника обновления: в этой прошивке ACL выдан в секции read, а LuCI 25.12 требует write. Значит, у вас релиз старше .17 - обновитесь обычной страницей «Система → Обновление прошивки»."
++
++msgid "There is no automatic update: the new firmware is downloaded and installed only when you press \"Install update\". The router reboots by itself when the installation is finished."
++msgstr "Автоматического обновления нет: новая прошивка скачивается и устанавливается только после нажатия «Установить обновление». По окончании установки роутер перезагрузится сам."
++
++msgid "Regular firmware update page (always available)"
++msgstr "Обычная страница обновления прошивки (работает всегда)"
+diff --git a/package/pejir-ota/root/usr/share/luci/menu.d/luci-app-pejir-ota.json b/package/pejir-ota/root/usr/share/luci/menu.d/luci-app-pejir-ota.json
+index a549595..a1da942 100644
+--- a/package/pejir-ota/root/usr/share/luci/menu.d/luci-app-pejir-ota.json
++++ b/package/pejir-ota/root/usr/share/luci/menu.d/luci-app-pejir-ota.json
+@@ -1,6 +1,6 @@
+ {
+ 	"admin/system/pejir-ota": {
+-		"title": "Обновление прошивки (PEJIR01)",
++		"title": "Firmware update (PEJIR01)",
+ 		"order": 80,
+ 		"action": { "type": "view", "path": "perenio/ota" },
+ 		"depends": { "fs": { "/usr/bin/pejir-ota": "executable" } }

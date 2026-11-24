@@ -17,15 +17,24 @@ else
 	DEFAULT_PKG="/workspace/ow-test/package/luci-app-perenio"
 	[ -d "$DEFAULT_PKG" ] || { echo "FAIL: нет $DEFAULT_PKG (задайте OW_TEST с деревом OpenWrt)"; exit 1; }
 fi
-PKG="${PEJIR_PKG:-$DEFAULT_PKG}"
-PO="$PKG/po/ru/luci-app-perenio.po"
-JS="$PKG/htdocs/luci-static/resources/view/perenio"
-
 FAILED=0
 ok()   { echo "OK: $1"; }
 fail() { echo "FAIL: $1"; FAILED=$((FAILED+1)); }
 
-[ -f "$PO" ] || { echo "FAIL: нет файла $PO"; exit 1; }
+# Проверка одного пакета: $1 - каталог пакета, $2 - файл .po,
+# $3 - каталог со страницами .js, $4 - имя каталога .lmo.
+# Тело функции НЕ сдвигается по отступам: в нём есть heredoc'и, а их
+# терминатор должен начинаться в начале строки.
+check_pkg() {
+PKG="$1"
+PO="$2"
+JS="$3"
+LMO_NAME="$4"
+
+echo ""
+echo "--- $PKG ---"
+
+[ -f "$PO" ] || { fail "нет файла $PO"; return 0; }
 
 # --- 1) кириллицы в msgid -------------------------------------------------
 if python3 - "$JS" <<'PY'
@@ -94,7 +103,7 @@ fi
 # --- 3) .lmo собирается и содержит переводы -------------------------------
 PO2LMO="${PO2LMO:-/tmp/ptest/po2lmo}"
 if [ -x "$PO2LMO" ]; then
-	LMO=/tmp/test-perenio.ru.lmo
+	LMO="/tmp/test-$LMO_NAME.ru.lmo"
 	rm -f "$LMO"
 	if "$PO2LMO" "$PO" "$LMO" >/dev/null 2>&1 && [ -s "$LMO" ]; then
 		ok "po2lmo собрал каталог ($(wc -c < "$LMO") Б)"
@@ -190,6 +199,25 @@ PY
 	fi
 else
 	echo "ПРОПУСК: нет базового каталога ($BASE_PO)"
+fi
+}
+# --- проверяем все наши страницы -----------------------------------------
+# Основной пакет страниц и пакет страницы обновления прошивки.
+check_pkg "$DEFAULT_PKG" \
+"$DEFAULT_PKG/po/ru/luci-app-perenio.po" \
+"$DEFAULT_PKG/htdocs/luci-static/resources/view/perenio" \
+"perenio"
+
+OTA_PKG="${OW_TEST:-/workspace/ow-test}/package/pejir-ota"
+if [ -d "$OTA_PKG" ]; then
+check_pkg "$OTA_PKG" \
+"$OTA_PKG/po/ru/luci-app-pejir-ota.po" \
+"$OTA_PKG/htdocs/luci-static/resources/view/perenio" \
+"pejir-ota"
+else
+echo ""
+echo "FAIL: нет пакета pejir-ota ($OTA_PKG)"
+FAILED=$((FAILED+1))
 fi
 
 echo ""
