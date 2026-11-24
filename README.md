@@ -12,7 +12,16 @@
 > ![release](https://img.shields.io/badge/release-25.12.6--pejir01.53-blue)
 
 
-**Релиз `25.12.6-pejir01.53`** (патч 0085): init-скрипты теперь
+**Релиз `25.12.6-pejir01.53`** (патч 0085, run 45431061130,
+релиз 457089662): sysupgrade 17 562 168 Б
+(sha256 `b286cec3969ab3afbc48271fa77b1c66f3a7030a01ce64b49fde0ca80afce90b`),
+factory 23 855 104 Б
+(sha256 `fa7e0b3aad00cf9bc6e4f2e1583feda8d51a004b8be5e8c0d1b4c5c969adc6cd`),
+initramfs 16 886 707 Б
+(sha256 `3f46ebcad745fe5402d49260744678919b4279d2b80f30f0b8c61b8d1bdaa197`),
+rootfs 14 086 144 Б, kernel 3 469 500 Б.
+
+init-скрипты теперь
 **реально запускаются при загрузке**. До этого они молчали: в OpenWrt
 функция `start_service()` вызывается только если скрипт объявил
 `USE_PROCD=1`, а наши четыре скрипта (`40-pejir-sms`, `41-pejir-modem`,
