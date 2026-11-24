@@ -173,6 +173,73 @@ else
 	fail "очистка упала с кодом $RC3, когда верхнего слоя нет"
 fi
 
+# --- 8) остатки стоковых пакетов LXC вычищаются -------------------------
+# ФАКТ: стоковая прошивка Perenio 9.0.4 ставит rpcd-mod-lxc
+# (/usr/lib/rpcd/lxc.so) и luci-app-lxc (контроллер LuCI). После
+# sysupgrade эти файлы остаются в верхнем слое, и LuCI показывает
+# пункт меню "LXC Containers", хотя самого LXC в образе нет.
+mkdir -p "$UPPER/usr/lib/rpcd" \
+         "$UPPER/usr/lib/lua/luci/controller" \
+         "$UPPER/usr/lib/opkg/info" \
+         "$UPPER/usr/bin"
+printf 'rpcd plugin lxc\n' > "$UPPER/usr/lib/rpcd/lxc.so"
+printf 'return true\n' > "$UPPER/usr/lib/lua/luci/controller/lxc.lua"
+printf 'config lxc "lxc"\n' > "$UPPER/etc/config/lxc"
+printf 'lxc binary\n' > "$UPPER/usr/bin/lxc-start"
+
+cat > "$UPPER/usr/lib/opkg/info/rpcd-mod-lxc.list" <<'LISTEOF'
+/usr/lib/rpcd/lxc.so
+LISTEOF
+
+cat > "$UPPER/usr/lib/opkg/info/luci-app-lxc.list" <<'LISTEOF'
+/usr/lib/lua/luci/controller/lxc.lua
+/usr/bin/lxc-start
+/etc/config/lxc
+LISTEOF
+
+PEJIR_PURGE_UPPER_DIR="$UPPER" \
+PEJIR_PURGE_PKG_DIR="$PKG" \
+PEJIR_PURGE_PKGS="pejir-sms luci-app-perenio pejir-ota" \
+PEJIR_PURGE_STOCK_INFO_DIR="$UPPER/usr/lib/opkg/info" \
+	sh "$PURGE" > "$WORK/out4.txt" 2>&1
+RC4=$?
+
+if [ "$RC4" -eq 0 ]; then
+	ok "очистка остатков стока завершилась без ошибки"
+else
+	fail "очистка остатков стока упала с кодом $RC4"
+fi
+
+if [ ! -e "$UPPER/usr/lib/rpcd/lxc.so" ]; then
+	ok "плагин rpcd lxc.so удалён из верхнего слоя"
+else
+	fail "плагин rpcd lxc.so остался - в меню LuCI останется LXC Containers"
+fi
+
+if [ ! -e "$UPPER/usr/lib/lua/luci/controller/lxc.lua" ]; then
+	ok "контроллер LuCI lxc.lua удалён из верхнего слоя"
+else
+	fail "контроллер LuCI lxc.lua остался"
+fi
+
+if [ ! -e "$UPPER/usr/bin/lxc-start" ]; then
+	ok "бинарники LXC удалены из верхнего слоя"
+else
+	fail "бинарники LXC остались"
+fi
+
+if [ ! -e "$UPPER/etc/config/lxc" ]; then
+	ok "конфиг стокового LXC удалён из верхнего слоя"
+else
+	fail "конфиг стокового LXC остался"
+fi
+
+if [ -f "$UPPER/etc/config/system" ]; then
+	ok "пользовательский /etc/config/system не тронут"
+else
+	fail "пользовательский /etc/config/system удалён"
+fi
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
 	echo "Все тесты очистки overlay пройдены"

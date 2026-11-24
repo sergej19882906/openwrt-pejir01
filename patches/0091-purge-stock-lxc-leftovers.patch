@@ -1,0 +1,98 @@
+From 0362e0f3e385467e34b2286db6bb8f66513e4707 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Tue, 24 Nov 2026 22:04:37 GMT
+Subject: =?utf-8?b?cGVqaXItb3RhOiDQstGL0YfQuNGJ0LDRgtGMINC+0YHRgtCw0YLQutC4INGB0YLQ?=
+ =?utf-8?b?vtC60L7QstC+0LPQviBMWEMg0LjQtyDQstC10YDRhdC90LXQs9C+INGB0LvQvtGP?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ФАКТ: стоковая прошивка Perenio 9.0.4 ставит rpcd-mod-lxc
+(/usr/lib/rpcd/lxc.so) и luci-app-lxc (контроллер LuCI lxc.lua).
+sysupgrade сохраняет верхний слой, поэтому эти файлы остаются на
+устройстве после перехода на наш образ - и LuCI показывает пункт меню
+"LXC Containers", хотя самого LXC в образе нет (проверено по
+распакованному rootfs релиза .56: ни luci-app-lxc.json, ни
+/usr/bin/lxc-*, ни /usr/lib/rpcd/lxc.so в образе отсутствуют).
+
+pejir-ovl-purge теперь чистит и остатки чужих стоковых пакетов: их
+списки файлов лежат в верхнем слое (/usr/lib/opkg/info/<pkg>.list -
+сток использовал opkg), и по ним файлы удаляются. Служебные файлы
+пакета (.list/.control/.prerm/...) тоже убираются, иначе пакет
+выглядит установленным.
+
+Защита пользовательских настроек (/etc/config/*) здесь НЕ действует:
+удаляются файлы чужих пакетов по их явным спискам, а не всё подряд.
+Проверено тестом tests/test-ovl-purge.sh: /usr/lib/rpcd/lxc.so,
+контроллер lxc.lua, бинарники LXC и /etc/config/lxc удаляются, а
+пользовательский /etc/config/system остаётся нетронутым.
+
+Заодно расширена проверка образа в build.sh: в образе не должно быть
+ни rpcd-плагина lxc.so, ни контроллера LuCI lxc.lua, ни прочих
+файлов LXC.
+---
+ package/pejir-ota/files/pejir-ovl-purge | 45 ++++++++++++++++++++++++-
+ 1 file changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/package/pejir-ota/files/pejir-ovl-purge b/package/pejir-ota/files/pejir-ovl-purge
+index fe2bc18..0df6b0b 100755
+--- a/package/pejir-ota/files/pejir-ovl-purge
++++ b/package/pejir-ota/files/pejir-ovl-purge
+@@ -58,6 +58,18 @@ MOUNTS_FILE="${PEJIR_PURGE_MOUNTS_FILE:-/proc/mounts}"
+ # Наши пакеты: только их файлы вычищаем.
+ PKGS="${PEJIR_PURGE_PKGS:-pejir-sms luci-app-perenio luci-app-atinout pejir-lte-base pejir-ota pejir-sync}"
+ 
++# Остатки СТОКОВЫХ пакетов, которых у нас в образе нет.
++#
++# ФАКТ: стоковая прошивка Perenio 9.0.4 ставит rpcd-mod-lxc
++# (/usr/lib/rpcd/lxc.so) и luci-app-lxc (контроллер LuCI). После
++# sysupgrade эти файлы остаются в верхнем слое - и LuCI показывает
++# пункт меню "LXC Containers", хотя самого LXC в образе нет.
++#
++# Списки файлов стоковых пакетов лежат в верхнем слое рядом с их
++# файлами: /usr/lib/opkg/info/<pkg>.list (сток использовал opkg).
++STOCK_PKGS="${PEJIR_PURGE_STOCK_PKGS:-rpcd-mod-lxc luci-app-lxc liblxc lxc lxc-common lxc-configs lxc-hooks lxc-templates lxc-attach lxc-autostart lxc-checkconfig lxc-config lxc-console lxc-create lxc-destroy lxc-info lxc-ls lxc-start lxc-stop}"
++STOCK_INFO_DIR="${PEJIR_PURGE_STOCK_INFO_DIR:-}"
++
+ # Верхний слой overlay: ищем в /proc/mounts по опциям монтирования
+ # (upperdir=...). В extroot-системе корневой mount - единственный
+ # overlay с upperdir, поэтому ищем именно его.
+@@ -140,5 +152,36 @@ for pkg in $PKGS; do
+ 	done < "$list"
+ done
+ 
+-echo "pejir-ovl-purge: удалено протухших копий из верхнего слоя: $REMOVED, защищено: $SKIPPED"
++# --- остатки стоковых пакетов (LXC и подобные) ---------------------------
++# Их списки файлов лежат в верхнем слое: сток ставил opkg, поэтому
++# это /usr/lib/opkg/info/<pkg>.list (у нас apk, но старые списки из
++# верхнего слоя никуда не делись).
++[ -n "$STOCK_INFO_DIR" ] || STOCK_INFO_DIR="$UPPER/usr/lib/opkg/info"
++STOCK_REMOVED=0
++
++for pkg in $STOCK_PKGS; do
++	list="$STOCK_INFO_DIR/$pkg.list"
++	[ -f "$list" ] || continue
++
++	while IFS= read -r rel; do
++		case "$rel" in
++		/*) ;;
++		*) continue ;;
++		esac
++
++		# Здесь защита is_protected НЕ применяется: это файлы
++		# чужих (стоковых) пакетов, а не пользовательские настройки.
++		if [ -e "$UPPER$rel" ] || [ -L "$UPPER$rel" ]; then
++			rm -f "$UPPER$rel" 2>/dev/null && STOCK_REMOVED=$((STOCK_REMOVED + 1))
++		fi
++	done < "$list"
++
++	# Служебные файлы пакета тоже убираем - иначе пакет выглядит
++	# установленным.
++	for meta in .list .control .prerm .postinst .conffiles; do
++		rm -f "$STOCK_INFO_DIR/$pkg$meta" 2>/dev/null
++	done
++done
++
++echo "pejir-ovl-purge: удалено протухших копий из верхнего слоя: $REMOVED, защищено: $SKIPPED, остатков стоковых пакетов: $STOCK_REMOVED"
+ exit 0
+

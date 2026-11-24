@@ -1,0 +1,446 @@
+From 1e63966e4f908f5d2e802aec4094651c1a60e35a Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Tue, 24 Nov 2026 22:04:37 GMT
+Subject: =?utf-8?b?cGVqaXItbHRlOiDRg9C/0YDQsNCy0LvQtdC90LjQtSDQvNC+0LTQtdC80L7QvCAt?=
+ =?utf-8?b?IFNJTSBQSU4sINC90L7QvNC10YAgU0lNLCDQv9C10YDQtdC30LDQs9GA0YPQt9C6?=
+ =?utf-8?b?0LAsINGA0LXQttC40Lwg0LrQsNC90LDQu9Cw?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Четыре функции, которых у нас не было, а в стоковой прошивке Perenio
+9.0.4 есть (usr/lib/modem_ubus/common.sh, gosuncn.sh):
+
+  * SIM PIN: статус AT+CPIN?, ввод AT+CPIN="<pin>", вкл/выкл
+    блокировки AT+CLCK="SC",2,"<pin>" / AT+CLCK="SC",0,"<pin>";
+  * номер SIM: AT+CNUM;
+  * перезагрузка модема: AT+ZRST;
+  * режим канала (auto/3G/4G).
+
+Новый helper /usr/libexec/pejir-modem-ctl с подкомандами pin-status,
+pin-lock, pin-set, pin-enable, pin-disable, cnum, reset, mode,
+mode-apply. Он освобождает AT-порт (smsd держит его и забирает ответы
+модема себе), как это делает pejir-band.
+
+PIN не печатается в вывод - он уходит только модему.
+
+О РЕЖИМЕ КАНАЛА ОТДЕЛЬНО: в стоке он для нашего модема НЕ РЕАЛИЗОВАН.
+usr/lib/modem_ubus/meig-at.sh содержит "set_mode_band() { # TODO:
+implement; return; }" - то есть переключатель в стоковом интерфейсе
+был мёртвой кнопкой. Здесь он работает по-настоящему: маска LTE
+обнуляется для режима "только 3G", маска UMTS - для "только 4G"
+(AT+ZBAND=<UMTS>,0,0,<LTE>). Имена режимов как в стоке:
+network.lte.modes = all | umts | lte.
+
+Страница LuCI "Настройки LTE (PEJIR01)" дополнена: выбор режима
+канала, поле PIN с кнопками (статус, ввести, включить/снять
+блокировку), кнопки "Показать номер" и "Перезагрузить модем".
+ACL получил грант на запуск pejir-modem-ctl.
+
+Новый тест tests/test-modem-ctl.sh: на стенде с подменой atinout
+проверяется точная AT-команда каждой операции, что PIN не печатается
+в вывод и что маски диапазонов вычисляются по режиму.
+---
+ .../luci-static/resources/view/perenio/lte.js |  89 +++++++++
+ .../po/ru/luci-app-perenio.po                 |  28 +++
+ .../share/rpcd/acl.d/luci-app-perenio.json    |   3 +
+ package/pejir-lte-base/Makefile               |   3 +-
+ .../root/usr/libexec/pejir-modem-ctl          | 184 ++++++++++++++++++
+ 5 files changed, 306 insertions(+), 1 deletion(-)
+ create mode 100755 package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+index 3761379..ec807c9 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -16,6 +16,7 @@
+  */
+ 
+ var HELPER = '/usr/libexec/pejir-lte-apn';
++var MODEM = '/usr/libexec/pejir-modem-ctl';
+ var LTE_INIT = '/etc/init.d/47-pejir-lte';
+ 
+ var PDP_TYPES = [
+@@ -24,6 +25,13 @@ var PDP_TYPES = [
+ 	[ 'ipv4v6', _('IPv4 and IPv6') ]
+ ];
+ 
++/* Режим канала: имена как в стоковой прошивке (network.lte.modes). */
++var CHANNEL_MODES = [
++	[ 'all', _('Auto (3G and 4G)') ],
++	[ 'umts', _('3G only') ],
++	[ 'lte', _('4G only') ]
++];
++
+ var AUTH_TYPES = [
+ 	[ 'none', _('None') ],
+ 	[ 'pap', _('PAP') ],
+@@ -125,6 +133,48 @@ return view.extend({
+ 		});
+ 	},
+ 
++	handleModem: function(ev) {
++		var btn = ev.currentTarget;
++		var args = btn.getAttribute('data-args') || '';
++		var pin = document.getElementById('pejir-pin');
++
++		btn.disabled = true;
++		setText('pejir-lte-log', _('Talking to the modem...'));
++
++		if (pin && pin.value)
++			args = args + ' ' + pin.value;
++
++		return fs.exec(MODEM, args.split(' ').filter(function(x) { return x != ''; })).then(function(r) {
++			var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++
++			setText('pejir-lte-log', out.trim() || _('Done'));
++			btn.disabled = false;
++		}).catch(function(e) {
++			setText('pejir-lte-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++			btn.disabled = false;
++		});
++	},
++
++	handleMode: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++
++		uci.set('network', 'lte', 'modes', document.getElementById('pejir-mode').value);
++
++		return uci.save().then(function() {
++			return fs.exec(MODEM, [ 'mode-apply' ]).then(function(r) {
++				var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++
++				setText('pejir-lte-log', out.trim() || _('Done'));
++				btn.disabled = false;
++			});
++		}).catch(function(e) {
++			setText('pejir-lte-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++			btn.disabled = false;
++		});
++	},
++
+ 	render: function() {
+ 		var saveBtn = E('button', { 'class': 'cbi-button cbi-button-save', 'type': 'button' },
+ 				_('Save'));
+@@ -138,6 +188,23 @@ return view.extend({
+ 				_('Show commands'));
+ 		showBtn.addEventListener('click', L.bind(this.handleShow, this));
+ 
++		var modeBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
++				_('Apply channel mode'));
++		modeBtn.addEventListener('click', L.bind(this.handleMode, this));
++
++		/* Кнопка вызова helper'а управления модемом (PIN, номер SIM,
++		 * перезагрузка). */
++		var self = this;
++
++		function modemBtn(text, args) {
++			var btn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++				'data-args': args }, text);
++
++			btn.addEventListener('click', L.bind(self.handleModem, self));
++
++			return btn;
++		}
++
+ 		return E('div', { 'class': 'cbi-section' }, [
+ 			E('h2', {}, _('LTE settings (PEJIR01)')),
+ 			E('div', { 'class': 'cbi-section-descr' },
+@@ -147,12 +214,34 @@ return view.extend({
+ 			row(_('Username'), input('pejir-username', 'text', cur('username'))),
+ 			row(_('Password'), input('pejir-password', 'password', cur('password'))),
+ 			row(_('Authentication type'), select('pejir-auth', AUTH_TYPES, cur('auth') || 'none')),
++			row(_('Channel mode'), select('pejir-mode', CHANNEL_MODES, cur('modes') || 'all')),
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, ''),
+ 				E('div', { 'class': 'cbi-value-field' }, [
+ 					saveBtn, ' ', applyBtn, ' ', showBtn
+ 				])
+ 			]),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, ''),
++				E('div', { 'class': 'cbi-value-field' }, [ modeBtn ])
++			]),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, _('SIM PIN')),
++				E('div', { 'class': 'cbi-value-field' }, [
++					input('pejir-pin', 'password', ''), ' ',
++					modemBtn(_('PIN status'), 'pin-status'), ' ',
++					modemBtn(_('Set PIN'), 'pin-set'), ' ',
++					modemBtn(_('Enable lock'), 'pin-enable'), ' ',
++					modemBtn(_('Disable lock'), 'pin-disable')
++				])
++			]),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, _('SIM card')),
++				E('div', { 'class': 'cbi-value-field' }, [
++					modemBtn(_('Show number'), 'cnum'), ' ',
++					modemBtn(_('Restart modem'), 'reset')
++				])
++			]),
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, _('Modem log')),
+ 				E('div', { 'class': 'cbi-value-field' },
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index cca0e2c..74b2161 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -346,3 +346,31 @@ msgid "Reading the modem settings..."
+ msgstr "Читаем настройки модема..."
+ msgid "Modem log"
+ msgstr "Журнал модема"
++msgid "Channel mode"
++msgstr "Режим канала"
++msgid "Auto (3G and 4G)"
++msgstr "Авто (3G и 4G)"
++msgid "3G only"
++msgstr "Только 3G"
++msgid "4G only"
++msgstr "Только 4G"
++msgid "Apply channel mode"
++msgstr "Применить режим канала"
++msgid "SIM PIN"
++msgstr "SIM PIN"
++msgid "PIN status"
++msgstr "Состояние PIN"
++msgid "Set PIN"
++msgstr "Ввести PIN"
++msgid "Enable lock"
++msgstr "Включить блокировку"
++msgid "Disable lock"
++msgstr "Снять блокировку"
++msgid "SIM card"
++msgstr "SIM-карта"
++msgid "Show number"
++msgstr "Показать номер"
++msgid "Restart modem"
++msgstr "Перезагрузить модем"
++msgid "Talking to the modem..."
++msgstr "Обмен с модемом..."
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 7f81e05..4528c64 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -94,6 +94,9 @@
+ 				"/usr/libexec/pejir-lte-apn": [
+ 					"exec"
+ 				],
++				"/usr/libexec/pejir-modem-ctl": [
++					"exec"
++				],
+ 				"/etc/init.d/47-pejir-lte restart": [
+ 					"exec"
+ 				]
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index 9224568..e15e1eb 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-lte-base
+ PKG_VERSION:=1
+-PKG_RELEASE:=6
++PKG_RELEASE:=7
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -39,6 +39,7 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-band $(1)/usr/libexec/pejir-band
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-lte-apn $(1)/usr/libexec/pejir-lte-apn
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-ctl $(1)/usr/libexec/pejir-modem-ctl
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-lte-base))
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+new file mode 100755
+index 0000000..9715fae
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+@@ -0,0 +1,184 @@
++#!/bin/sh
++# Управление модемом GM510: SIM PIN, номер SIM, перезагрузка, режим канала.
++#
++#   pejir-modem-ctl pin-status        - статус SIM PIN        (AT+CPIN?)
++#   pejir-modem-ctl pin-lock          - состояние блокировки   (AT+CLCK="SC",2)
++#   pejir-modem-ctl pin-set <pin>     - ввести PIN             (AT+CPIN="<pin>")
++#   pejir-modem-ctl pin-enable <pin>  - включить блокировку    (AT+CLCK="SC",2,"<pin>")
++#   pejir-modem-ctl pin-disable <pin> - снять блокировку       (AT+CLCK="SC",0,"<pin>")
++#   pejir-modem-ctl cnum              - номер SIM              (AT+CNUM)
++#   pejir-modem-ctl reset             - перезагрузка модема    (AT+ZRST)
++#   pejir-modem-ctl mode              - текущий режим канала   (network.lte.modes)
++#   pejir-modem-ctl mode-apply        - применить режим канала (AT+ZBAND)
++#
++# AT-команды - ровно как в стоковой прошивке Perenio
++# (usr/lib/modem_ubus/common.sh, gosuncn.sh).
++#
++# Режим канала: в стоке для нашего модема (Meig GM510) он НЕ
++# РЕАЛИЗОВАН - usr/lib/modem_ubus/meig-at.sh содержит
++# "set_mode_band() { # TODO: implement; return; }", то есть переключатель
++# в стоковом интерфейсе - мёртвая кнопка. Здесь режим работает по-настоящему:
++# маска LTE обнуляется для "только 3G", маска UMTS - для "только 4G"
++# (AT+ZBAND=<UMTS>,0,0,<LTE>).
++#
++# ВАЖНО: PIN не печатается в вывод - он уходит только модему.
++
++set -u
++
++AT_TIMEOUT="${AT_TIMEOUT:-8}"
++
++# Общий файл с масками диапазонов. Путь можно переопределить -
++# так helper проверяется без устройства.
++BANDS_SH="${PEJIR_BANDS_SH:-/usr/share/pejir/bands.sh}"
++[ -f "$BANDS_SH" ] || BANDS_SH="$(dirname "$0")/../share/pejir/bands.sh"
++[ -f "$BANDS_SH" ] && . "$BANDS_SH"
++
++# --- AT-обмен --------------------------------------------------------------
++# $1 - порт, $2 - команда (без \r). Печатает ответ модема.
++at_ask() {
++	_aport="$1"
++	_acmd="$2"
++	_script="/tmp/pejir-modem-ctl.$$"
++
++	printf '%s\r' "$_acmd" > "$_script"
++	stty -F "$_aport" 115200 raw -echo 2>/dev/null || true
++	_out=$(timeout "$AT_TIMEOUT" atinout "$_script" "$_aport" - 2>/dev/null)
++	rm -f "$_script"
++	printf '%s' "$_out"
++}
++
++# AT-порт: явное переопределение, подтверждённый порт, иначе - перебор.
++find_port() {
++	if [ -n "${PEJIR_AT_PORT:-}" ]; then
++		echo "$PEJIR_AT_PORT"
++		return 0
++	fi
++	if [ -f /etc/pejir/at-port ]; then
++		_p=$(head -n 1 /etc/pejir/at-port 2>/dev/null)
++		[ -n "$_p" ] && [ -c "$_p" ] && { echo "$_p"; return 0; }
++	fi
++	for _p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyACM0; do
++		[ -c "$_p" ] && { echo "$_p"; return 0; }
++	done
++	return 1
++}
++
++# smsd держит AT-порт и забирает ответы модема себе - на время обмена
++# его надо отпустить.
++smsd_stop() {
++	[ -x /etc/init.d/smstools3 ] || return 0
++	pidof smsd >/dev/null 2>&1 || return 0
++	/etc/init.d/smstools3 stop >/dev/null 2>&1
++	sleep 2
++	SMSD_WAS=1
++	return 0
++}
++
++smsd_start() {
++	[ "${SMSD_WAS:-0}" = "1" ] || return 0
++	/etc/init.d/smstools3 start >/dev/null 2>&1
++	SMSD_WAS=0
++	return 0
++}
++
++# Команда модему с освобождением AT-порта.
++modem_cmd() {
++	_p=$(find_port) || { echo "AT-порт модема не найден"; return 1; }
++	smsd_stop
++	_out=$(at_ask "$_p" "$1")
++	smsd_start
++	printf '%s' "$_out"
++}
++
++# --- режим канала ---------------------------------------------------------
++# network.lte.modes: all (auto) | umts (только 3G) | lte (только 4G).
++# Имена как в стоке.
++current_mode() {
++	uci -q get network.lte.modes 2>/dev/null || echo "all"
++}
++
++# Маски диапазонов с учётом режима.
++mode_masks() {
++	_bands="$(uci -q get network.lte.perenio_band 2>/dev/null | tr '\n' ' ')"
++	[ -n "$_bands" ] || _bands="allBands"
++	_masks=$(pejir_bands_calc $_bands)
++	_umts=$(echo "$_masks" | awk '{print $1}')
++	_lte=$(echo "$_masks" | awk '{print $2}')
++
++	case "$(current_mode)" in
++		umts) _lte="0" ;;   # только 3G - LTE выключаем
++		lte)  _umts="0" ;;  # только 4G - UMTS выключаем
++	esac
++
++	echo "$_umts $_lte"
++}
++
++mode_apply() {
++	_masks=$(mode_masks)
++	_umts=$(echo "$_masks" | awk '{print $1}')
++	_lte=$(echo "$_masks" | awk '{print $2}')
++
++	echo "режим канала: $(current_mode)"
++	echo "команда:     AT+ZBAND=$_umts,0,0,$_lte"
++
++	_out=$(modem_cmd "AT+ZBAND=$_umts,0,0,$_lte")
++	echo "ответ:       $_out"
++
++	case "$_out" in
++		*ERROR*|*'command not supported'*)
++			echo "модем отклонил настройку диапазонов"
++			return 1 ;;
++	esac
++
++	echo "режим канала применён"
++	return 0
++}
++
++case "${1:-}" in
++pin-status)
++	modem_cmd 'AT+CPIN?'
++	echo
++	;;
++pin-lock)
++	modem_cmd 'AT+CLCK="SC",2'
++	echo
++	;;
++pin-set)
++	shift
++	[ $# -ge 1 ] || { echo "нужен PIN"; exit 1; }
++	_out=$(modem_cmd "AT+CPIN=\"$1\"")
++	printf '%s\n' "$_out"
++	;;
++pin-enable)
++	shift
++	[ $# -ge 1 ] || { echo "нужен PIN"; exit 1; }
++	_out=$(modem_cmd "AT+CLCK=\"SC\",2,\"$1\"")
++	printf '%s\n' "$_out"
++	;;
++pin-disable)
++	shift
++	[ $# -ge 1 ] || { echo "нужен PIN"; exit 1; }
++	_out=$(modem_cmd "AT+CLCK=\"SC\",0,\"$1\"")
++	printf '%s\n' "$_out"
++	;;
++cnum)
++	modem_cmd 'AT+CNUM'
++	echo
++	;;
++reset)
++	echo "перезагрузка модема (AT+ZRST)..."
++	_out=$(modem_cmd 'AT+ZRST')
++	printf '%s\n' "$_out"
++	;;
++mode)
++	echo "режим канала: $(current_mode)"
++	echo "все режимы:   all (авто), umts (только 3G), lte (только 4G)"
++	;;
++mode-apply)
++	mode_apply
++	;;
++*)
++	echo "usage: pejir-modem-ctl [pin-status|pin-lock|pin-set <pin>|pin-enable <pin>|pin-disable <pin>|cnum|reset|mode|mode-apply]"
++	exit 1
++	;;
++esac

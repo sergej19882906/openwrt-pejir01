@@ -294,6 +294,98 @@ else
 	fail "helper: ответ оператора в UCS2 при DCS=0 не декодируется в читаемый текст"
 fi
 
+# Сценарий: ответ оператора С ПРЕФИКСОМ-ЗАГОЛОВКОМ и с неверным DCS.
+#
+# ФАКТ с живого устройства (релиз .56, ответ м��дема GM510):
+#
+#   +CUSD: 0,"00300002e003700310440002e000d000a04200435043a043b04
+#            30043c0430002e00204120430043a0430043d0441043804380020
+#            0434043b044f0020044204350431044f002100200416043c043800
+#            20002a0038003200320023", 17
+#
+# То есть:
+#   * статус 0, а DCS = 17 (не 15!). Схема по формуле стока
+#     (dcs/4)%3 даёт 0 -> GSM-7, и текст разбирался по одному байту
+#     на символ -> пользователь видел "набор символов";
+#   * первые 34 байта ответа - служебный заголовок оператора
+#     ("00300002e003700310440002e000d000a" + "Реклама. "), дальше идёт
+#     настоящий UCS-2BE-текст "Вакансии для тебя! Жми *822#".
+#
+# Значит одного признака "первая кодовая точка кириллическая"
+# (патч 0088) мало: первая кодовая точка здесь - мусор из заголовка.
+# Нужен разбор, который сам находит в ответе самый длинный участок
+# правдоподобного текста.
+if python3 - "$HELPER" <<'REALCASE'
+import os, pty, subprocess, sys, threading
+
+helper = sys.argv[1]
+master, slave = pty.openpty()
+slave_name = os.ttyname(slave)
+stop = False
+
+# Байты ответа как пришли от модема (без кавычек).
+payload = bytes.fromhex(
+    "00300002e003700310440002e000d000a04200435043a043b0430043c0430002e0020412"
+    "0430043a0430043d04410438043800200434043b044f0020044204350431044f00210020"
+    "0416043c04380020002a0038003200320023"
+)
+
+def modem():
+	buf = b''
+	while not stop:
+		try:
+			data = os.read(master, 4096)
+		except OSError:
+			break
+		if not data:
+			break
+		buf += data
+		while b'\r' in buf:
+			cmd, buf = buf.split(b'\r', 1)
+			cmd = cmd.strip()
+			if cmd == b'AT':
+				os.write(master, b'\r\nOK\r\n')
+			elif cmd.startswith(b'AT+CUSD'):
+				# DCS=17 - модем сообщает не UCS2; статус 0.
+				body = b'\r\n+CUSD: 0,"' + payload + b'", 17\r\n'
+				os.write(master, body)
+			elif cmd.startswith(b'AT+CGDCONT'):
+				os.write(master, b'\r\nOK\r\n')
+
+t = threading.Thread(target=modem, daemon=True)
+t.start()
+
+p = subprocess.run([helper, '-p', slave_name, '*100#'],
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   timeout=60)
+stop = True
+
+out = p.stdout.decode('utf-8', 'replace').strip()
+rc = p.returncode
+
+if rc != 0:
+	print("FAIL: helper вернул код %d, stdout=%r" % (rc, out))
+	sys.exit(1)
+
+# Ответ оператора начинается с 34 байт служебного заголовка (в нём
+# непечатные кодовые точки) - в результат он попасть не должен.
+if out != 'Вакансии для тебя! Жми *822#':
+	print("FAIL: ответ декодирован неверно: %r" % out)
+	sys.exit(1)
+
+bad = [c for c in out if ord(c) > 0x2fff]
+if bad:
+	print("FAIL: в ответе остались непечатные символы: %r" % out)
+	sys.exit(1)
+
+print("OK: ответ с заголовком и DCS=17 декодирован: %r" % out)
+REALCASE
+then
+	:
+else
+	fail "helper: ответ оператора с заголовком и неверным DCS не декодируется"
+fi
+
 # Сценарий: stty возвращает ошибку (на живом устройстве он всегда
 # возвращает "unable to perform all requested operations", хотя порт
 # рабочий). Helper обязан продолжить обмен и вернуть ответ оператора.

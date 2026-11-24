@@ -480,9 +480,16 @@ if [ -n "$SU" ]; then
         # нерабочее меню в веб-интерфейсе.
         # Проверка по списку файлов - unsquashfs -l его отдаёт.
         ABSENT_MISSING=""
+        # LXC нет и не должен появляться: стоковая прошивка его ставит,
+        # и после sysupgrade остатки (rpcd-плагин lxc.so, контроллер
+        # LuCI lxc.lua) остаются в верхнем слое - тогда в меню LuCI
+        # появляется пункт "LXC Containers", хотя LXC в образе нет.
         for f in usr/bin/sing-box usr/sbin/sing-box \
-                 usr/bin/lxc-start usr/bin/lxc-create \
-                 usr/lib/liblxc.so.1.9.0 \
+                 usr/bin/lxc-start usr/bin/lxc-create usr/bin/lxc-config \
+                 usr/lib/liblxc.so.1.9.0 usr/lib/liblxc.so.1 \
+                 usr/lib/rpcd/lxc.so \
+                 usr/lib/lua/luci/controller/lxc.lua \
+                 usr/lib/lua/luci/view/lxc.htm \
                  usr/share/luci/menu.d/luci-app-lxc.json \
                  etc/init.d/cgroup2; do
           if echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f"; then
@@ -677,6 +684,7 @@ if [ -n "$SU" ]; then
                  usr/libexec/pejir-ussd \
                  usr/libexec/pejir-led \
                  usr/libexec/pejir-lte-apn \
+                 usr/libexec/pejir-modem-ctl \
                  www/luci-static/resources/view/perenio/lte.js \
                  etc/init.d/pejir-led \
                  etc/init.d/41-pejir-sync \
