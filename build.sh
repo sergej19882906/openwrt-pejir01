@@ -557,18 +557,37 @@ if [ -n "$SU" ]; then
         # start() { return 0; } и скрипт молча ничего не делает (патч
         # 0085). Проверяем, что у каждого нашего init-скрипта есть
         # рабочий способ запуска.
+        # Детектор вынесен в scripts/init-start-check.sh, чтобы
+        # build.sh и тест tests/test-build-init-check.sh проверяли ОДНУ
+        # и ту же логику.
+        #
+        # ВАЖНО: USE_PROCD=1 ищется ЯКОРНЫМ grep -E '^[[:space:]]*'.
+        # Простой grep совпадает с КОММЕНТАРИЕМ ("# Объявляем
+        # USE_PROCD=1 нельзя: ...") и объявляет исправный скрипт
+        # годным, скрывая дефект - проверка становится пустой.
         INIT_START_BAD=""
+        INIT_CHECK="$(dirname "$0")/scripts/init-start-check.sh"
+        if [ ! -f "$INIT_CHECK" ]; then
+          ann error "build.sh: init" "нет детектора $INIT_CHECK"
+          echo "ОШИБКА: нет scripts/init-start-check.sh"
+          exit 1
+        fi
         for f in etc/init.d/40-pejir-sms etc/init.d/41-pejir-modem \
                  etc/init.d/47-pejir-lte etc/init.d/41-pejir-sync; do
             echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || continue
-            SRC="$(unsquashfs -cat "$R" "$f" 2>/dev/null || true)"
-            [ -n "$SRC" ] || { INIT_START_BAD="$INIT_START_BAD $f(нет)"; continue; }
-            if echo "$SRC" | grep -q "USE_PROCD=1"; then
+            TMPF="$(mktemp)"
+            unsquashfs -cat "$R" "$f" > "$TMPF" 2>/dev/null || true
+            if [ ! -s "$TMPF" ]; then
+                rm -f "$TMPF"
+                INIT_START_BAD="$INIT_START_BAD $f(нет)"
                 continue
             fi
-            if echo "$SRC" | grep -A6 "^start()" | grep -q "start_service"; then
+            if sh "$INIT_CHECK" "$TMPF" >/dev/null 2>&1; then
+                rm -f "$TMPF"
                 continue
             fi
+            sh "$INIT_CHECK" "$TMPF" 2>/dev/null | sed 's/^/       /' || true
+            rm -f "$TMPF"
             INIT_START_BAD="$INIT_START_BAD $f"
         done
         if [ -n "$INIT_START_BAD" ]; then
