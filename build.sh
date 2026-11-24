@@ -551,6 +551,34 @@ if [ -n "$SU" ]; then
           exit 1
         fi
 
+        # Init-скрипты обязаны РЕАЛЬНО стартовать при загрузке.
+        # /etc/rc.common вызывает start_service() только если скрипт
+        # объявил USE_PROCD=1; без этого флага вызывается собственный
+        # start() { return 0; } и скрипт молча ничего не делает (патч
+        # 0085). Проверяем, что у каждого нашего init-скрипта есть
+        # рабочий способ запуска.
+        INIT_START_BAD=""
+        for f in etc/init.d/40-pejir-sms etc/init.d/41-pejir-modem \
+                 etc/init.d/47-pejir-lte etc/init.d/41-pejir-sync; do
+            echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || continue
+            SRC="$(unsquashfs -cat "$R" "$f" 2>/dev/null || true)"
+            [ -n "$SRC" ] || { INIT_START_BAD="$INIT_START_BAD $f(нет)"; continue; }
+            if echo "$SRC" | grep -q "USE_PROCD=1"; then
+                continue
+            fi
+            if echo "$SRC" | grep -A6 "^start()" | grep -q "start_service"; then
+                continue
+            fi
+            INIT_START_BAD="$INIT_START_BAD $f"
+        done
+        if [ -n "$INIT_START_BAD" ]; then
+            ann error "build.sh: init" "init-скрипты без рабочего способа запуска:$INIT_START_BAD"
+            echo "ОШИБКА: start_service() без USE_PROCD=1 и без start() - скрипты молчат при загрузке"
+            exit 1
+        else
+            echo "  init-скрипты имеют рабочий способ запуска: OK"
+        fi
+
         # Вендорные бинари mcu/mcud ищут libubox.so/libubus.so по обычному
         # имени, поэтому в образе обязаны быть symlink'и на версионные
         # библиотеки в /lib. Если рецепт install'а по какой-то причине не

@@ -129,6 +129,7 @@ jobs:
           sh tests/test-ota-purge.sh
           sh tests/test-ovl-mounts.sh
           sh tests/test-led.sh
+          sh tests/test-init-startup.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый

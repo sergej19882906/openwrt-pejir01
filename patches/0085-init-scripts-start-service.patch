@@ -1,0 +1,160 @@
+From 6c742b8e768efec75bba41afa35acbf4e4c4025a Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Tue, 24 Nov 2026 15:45:20 GMT
+Subject: =?utf-8?b?cGVqaXItc21zL2x0ZS9tb2RlbS9zeW5jOiBpbml0LdGB0LrRgNC40L/RgtGLINC+?=
+ =?utf-8?b?0LHRj9C30LDQvdGLINGB0YLQsNGA0YLQvtCy0LDRgtGMINC/0YDQuCDQt9Cw0LPR?=
+ =?utf-8?b?gNGD0LfQutC1?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Функция start_service() в OpenWrt вызывается ТОЛЬКО если init-скрипт
+объявил USE_PROCD=1. Без этого флага /etc/rc.common выполняет свой
+собственный start() { return 0; }, и start_service() нашего скрипта не
+вызывается НИКОГДА.
+
+Наши четыре скрипта (40-pejir-sms, 41-pejir-modem, 47-pejir-lte,
+41-pejir-sync) определяли start_service(), но USE_PROCD=1 не имели ни
+один: механизм не работал с момента появления в патче 0018.
+
+Последствия:
+  * pejir-sync молчал - протухшие копии файлов пакетов в верхнем слое
+    не восстанавливались из /rom (тот самый дефект, ради которого сервис
+    и написан);
+  * 40-pejir-sms не записывал /etc/smsd.conf - конфиг оставался от
+    прежних образов, опции кодировки не появлялись;
+  * 41-pejir-modem не определял AT-порт модема;
+  * 47-pejir-lte не поднимал секцию network.lte.
+
+Проверено на настоящем /etc/rc.common из OpenWrt 25.12: прямой вызов
+start_service() печатает отметку, а запуск скрипта через rc.common -
+нет. Стенд воспроизводит поведение procd: он выполняет S-симлинки
+последовательно (max_running_tasks = 1) вызовом init-скрипта с
+аргументом start.
+
+Объявлять USE_PROCD=1 нельзя: эти скрипты не регистрируют инстанс
+через procd_open_instance, и procd завёл бы пустой "phantom"-сервис.
+Поэтому определяем start()/stop() сами - так же, как стоковые
+одноразовые скрипты OpenWrt (led, sysfixtime) и наш pejir-autosetup.
+
+Ожидание модема остаётся в скриптах: MODEM_WAIT ждёт появления узла
+/dev/ttyUSB*, а долгий поиск AT-порта уходит в фоновый повтор
+(spawn_retry), поэтому загрузка не блокируется на минуты.
+---
+ .../root/etc/init.d/41-pejir-modem            | 19 +++++++++++++++++++
+ .../root/etc/init.d/47-pejir-lte              | 19 +++++++++++++++++++
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    | 19 +++++++++++++++++++
+ .../pejir-sync/root/etc/init.d/41-pejir-sync  | 19 +++++++++++++++++++
+ 4 files changed, 76 insertions(+)
+
+diff --git a/package/pejir-lte-base/root/etc/init.d/41-pejir-modem b/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
+index 3d31a0e..bf69a9e 100644
+--- a/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
++++ b/package/pejir-lte-base/root/etc/init.d/41-pejir-modem
+@@ -65,3 +65,22 @@ start_service() {
+ stop_service() {
+ 	return 0
+ }
++
++# --- Запуск при загрузке ----------------------------------------------
++# В OpenWrt /etc/rc.common вызывает у init-скрипта функцию start(),
++# а start_service() - ТОЛЬКО если скрипт объявил USE_PROCD=1.
++# Без этого флага rc.common выполняет собственный start() { return 0; }
++# и start_service() НИКОГДА не вызывается: скрипт при загрузке молча
++# ничего не делал (в журнале - ни одной записи).
++#
++# Объявляем USE_PROCD=1 нельзя: эти скрипты не регистрируют инстанс
++# через procd_open_instance, и procd завёл бы пустой "phantom"-сервис.
++# Поэтому определяем start()/stop() сами - так же, как стоковые
++# одноразовые скрипты OpenWrt (led, sysfixtime) и наш pejir-autosetup.
++start() {
++	start_service "$@"
++}
++
++stop() {
++	stop_service "$@"
++}
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 2d73d4c..e2fe215 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -456,3 +456,22 @@ stop_service() {
+ 		ifdown lte >/dev/null 2>&1
+ 	fi
+ }
++
++# --- Запуск при загрузке ----------------------------------------------
++# В OpenWrt /etc/rc.common вызывает у init-скрипта функцию start(),
++# а start_service() - ТОЛЬКО если скрипт объявил USE_PROCD=1.
++# Без этого флага rc.common выполняет собственный start() { return 0; }
++# и start_service() НИКОГДА не вызывается: скрипт при загрузке молча
++# ничего не делал (в журнале - ни одной записи).
++#
++# Объявляем USE_PROCD=1 нельзя: эти скрипты не регистрируют инстанс
++# через procd_open_instance, и procd завёл бы пустой "phantom"-сервис.
++# Поэтому определяем start()/stop() сами - так же, как стоковые
++# одноразовые скрипты OpenWrt (led, sysfixtime) и наш pejir-autosetup.
++start() {
++	start_service "$@"
++}
++
++stop() {
++	stop_service "$@"
++}
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index a1f3b5c..35903a2 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -393,3 +393,22 @@ start_service() {
+ stop_service() {
+ 	return 0
+ }
++
++# --- Запуск при загрузке ----------------------------------------------
++# В OpenWrt /etc/rc.common вызывает у init-скрипта функцию start(),
++# а start_service() - ТОЛЬКО если скрипт объявил USE_PROCD=1.
++# Без этого флага rc.common выполняет собственный start() { return 0; }
++# и start_service() НИКОГДА не вызывается: скрипт при загрузке молча
++# ничего не делал (в журнале - ни одной записи).
++#
++# Объявляем USE_PROCD=1 нельзя: эти скрипты не регистрируют инстанс
++# через procd_open_instance, и procd завёл бы пустой "phantom"-сервис.
++# Поэтому определяем start()/stop() сами - так же, как стоковые
++# одноразовые скрипты OpenWrt (led, sysfixtime) и наш pejir-autosetup.
++start() {
++	start_service "$@"
++}
++
++stop() {
++	stop_service "$@"
++}
+diff --git a/package/pejir-sync/root/etc/init.d/41-pejir-sync b/package/pejir-sync/root/etc/init.d/41-pejir-sync
+index 6809a52..7c3d68b 100755
+--- a/package/pejir-sync/root/etc/init.d/41-pejir-sync
++++ b/package/pejir-sync/root/etc/init.d/41-pejir-sync
+@@ -215,3 +215,22 @@ start_service() {
+ stop_service() {
+ 	return 0
+ }
++
++# --- Запуск при загрузке ----------------------------------------------
++# В OpenWrt /etc/rc.common вызывает у init-скрипта функцию start(),
++# а start_service() - ТОЛЬКО если скрипт объявил USE_PROCD=1.
++# Без этого флага rc.common выполняет собственный start() { return 0; }
++# и start_service() НИКОГДА не вызывается: скрипт при загрузке молча
++# ничего не делал (в журнале - ни одной записи).
++#
++# Объявляем USE_PROCD=1 нельзя: эти скрипты не регистрируют инстанс
++# через procd_open_instance, и procd завёл бы пустой "phantom"-сервис.
++# Поэтому определяем start()/stop() сами - так же, как стоковые
++# одноразовые скрипты OpenWrt (led, sysfixtime) и наш pejir-autosetup.
++start() {
++	start_service "$@"
++}
++
++stop() {
++	stop_service "$@"
++}
+-- 
+2.39.5
+
