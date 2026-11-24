@@ -677,6 +677,7 @@ if [ -n "$SU" ]; then
                  usr/libexec/pejir-led \
                  etc/init.d/pejir-led \
                  etc/init.d/41-pejir-sync \
+                 etc/init.d/pejir-sms-spool \
                  etc/uci-defaults/80-pejir-sync; do
           echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || PERENIO_MISSING="$PERENIO_MISSING $f"
         done
@@ -686,6 +687,47 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  страницы LuCI, init-скрипты и uci-defaults порта: OK"
+
+        # Постоянная очередь SMS (патч 0086). Если скрипт не попал в
+        # образ или потерял права, очередь молча вернётся в tmpfs, и
+        # принятые SMS снова будут пропадать после перезагрузки - без
+        # всякой ошибки на экране.
+        SPOOL_SRC="$(unsquashfs -cat "$R" "etc/init.d/pejir-sms-spool" 2>/dev/null || true)"
+        if [ -z "$SPOOL_SRC" ]; then
+          ann error "build.sh: SMS spool" "нет etc/init.d/pejir-sms-spool - очередь SMS не будет постоянной"
+          echo "ОШИБКА: в образе нет etc/init.d/pejir-sms-spool"
+          exit 1
+        fi
+        echo "$SPOOL_SRC" | grep -q "mount --bind" || {
+          ann error "build.sh: SMS spool" "pejir-sms-spool без mount --bind"
+          echo "ОШИБКА: pejir-sms-spool не делает bind-mount очереди SMS"
+          exit 1
+        }
+        if ! echo "$ROOTFS_LIST" | grep -q "squashfs-root/etc/init.d/pejir-sms-spool"; then
+          ann error "build.sh: SMS spool" "pejir-sms-spool не попал в образ"
+          echo "ОШИБКА: etc/init.d/pejir-sms-spool отсутствует в списке образа"
+          exit 1
+        fi
+        # Права 0755: без исполняемого бита init-скрипт не запускается,
+        # и очередь молча остаётся в tmpfs.
+        ROOTFS_LONG="$(unsquashfs -ll "$R" 2>/dev/null || true)"
+        if ! echo "$ROOTFS_LONG" | grep "squashfs-root/etc/init.d/pejir-sms-spool" | grep -q "^-rwxr-xr-x"; then
+          ann error "build.sh: SMS spool" "у pejir-sms-spool нет прав 0755"
+          echo "ОШИБКА: etc/init.d/pejir-sms-spool без прав 0755"
+          exit 1
+        fi
+        echo "  постоянная очередь SMS (pejir-sms-spool): OK"
+
+        # Русский каталог переводов страницы обновления прошивки (патч
+        # 0087). Без .lmo английский msgid показывается как есть, то
+        # есть страница в русской локали остаётся наполовину
+        # английской - ровно тот дефект, который закрывал патч.
+        if ! echo "$ROOTFS_LIST" | grep -q "luci-app-pejir-ota.ru.lmo"; then
+          ann error "build.sh: OTA i18n" "нет .lmo с переводом страницы обновления прошивки"
+          echo "ОШИБКА: в образе нет usr/lib/lua/luci/i18n/luci-app-pejir-ota.ru.lmo"
+          exit 1
+        fi
+        echo "  перевод страницы обновления прошивки (pejir-ota.ru.lmo): OK"
 
         # Инструменты для модемов. qminfo и xmm-modem лежали в дереве
         # пакетов, но без CONFIG_PACKAGE_*=y в образ не попадали, а у

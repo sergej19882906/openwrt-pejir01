@@ -1,0 +1,98 @@
+From ba6589d98da577b4804e36e538c15df3dba8814c Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Tue, 24 Nov 2026 18:36:11 GMT
+Subject: =?utf-8?b?cGVqaXItdXNzZDog0L7Qv9GA0LXQtNC10LvRj9GC0Ywg0LrQvtC00LjRgNC+0LLQ?=
+ =?utf-8?b?utGDINC+0YLQstC10YLQsCBVU1NEINC/0L4g0LrQvtC00L7QstC+0Lkg0YLQvtGH?=
+ =?utf-8?b?0LrQtQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Пользователь сообщает, что в ответ на USSD-запрос приходит "набор
+символов" вместо текста оператора.
+
+Причина - неверный выбор схемы декодирования. Схема вычислялась по
+DCS, который модем (GM510) часто заполняет неверно, с последующей
+эвристикой по наличию байта 0x00 в ответе. Но у кириллицы в UCS2
+кодовые точки вида 0x04xx, поэтому байта 0x00 в ответе может не
+быть вовсе: ответ "Баланс" в UTF-16BE - это 04 21 04 30 04 3B 04 30
+04 44, ни одного нуля. Такие байты не печатные, нуля нет, DCS=0
+(GSM-7) - и текст разбирался по одному байту на символ, то есть
+выводился мусором.
+
+Исправление - детект кодировки по первой кодовой точке, как в стоковом
+dcs.sh: если первая кодовая точка попадает в диапазон кириллицы
+Unicode (0400-04ff, 0500-052f, 2de0-2dff, a640-a69f), ответ читается
+как UCS2 независимо от того, что модем написал в DCS.
+
+Дополнительно вызов awk теперь идёт с LC_ALL=C: в UTF-8-локали gawk
+трактует %c как кодовую точку и перекодирует байты UTF-16BE (двойное
+кодирование). В C-локали - сырые байты, как и нужно.
+
+Константы диапазонов заданы десятичными числами: mawk (awk по
+умолчанию в CI) не понимает hex-литералы, 0x0400 у него равно 0.
+
+Проверено: на стенде с эмулятором модема ответ в UCS2 при DCS=0
+выводился как "Ђ\x11\x040\x04;\x040\x04=\x04A" (тот самый "набор
+символов"), после исправления - "Баланс".
+---
+ .../root/usr/libexec/pejir-ussd               | 32 ++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-ussd b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+index b74095a..7fbfa3e 100755
+--- a/package/luci-app-perenio/root/usr/libexec/pejir-ussd
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+@@ -175,7 +175,10 @@ parse_ussd() {
+ 	_hex="$(bytes_to_hex "$_file")"
+ 	[ -n "$_hex" ] || return 1
+ 
+-	printf '%s\n' "$_hex" | awk '
++	# LC_ALL=C обязателен: в UTF-8-локали gawk трактует %c как
++	# кодовую точку и перекодирует байты UTF-16BE (двойное
++	# кодирование). В C-локали - сырые байты, как и нужно.
++	printf '%s\n' "$_hex" | LC_ALL=C awk '
+ function hexval(h,   i, c, v, n) {
+ 	v = 0
+ 	n = length(h)
+@@ -239,6 +242,29 @@ function all_printable(hx,   i, c) {
+ }
+ 
+ # ASCII-цифры, пришедшие как hex-байты ("30" = символ '0'), -> число.
++# Первая кодовая точка (2 байта) - как в стоковом dcs.sh (_msg_decode).
++function first_cp(hx,   hi, lo) {
++	if (length(hx) < 4) return -1
++	hi = hexval(substr(hx, 1, 2))
++	lo = hexval(substr(hx, 3, 2))
++	if (hi < 0 || lo < 0) return -1
++	return hi * 256 + lo
++}
++
++# Диапазоны кириллицы Unicode (в т.ч. расширения) - по стоковому dcs.sh.
++# Их наличие означает UCS2 (2 байта на символ), даже если модем написал
++# в DCS 0 (GSM-7).
++function is_cyrillic(cp) {
++	if (cp < 0) return 0
++	# Десятичные константы: mawk (awk по умолчанию в CI) не понимает
++	# hex-литералы (0x0400 у него равно 0).
++	if (cp >= 1024 && cp <= 1279) return 1     # 0400-04ff  Кириллица
++	if (cp >= 1280 && cp <= 1327) return 1     # 0500-052f  Дополнение
++	if (cp >= 11744 && cp <= 11775) return 1   # 2de0-2dff  Расширение A
++	if (cp >= 42560 && cp <= 42655) return 1   # a640-a69f  Расширение B
++	return 0
++}
++
+ function ascii_num(s,   i, c, v, n) {
+ 	v = 0
+ 	n = length(s)
+@@ -300,6 +326,10 @@ function ascii_num(s,   i, c, v, n) {
+ 		ans = bytes_text(payload)
+ 	} else if (has_nul(payload)) {
+ 		ans = ucs2_text(payload)
++	} else if (is_cyrillic(first_cp(payload))) {
++		# Модем прислал UCS2, но в DCS написал 0 (GSM-7): ориентируемся
++		# на кодовую точку, как в стоковом dcs.sh.
++		ans = ucs2_text(payload)
+ 	} else if (scheme == 0 || scheme == 1) {
+ 		ans = bytes_text(payload)
+ 	} else {

@@ -225,6 +225,75 @@ else
 	fail "helper: ответ оператора в UCS2 не декодируется в читаемый текст"
 fi
 
+# Сценарий: ответ оператора в UCS2, но модем сообщает DCS=0 (GSM-7).
+# Так ведёт себя GM510 на русском тексте: байты ответа - UTF-16BE
+# (кириллица 0x04xx), а в DCS модем пишет 0. В ответе без пробелов нет
+# байта 0x00, поэтому прежняя эвристика ("нет NUL -> один байт на
+# символ") ломала текст на "кучу символов". Эталон - стоковый dcs.sh:
+# первая кодовая точка из диапазона кириллицы означает UCS2 независимо
+# от того, что модем написал в DCS.
+if python3 - "$HELPER" <<'DCSV0CASE'
+import os, pty, subprocess, sys, threading
+
+helper = sys.argv[1]
+master, slave = pty.openpty()
+slave_name = os.ttyname(slave)
+stop = False
+
+# "Баланс" без пробелов -> в UCS2 нет байта 0x00
+text = "Баланс"
+ucs2 = text.encode('utf-16-be')
+assert b'\x00' not in ucs2
+
+def modem():
+	buf = b''
+	while not stop:
+		try:
+			data = os.read(master, 4096)
+		except OSError:
+			break
+		if not data:
+			break
+		buf += data
+		while b'\r' in buf:
+			cmd, buf = buf.split(b'\r', 1)
+			cmd = cmd.strip()
+			if cmd == b'AT':
+				os.write(master, b'\r\nOK\r\n')
+			elif cmd.startswith(b'AT+CUSD'):
+				# dcs=0 - модем сообщает GSM-7, а присылает UCS2
+				body = b'\r\n+CUSD: 1,"' + ucs2 + b'",0\r\n'
+				os.write(master, body)
+			elif cmd.startswith(b'AT+CGDCONT'):
+				os.write(master, b'\r\nOK\r\n')
+
+t = threading.Thread(target=modem, daemon=True)
+t.start()
+
+p = subprocess.run([helper, '-p', slave_name, '*100#'],
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   timeout=60)
+stop = True
+
+out = p.stdout.decode('utf-8', 'replace').strip()
+rc = p.returncode
+
+if rc != 0:
+	print("FAIL: helper вернул код %d, stdout=%r" % (rc, out))
+	sys.exit(1)
+
+if 'Баланс' not in out:
+	print("FAIL: ответ в UCS2 с DCS=0 не декодирован: %r" % out)
+	sys.exit(1)
+
+print("OK: ответ в UCS2 с DCS=0 декодирован: %r" % out)
+DCSV0CASE
+then
+	:
+else
+	fail "helper: ответ оператора в UCS2 при DCS=0 не декодируется в читаемый текст"
+fi
+
 # Сценарий: stty возвращает ошибку (на живом устройстве он всегда
 # возвращает "unable to perform all requested operations", хотя порт
 # рабочий). Helper обязан продолжить обмен и вернуть ответ оператора.
