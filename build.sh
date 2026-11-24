@@ -573,7 +573,8 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         for f in etc/init.d/40-pejir-sms etc/init.d/41-pejir-modem \
-                 etc/init.d/47-pejir-lte etc/init.d/41-pejir-sync; do
+                 etc/init.d/47-pejir-lte etc/init.d/41-pejir-sync \
+                 etc/init.d/pejir-sms-spool; do
             echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || continue
             TMPF="$(mktemp)"
             unsquashfs -cat "$R" "$f" > "$TMPF" 2>/dev/null || true
