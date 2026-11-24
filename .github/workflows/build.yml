@@ -127,6 +127,7 @@ jobs:
           sh tests/test-ovl-sync.sh
           sh tests/test-ovl-purge.sh
           sh tests/test-ota-purge.sh
+          sh tests/test-ovl-mounts.sh
           sh tests/test-led.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом

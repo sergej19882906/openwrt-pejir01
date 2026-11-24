@@ -1,0 +1,154 @@
+From afdaef57c7a53d83492e5a001e48c8eeeca4e0f0 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Tue, 24 Nov 2026 07:23:00 GMT
+Subject: =?utf-8?b?cGVqaXItc3luYywgcGVqaXItb3RhOiDQutC+0YDRgNC10LrRgtC90YvQuSDRgNCw?=
+ =?utf-8?b?0LfQsdC+0YAgL3Byb2MvbW91bnRz?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Разбор верхнего слоя overlay искал upperdir= через awk по отдельным
+полям строки /proc/mounts:
+
+    awk '$3 == "overlay" { for (i = 4; i <= NF; i++) if ($i ~ /^upperdir=/) ... }'
+
+Так он не находит ничего: опции mount'а - это ОДНО поле с запятыми
+("rw,lowerdir=...,upperdir=...,workdir=..."), поэтому ни одно поле не
+начинается с "upperdir=". find_upper_dir() всегда возвращал пусто и
+падал в захардкоженные пути /overlay/upper и /overlay/root/upper -
+на устройстве с extroot это не тот каталог, значит:
+
+  * 41-pejir-sync чистил не тот слой и не восстанавливал протухшие
+    копии файлов пакетов (тот самый симптом, ради которого сервис и
+    написан);
+  * pejir-ovl-purge вычищал не тот каталог перед sysupgrade.
+
+Теперь upperdir= ищется по всей строке через sed, и сначала берётся
+корневой mount (mountpoint = "/", fstype = overlay), а не первый
+подходящий: в системе с extroot mount'ов с fstype overlay несколько,
+и первый может указывать не на rootfs_data.
+
+Путь к файлу mount'ов вынесен в переменную (PEJIR_SYNC_MOUNTS_FILE,
+PEJIR_PURGE_MOUNTS_FILE) - так разбор проверяется тестом без
+устройства. В helper добавлен режим --print-upper: показать найденный
+верхний слой и выйти (нужно для диагностики на устройстве).
+
+Тест tests/test-ovl-mounts.sh: на поддельном /proc/mounts с двумя
+overlay-mount'ами проверяется, что выбирается корневой; отдельно -
+что upperdir= находится в общем поле опций, и что без корневого
+overlay берётся запасной вариант.
+---
+ package/pejir-ota/files/pejir-ovl-purge       | 36 ++++++++++++++++---
+ .../pejir-sync/root/etc/init.d/41-pejir-sync  | 24 ++++++++-----
+ 2 files changed, 47 insertions(+), 13 deletions(-)
+
+diff --git a/package/pejir-ota/files/pejir-ovl-purge b/package/pejir-ota/files/pejir-ovl-purge
+index 616fe63..fe2bc18 100755
+--- a/package/pejir-ota/files/pejir-ovl-purge
++++ b/package/pejir-ota/files/pejir-ovl-purge
+@@ -51,6 +51,10 @@ set -u
+ 
+ PKG_DIR="${PEJIR_PURGE_PKG_DIR:-/lib/apk/packages}"
+ 
++# Файл со списком mount'ов: обычный /proc/mounts, но путь можно
++# переопределить - так разбор проверяется тестом без устройства.
++MOUNTS_FILE="${PEJIR_PURGE_MOUNTS_FILE:-/proc/mounts}"
++
+ # Наши пакеты: только их файлы вычищаем.
+ PKGS="${PEJIR_PURGE_PKGS:-pejir-sms luci-app-perenio luci-app-atinout pejir-lte-base pejir-ota pejir-sync}"
+ 
+@@ -60,11 +64,23 @@ PKGS="${PEJIR_PURGE_PKGS:-pejir-sms luci-app-perenio luci-app-atinout pejir-lte-
+ find_upper_dir() {
+ 	local m dir
+ 
+-	# Корневой mount: в /proc/mounts поля - device / mountpoint /
+-	# fstype / options, значит fstype стоит в 3-й колонке.
+-	m="$(awk '$3 == "overlay" { for (i = 4; i <= NF; i++) if ($i ~ /^upperdir=/) { sub(/^upperdir=/, "", $i); print $i; exit } }' /proc/mounts 2>/dev/null | head -1)"
+-	if [ -n "$m" ] && [ -d "$m" ]; then
+-		echo "$m"
++	# В /proc/mounts опции mount'а - ОДНО поле с запятыми
++	# ("rw,lowerdir=...,upperdir=...,workdir=..."), поэтому upperdir=
++	# ищем по всей строке, а не по отдельным полям.
++	#
++	# Корневой mount: mountpoint = "/", fstype = overlay.
++	m="$(grep -E '[[:space:]]/[[:space:]]overlay(fs)?[[:space:]]' "$MOUNTS_FILE" 2>/dev/null | head -1)"
++	dir="$(echo "$m" | sed -n 's/.*upperdir=\([^,]*\).*/\1/p')"
++	if [ -n "$dir" ] && [ -d "$dir" ]; then
++		echo "$dir"
++		return 0
++	fi
++
++	# Запасной вариант - любой mount с fstype overlay.
++	m="$(grep -E '[[:space:]]overlay(fs)?[[:space:]]' "$MOUNTS_FILE" 2>/dev/null | head -1)"
++	dir="$(echo "$m" | sed -n 's/.*upperdir=\([^,]*\).*/\1/p')"
++	if [ -n "$dir" ] && [ -d "$dir" ]; then
++		echo "$dir"
+ 		return 0
+ 	fi
+ 
+@@ -84,6 +100,16 @@ is_protected() {
+ 	return 1
+ }
+ 
++# Режим --print-upper: только показать найденный верхний слой и выйти.
++# Нужен для диагностики на устройстве (check_rel51.sh) и для теста.
++case "${1:-}" in
++--print-upper)
++	UPPER="$(find_upper_dir)" || exit 1
++	echo "$UPPER"
++	exit 0
++	;;
++esac
++
+ UPPER="${PEJIR_PURGE_UPPER_DIR:-}"
+ [ -n "$UPPER" ] || UPPER="$(find_upper_dir)"
+ 
+diff --git a/package/pejir-sync/root/etc/init.d/41-pejir-sync b/package/pejir-sync/root/etc/init.d/41-pejir-sync
+index 272c6f6..6809a52 100755
+--- a/package/pejir-sync/root/etc/init.d/41-pejir-sync
++++ b/package/pejir-sync/root/etc/init.d/41-pejir-sync
+@@ -39,6 +39,9 @@ START=90
+ STOP=0
+ 
+ ROM_DIR="${PEJIR_SYNC_ROM_DIR:-/rom}"
++# Файл со списком mount'ов: обычный /proc/mounts, но путь можно
++# переопределить - так разбор проверяется тестом без устройства.
++MOUNTS_FILE="${PEJIR_SYNC_MOUNTS_FILE:-/proc/mounts}"
+ UPPER_DIR="${PEJIR_SYNC_UPPER_DIR:-}"
+ ROOT_DIR="${PEJIR_SYNC_ROOT_DIR:-}"
+ PKG_DIR="${PEJIR_SYNC_PKG_DIR:-/lib/apk/packages}"
+@@ -67,18 +70,23 @@ find_upper_dir() {
+ 
+ 	[ -n "$UPPER_DIR" ] && { echo "$UPPER_DIR"; return 0; }
+ 
+-	# Корневой mount: $2 = "/", $3 = "overlay", в $4.. - опции,
+-	# среди которых upperdir=...
+-	m="$(awk '$2 == "/" && $3 == "overlay" { for (i = 4; i <= NF; i++) if ($i ~ /^upperdir=/) { sub(/^upperdir=/, "", $i); print $i; exit } }' /proc/mounts 2>/dev/null | head -1)"
+-	if [ -n "$m" ] && [ -d "$m" ]; then
+-		echo "$m"
++	# В /proc/mounts опции mount'а - ОДНО поле с запятыми
++	# ("rw,lowerdir=...,upperdir=...,workdir=..."), поэтому upperdir=
++	# ищем по всей строке, а не по отдельным полям.
++	#
++	# Корневой mount: mountpoint = "/", fstype = overlay.
++	m="$(grep -E '[[:space:]]/[[:space:]]overlay(fs)?[[:space:]]' "$MOUNTS_FILE" 2>/dev/null | head -1)"
++	dir="$(echo "$m" | sed -n 's/.*upperdir=\([^,]*\).*/\1/p')"
++	if [ -n "$dir" ] && [ -d "$dir" ]; then
++		echo "$dir"
+ 		return 0
+ 	fi
+ 
+ 	# Запасной вариант - любой mount с fstype overlay.
+-	m="$(awk '$3 == "overlay" { for (i = 4; i <= NF; i++) if ($i ~ /^upperdir=/) { sub(/^upperdir=/, "", $i); print $i; exit } }' /proc/mounts 2>/dev/null | head -1)"
+-	if [ -n "$m" ] && [ -d "$m" ]; then
+-		echo "$m"
++	m="$(grep -E '[[:space:]]overlay(fs)?[[:space:]]' "$MOUNTS_FILE" 2>/dev/null | head -1)"
++	dir="$(echo "$m" | sed -n 's/.*upperdir=\([^,]*\).*/\1/p')"
++	if [ -n "$dir" ] && [ -d "$dir" ]; then
++		echo "$dir"
+ 		return 0
+ 	fi
+ 
+-- 
+2.39.5
+
