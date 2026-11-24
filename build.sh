@@ -566,7 +566,7 @@ if [ -n "$SU" ]; then
         # USE_PROCD=1 нельзя: ...") и объявляет исправный скрипт
         # годным, скрывая дефект - проверка становится пустой.
         INIT_START_BAD=""
-        INIT_CHECK="$(dirname "$0")/scripts/init-start-check.sh"
+        INIT_CHECK="$REPO_DIR/scripts/init-start-check.sh"
         if [ ! -f "$INIT_CHECK" ]; then
           ann error "build.sh: init" "нет детектора $INIT_CHECK"
           echo "ОШИБКА: нет scripts/init-start-check.sh"
