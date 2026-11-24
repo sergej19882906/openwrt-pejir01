@@ -513,6 +513,44 @@ if [ -n "$SU" ]; then
           echo "  OTA-модуль в образе: OK"
         fi
 
+        # Helper очистки верхнего слоя обязан уметь показывать найденный
+        # каталог (--print-upper): без этого режима нечем проверить на
+        # устройстве, что разбор /proc/mounts вообще работает. Регрессия
+        # патча 0083 (upperdir= искался по полям, а опции mount'а - одно
+        # поле с запятыми) внешне выглядела бы как "чистить нечего".
+        if echo "$ROOTFS_LIST" | grep -q "squashfs-root/usr/bin/pejir-ovl-purge"; then
+          OVLPURGE_SRC="$(unsquashfs -cat "$R" "usr/bin/pejir-ovl-purge" 2>/dev/null || true)"
+          if echo "$OVLPURGE_SRC" | grep -q -- "--print-upper"; then
+            echo "  helper очистки умеет --print-upper: OK"
+          else
+            ann error "build.sh: OTA" "pejir-ovl-purge без --print-upper - нечем проверить разбор /proc/mounts"
+            echo "ОШИБКА: pejir-ovl-purge без режима --print-upper"
+            exit 1
+          fi
+          # Разбор /proc/mounts обязан искать upperdir= по ВСЕЙ строке:
+          # опции mount'а - одно поле с запятыми, поэтому поиск по
+          # отдельным полям (awk) не находит ничего (регрессия 0083).
+          if echo "$OVLPURGE_SRC" | grep -q "upperdir="; then
+            echo "  helper очистки ищет upperdir= в /proc/mounts: OK"
+          else
+            ann error "build.sh: OTA" "pejir-ovl-purge не ищет upperdir= в /proc/mounts"
+            echo "ОШИБКА: pejir-ovl-purge без разбора /proc/mounts"
+            exit 1
+          fi
+        fi
+
+        # 40-pejir-sms обязан содержать ensure_charset_options(): без него
+        # опции кодировки пишутся только после успешного AT-ответа, а
+        # модем не отвечает, пока активен LTE-вызов (патч 0083).
+        SMS_INIT_SRC="$(unsquashfs -cat "$R" "etc/init.d/40-pejir-sms" 2>/dev/null || true)"
+        if echo "$SMS_INIT_SRC" | grep -q "ensure_charset_options"; then
+          echo "  40-pejir-sms содержит ensure_charset_options(): OK"
+        else
+          ann error "build.sh: SMS" "В 40-pejir-sms нет ensure_charset_options() - кодировка зависит от AT-ответа"
+          echo "ОШИБКА: 40-pejir-sms без ensure_charset_options()"
+          exit 1
+        fi
+
         # Вендорные бинари mcu/mcud ищут libubox.so/libubus.so по обычному
         # имени, поэтому в образе обязаны быть symlink'и на версионные
         # библиотеки в /lib. Если рецепт install'а по какой-то причине не
