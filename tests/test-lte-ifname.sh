@@ -164,13 +164,27 @@ if [ "$apn" != "myoperator.ru" ]; then
 fi
 echo "OK: пользовательский APN не затирается"
 
-# APN уходит в модем и в AT+ZECMCALL.
-if ! grep -q 'AT+CGDCONT=1,"IP","%s"' "$INIT"; then
-	echo "FAIL: sync_apn() не шлёт AT+CGDCONT с APN"
+# APN уходит в модем и в AT+ZECMCALL. С патча 0089 команды собирает
+# хелпер usr/libexec/pejir-lte-apn, init-скрипт их только отправляет.
+HELPER="$OW/package/pejir-lte-base/root/usr/libexec/pejir-lte-apn"
+if [ ! -f "$HELPER" ]; then
+	echo "FAIL: нет $HELPER - команды APN нечем собрать"
 	exit 1
 fi
-if ! grep -q 'AT+ZECMCALL=1,%s' "$INIT"; then
-	echo "FAIL: AT+ZECMCALL отправляется без APN"
+if ! grep -q 'AT+CGDCONT=1,' "$HELPER"; then
+	echo "FAIL: хелпер не формирует AT+CGDCONT с APN"
+	exit 1
+fi
+if ! grep -q 'AT+ZECMCALL=1,' "$HELPER"; then
+	echo "FAIL: хелпер не формирует AT+ZECMCALL с APN"
+	exit 1
+fi
+if ! grep -q 'network.lte.apn' "$HELPER"; then
+	echo "FAIL: хелпер не читает network.lte.apn"
+	exit 1
+fi
+if ! grep -q 'pejir-lte-apn' "$INIT"; then
+	echo "FAIL: init-скрипт не отправляет команды хелпера"
 	exit 1
 fi
 echo "OK: APN уходит в AT+CGDCONT и AT+ZECMCALL"

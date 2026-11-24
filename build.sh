@@ -675,6 +675,8 @@ if [ -n "$SU" ]; then
                  usr/libexec/perenio-diag \
                  usr/libexec/pejir-ussd \
                  usr/libexec/pejir-led \
+                 usr/libexec/pejir-lte-apn \
+                 www/luci-static/resources/view/perenio/lte.js \
                  etc/init.d/pejir-led \
                  etc/init.d/41-pejir-sync \
                  etc/init.d/pejir-sms-spool \

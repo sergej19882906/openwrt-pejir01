@@ -1,0 +1,448 @@
+From 9e0676ddca55535957493892a06f2d1335323b2b Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Tue, 24 Nov 2026 18:52:07 GMT
+Subject: =?utf-8?b?cGVqaXItbHRlOiDQvdCw0YHRgtGA0L7QudC60LAgQVBOINGBINC70L7Qs9C40L3Q?=
+ =?utf-8?b?vtC8LCDQv9Cw0YDQvtC70LXQvCDQuCDRgtC40L/QvtC8INCw0YPRgtC10L3RgtC4?=
+ =?utf-8?b?0YTQuNC60LDRhtC40Lg=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ФАКТ (стоковая прошивка Perenio 9.0.4, usr/lib/modem_ubus/gosuncn.sh):
+сток отдаёт модему настройки подключения одной командой
+
+    AT+ZECMCALL=1[,<apn>[,<pdp_num>[,<user>[,<pass>[,<auth_num>]]]]]
+
+где pdp_num: 1 - IPv4, 2 - IPv6, 3 - IPv4v6 (get_pdp_type), auth_num:
+1 - PAP, 2 - CHAP (get_auth_type). Наш порт отправлял только
+AT+ZECMCALL=1,<apn>, поэтому приватные APN с авторизацией (логин и
+пароль) не поднимались - модем не знал учётных данных.
+
+Новый хелпер usr/libexec/pejir-lte-apn собирает команды:
+
+    AT+CGDCONT=1,"<тип PDP>","<APN>"
+    AT+ZECMCALL=1[,<apn>[,<pdp_num>[,<user>[,<pass>[,<auth_num>]]]]]
+
+Настройки берутся из UCI под теми же именами, что и в стоке:
+network.lte.apn, .pdptype, .username, .password, .auth.
+
+Важно: логин и пароль передаются ТОЛЬКО вместе. Иначе позиции
+параметров сдвинутся и модем примет пароль за логин. Без логина и
+пароля форма команды не меняется: AT+ZECMCALL=1,<apn> проверен на
+живом устройстве.
+
+Хелпер печатает команды по одной в строке (без CR), поэтому
+init-скрипт переводит перевод строки в CR перед отправкой: GM510 не
+видит команду, завершённую только LF (это тот же дефект, который
+чинил патч с CR-терминаторами). Запасные printf-варианты с \r в
+init-скрипте остались.
+
+Также добавлена LuCI-страница "Настройки LTE (PEJIR01)": поля APN, тип
+PDP, логин, пароль, тип аутентификации; кнопки "Сохранить",
+"Применить сейчас" (перезапуск 47-pejir-lte) и "Показать команды".
+ACL получил гранты на запуск pejir-lte-apn и перезапуск
+47-pejir-lte.
+
+Попутно убран дубль msgid "Done" в каталоге перевода - msgfmt --check
+на него ругался.
+
+Проверено тестом tests/test-lte-apn.sh: для каждой комбинации
+настроек проверяется точная строка AT-команды, включая запрет
+передачи пароля без логина.
+---
+ package/luci-app-perenio/Makefile             |   2 +-
+ .../luci-static/resources/view/perenio/lte.js | 164 ++++++++++++++++++
+ .../po/ru/luci-app-perenio.po                 |  40 ++++-
+ .../share/luci/menu.d/luci-app-perenio.json   |   8 +
+ .../share/rpcd/acl.d/luci-app-perenio.json    |   6 +
+ .../root/etc/init.d/47-pejir-lte              |  26 ++-
+ .../root/usr/libexec/pejir-lte-apn            |  61 +++++++
+ 7 files changed, 299 insertions(+), 8 deletions(-)
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+ create mode 100755 package/pejir-lte-base/root/usr/libexec/pejir-lte-apn
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index 43adc58..6a2de11 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=luci-app-perenio
+ PKG_VERSION:=1.0.0
+-PKG_RELEASE:=8
++PKG_RELEASE:=9
+ 
+ PKG_LICENSE:=Apache-2.0
+ 
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+new file mode 100644
+index 0000000..3761379
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -0,0 +1,164 @@
++'use strict';
++'require view';
++'require fs';
++'require uci';
++'require ui';
++
++/* Настройки подключения к сети (APN) модема GM510.
++ *
++ * Имена полей - те же, что и в стоковой прошивке Perenio:
++ * network.lte.apn, network.lte.pdptype, network.lte.username,
++ * network.lte.password, network.lte.auth.
++ *
++ * Команды модему собирает /usr/libexec/pejir-lte-apn (AT+CGDCONT и
++ * AT+ZECMCALL - как в стоковом gosuncn.sh), init-скрипт 47-pejir-lte
++ * отправляет их при каждом старте LTE.
++ */
++
++var HELPER = '/usr/libexec/pejir-lte-apn';
++var LTE_INIT = '/etc/init.d/47-pejir-lte';
++
++var PDP_TYPES = [
++	[ 'ip', _('IPv4') ],
++	[ 'ipv6', _('IPv6') ],
++	[ 'ipv4v6', _('IPv4 and IPv6') ]
++];
++
++var AUTH_TYPES = [
++	[ 'none', _('None') ],
++	[ 'pap', _('PAP') ],
++	[ 'chap', _('CHAP') ],
++	[ 'both', _('CHAP and PAP') ]
++];
++
++function cur(key) {
++	var v = uci.get('network', 'lte', key);
++
++	return (v == null) ? '' : String(v);
++}
++
++function setText(id, s) {
++	var el = document.getElementById(id);
++
++	if (el)
++		el.textContent = s;
++}
++
++function input(id, type, value, extra) {
++	var attrs = { 'type': type, 'id': id, 'value': value, 'class': 'cbi-input-text' };
++
++	if (extra)
++		Object.keys(extra).forEach(function(k) { attrs[k] = extra[k]; });
++
++	return E('input', attrs);
++}
++
++function select(id, options, value) {
++	var opts = [];
++
++	options.forEach(function(o) {
++		opts.push(E('option', { 'value': o[0], 'selected': (o[0] == value) }, o[1]));
++	});
++
++	return E('select', { 'id': id, 'class': 'cbi-input-select' }, opts);
++}
++
++function row(title, field) {
++	return E('div', { 'class': 'cbi-value' }, [
++		E('div', { 'class': 'cbi-value-title' }, title),
++		E('div', { 'class': 'cbi-value-field' }, field)
++	]);
++}
++
++return view.extend({
++	handleSave: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++
++		uci.set('network', 'lte', 'apn', document.getElementById('pejir-apn').value);
++		uci.set('network', 'lte', 'pdptype', document.getElementById('pejir-pdptype').value);
++		uci.set('network', 'lte', 'username', document.getElementById('pejir-username').value);
++		uci.set('network', 'lte', 'password', document.getElementById('pejir-password').value);
++		uci.set('network', 'lte', 'auth', document.getElementById('pejir-auth').value);
++
++		return uci.save().then(function() {
++			btn.disabled = false;
++			ui.addNotification(null, E('p', {}, _('Saved. Press "Apply now" to send the settings to the modem.')), 'info');
++		}).catch(function(e) {
++			btn.disabled = false;
++			ui.addNotification(null, E('p', {}, _('Failed to save: ') + (e && e.message ? e.message : e)), 'error');
++		});
++	},
++
++	handleApply: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('pejir-lte-log', _('Sending the settings to the modem...'));
++
++		return fs.exec(LTE_INIT, [ 'restart' ]).then(function(r) {
++			var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++
++			setText('pejir-lte-log', out.trim() || _('Done'));
++			btn.disabled = false;
++		}).catch(function(e) {
++			setText('pejir-lte-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++			btn.disabled = false;
++		});
++	},
++
++	handleShow: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('pejir-lte-log', _('Reading the modem settings...'));
++
++		return fs.exec(HELPER, []).then(function(r) {
++			var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++
++			setText('pejir-lte-log', out.trim() || _('No data'));
++			btn.disabled = false;
++		}).catch(function(e) {
++			setText('pejir-lte-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++			btn.disabled = false;
++		});
++	},
++
++	render: function() {
++		var saveBtn = E('button', { 'class': 'cbi-button cbi-button-save', 'type': 'button' },
++				_('Save'));
++		saveBtn.addEventListener('click', L.bind(this.handleSave, this));
++
++		var applyBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
++				_('Apply now'));
++		applyBtn.addEventListener('click', L.bind(this.handleApply, this));
++
++		var showBtn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' },
++				_('Show commands'));
++		showBtn.addEventListener('click', L.bind(this.handleShow, this));
++
++		return E('div', { 'class': 'cbi-section' }, [
++			E('h2', {}, _('LTE settings (PEJIR01)')),
++			E('div', { 'class': 'cbi-section-descr' },
++				_('APN settings for the GM510 modem. The values are stored in network.lte and are sent to the modem as AT+CGDCONT and AT+ZECMCALL, exactly as in the stock firmware.')),
++			row(_('APN'), input('pejir-apn', 'text', cur('apn'))),
++			row(_('PDP type'), select('pejir-pdptype', PDP_TYPES, cur('pdptype') || 'ip')),
++			row(_('Username'), input('pejir-username', 'text', cur('username'))),
++			row(_('Password'), input('pejir-password', 'password', cur('password'))),
++			row(_('Authentication type'), select('pejir-auth', AUTH_TYPES, cur('auth') || 'none')),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, ''),
++				E('div', { 'class': 'cbi-value-field' }, [
++					saveBtn, ' ', applyBtn, ' ', showBtn
++				])
++			]),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, _('Modem log')),
++				E('div', { 'class': 'cbi-value-field' },
++					E('pre', { 'id': 'pejir-lte-log',
++						'style': 'white-space:pre-wrap; font-family:monospace; font-size:12px; max-height:40vh; overflow:auto; border:1px solid #ccc; padding:8px;' }, ''))
++			])
++		]);
++	}
++});
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 1cd7414..cca0e2c 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -300,8 +300,6 @@ msgid "Turn off all"
+ msgstr "Погасить все"
+ msgid "Blink demo (10 s)"
+ msgstr "Демо-мигание (10 с)"
+-msgid "Done"
+-msgstr "Готово"
+ msgid "All indicators are off"
+ msgstr "Все индикаторы погашены"
+ msgid "Demo finished"
+@@ -310,3 +308,41 @@ msgid "Failed to run: "
+ msgstr "Не удалось выполнить: "
+ msgid "Indicators are driven by the STM32 microcontroller, exactly as in the stock firmware: mcu -p l <name>=<color>[,<mode>]. Colors: white, red, green, blue, magenta, yellow, cyan, orange; 0 turns the indicator off. Automatic mode paints the indicator by the system state (like the stock pim service)."
+ msgstr "Индикаторы зажигает микроконтроллер STM32 - ровно как в заводской прошивке: mcu -p l <имя>=<цвет>[,<режим>]. Цвета: белый, красный, зелёный, синий, пурпурный, жёлтый, голубой, оранжевый; 0 - выключить. Автоматический режим красит индикатор по состоянию системы (как стоковый сервис pim)."
++msgid "LTE settings (PEJIR01)"
++msgstr "Настройки LTE (PEJIR01)"
++msgid "APN settings for the GM510 modem. The values are stored in network.lte and are sent to the modem as AT+CGDCONT and AT+ZECMCALL, exactly as in the stock firmware."
++msgstr "Настройки APN модема GM510. Значения хранятся в network.lte и отправляются модему командами AT+CGDCONT и AT+ZECMCALL - точно как в стоковой прошивке."
++msgid "APN"
++msgstr "APN"
++msgid "PDP type"
++msgstr "Тип PDP"
++msgid "IPv4"
++msgstr "IPv4"
++msgid "IPv6"
++msgstr "IPv6"
++msgid "IPv4 and IPv6"
++msgstr "IPv4 и IPv6"
++msgid "Username"
++msgstr "Имя пользователя"
++msgid "Password"
++msgstr "Пароль"
++msgid "Authentication type"
++msgstr "Тип аутентификации"
++msgid "None"
++msgstr "Отсутствует"
++msgid "PAP"
++msgstr "PAP"
++msgid "CHAP"
++msgstr "CHAP"
++msgid "CHAP and PAP"
++msgstr "CHAP и PAP"
++msgid "Show commands"
++msgstr "Показать команды"
++msgid "Saved. Press \"Apply now\" to send the settings to the modem."
++msgstr "Сохранено. Нажмите «Применить сейчас», чтобы отправить настройки модему."
++msgid "Sending the settings to the modem..."
++msgstr "Отправляем настройки модему..."
++msgid "Reading the modem settings..."
++msgstr "Читаем настройки модема..."
++msgid "Modem log"
++msgstr "Журнал модема"
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 0b46939..59e240b 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -66,6 +66,14 @@
+ 			"type": "view",
+ 			"path": "perenio/bands"
+ 		},
++	"admin/status/perenio-lte": {
++		"title": "LTE settings (PEJIR01)",
++		"order": 71,
++		"action": {
++			"type": "view",
++			"path": "perenio/lte"
++		}
++	},
+ 		"depends": {
+ 			"acl": [
+ 				"luci-app-perenio"
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 2141495..7f81e05 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -90,6 +90,12 @@
+ 				],
+ 				"/usr/libexec/pejir-led": [
+ 					"exec"
++				],
++				"/usr/libexec/pejir-lte-apn": [
++					"exec"
++				],
++				"/etc/init.d/47-pejir-lte restart": [
++					"exec"
+ 				]
+ 			},
+ 			"ubus": {
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index e2fe215..af7b826 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -258,7 +258,15 @@ sync_apn() {
+ 
+ 	port="$(detect_at_port)" || return 0
+ 	script="/tmp/pejir-apn.$$"
+-	printf 'AT+CGDCONT=1,"IP","%s"\r' "$apn" > "$script"
++	# Хелпер собирает команды сам: AT+CGDCONT (тип PDP + APN) и
++	# AT+ZECMCALL (APN, тип PDP, логин, пароль, тип аутентификации).
++	# Логин и пароль уходят только вместе, иначе позиции параметров
++	# сдвинутся и модем примет пароль за логин.
++	# Хелпер печатает команды по одной в строке (без CR), поэтому
++	# перед отправкой переводим перевод строки в CR: GM510 не видит
++	# команду, завершённую только LF.
++	/usr/libexec/pejir-lte-apn 2>/dev/null | tr '\n' '\r' > "$script" || : > "$script"
++	[ -s "$script" ] || { rm -f "$script"; return 0; }
+ 	set_port_speed "$port"
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+@@ -315,10 +323,18 @@ ecm_call() {
+ 	# Вендор шлёт APN в самой команде: AT+ZECMCALL=1,<APN>[,...].
+ 	# Если APN неизвестен - отправляем без него, модем возьмёт текущий
+ 	# PDP-контекст.
+-	if [ -n "$apn" ]; then
+-		printf 'AT+ZECMCALL=1,%s\r' "$apn" > "$script"
+-	else
+-		printf 'AT+ZECMCALL=1\r' > "$script"
++	# Команду собирает хелпер pejir-lte-apn: без логина и пароля форма
++	# остаётся прежней (AT+ZECMCALL=1,<apn>), с логином добавляются
++	# тип PDP, логин, пароль и тип аутентификации (как в стоке).
++	if [ -x /usr/libexec/pejir-lte-apn ]; then
++		/usr/libexec/pejir-lte-apn 2>/dev/null | grep '^AT+ZECMCALL=' | tr '\n' '\r' > "$script" || : > "$script"
++	fi
++	if [ ! -s "$script" ]; then
++		if [ -n "$apn" ]; then
++			printf 'AT+ZECMCALL=1,%s\r' "$apn" > "$script"
++		else
++			printf 'AT+ZECMCALL=1\r' > "$script"
++		fi
+ 	fi
+ 	# Ошибку игнорируем: на модемах без ECM-поддержки вызов не нужен,
+ 	# а AT+CGDCONT уже отработал.
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-lte-apn b/package/pejir-lte-base/root/usr/libexec/pejir-lte-apn
+new file mode 100755
+index 0000000..793c266
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-lte-apn
+@@ -0,0 +1,61 @@
++#!/bin/sh
++# AT-команды настройки подключения модема GM510 (APN и авторизация).
++#
++# ФАКТ (стоковая прошивка Perenio 9.0.4, usr/lib/modem_ubus/gosuncn.sh):
++#   Сток формирует команду одной строкой:
++#       AT+ZECMCALL=1[,<apn>[,<pdp_num>[,<user>[,<pass>[,<auth_num>]]]]]
++#   где pdp_num: 1 - IPv4, 2 - IPv6, 3 - IPv4v6 (get_pdp_type),
++#        auth_num: 1 - PAP, 2 - CHAP (get_auth_type).
++#   Наш порт отправлял только AT+ZECMCALL=1,<apn>, поэтому приватные APN
++#   с логином и паролем не поднимались.
++#
++# Настройки берутся из UCI (те же имена, что и в стоке):
++#   network.lte.apn       - имя APN;
++#   network.lte.pdptype   - ip | ipv6 | ipv4v6;
++#   network.lte.username  - логин;
++#   network.lte.password  - пароль;
++#   network.lte.auth      - none | pap | chap | both.
++#
++# Вывод: строки AT-команд, по одной в строке, без CR. Если APN не задан,
++# ничего не выводится.
++#
++# ВАЖНО: логин и пароль передаются только ВМЕСТЕ. Иначе позиции
++# параметров сдвинутся и модем примет пароль за логин. Без логина и
++# пароля форма команды не меняется: AT+ZECMCALL=1,<apn> проверен на
++# живом устройстве.
++
++uci_get() {
++	uci -q get "network.lte.$1" 2>/dev/null
++}
++
++apn="$(uci_get apn)"
++[ -n "$apn" ] || exit 0
++
++case "$(uci_get pdptype)" in
++	ipv6)   pdp="IPV6";  pdp_num=2 ;;
++	ipv4v6) pdp="IPV4V6"; pdp_num=3 ;;
++	*)      pdp="IP";    pdp_num=1 ;;
++esac
++
++user="$(uci_get username)"
++pass="$(uci_get password)"
++
++case "$(uci_get auth)" in
++	pap)  auth_num=1 ;;
++	chap) auth_num=2 ;;
++	both) auth_num=3 ;;
++	*)    auth_num="" ;;
++esac
++
++# PDP-контекст: тип PDP и APN.
++printf 'AT+CGDCONT=1,"%s","%s"\n' "$pdp" "$apn"
++
++# ECM data call. Параметры авторизации - только вместе с логином и паролем.
++zecm="AT+ZECMCALL=1,$apn"
++if [ -n "$user" ] && [ -n "$pass" ]; then
++	zecm="$zecm,$pdp_num,$user,$pass"
++	[ -n "$auth_num" ] && zecm="$zecm,$auth_num"
++fi
++printf '%s\n' "$zecm"
++
++exit 0

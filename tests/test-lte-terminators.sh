@@ -47,22 +47,33 @@ else
 fi
 
 # --- 2) CR-терминаторы в sync_apn / ecm_call ---------------------------------
-# Ровно эти три printf обязаны завершаться \r (CGDCONT и оба ZECMCALL).
-# at_ask-строки с '\n' из пробника не считаются - проверяем только printf.
-if grep -qF 'AT+CGDCONT=1,"IP","%s"\r' "$INIT"; then
-	ok "AT+CGDCONT отправляется с CR-терминатором"
+# С патча 0089 команды собирает хелпер usr/libexec/pejir-lte-apn: он
+# печатает их по одной в строке (без CR), а init-скрипт переводит
+# перевод строки в CR перед отправкой. GM510 не видит команду,
+# завершённую только LF, поэтому проверяем ИменНО это преобразование,
+# а запасные printf-варианты - что в них CR остался.
+HELPER="$PKG/root/usr/libexec/pejir-lte-apn"
+
+if grep -qF "tr '\\n' '\\r'" "$INIT"; then
+	ok "init-скрипт переводит LF в CR перед отправкой команд"
 else
-	fail "AT+CGDCONT в sync_apn отправляется с LF - GM510 команду не видит"
+	fail "нет преобразования LF->CR - GM510 команду не видит"
+fi
+
+if grep -q 'pejir-lte-apn' "$INIT"; then
+	ok "init-скрипт отправляет команды хелпера pejir-lte-apn"
+else
+	fail "init-скрипт не вызывает pejir-lte-apn"
 fi
 
 if grep -qF 'AT+ZECMCALL=1,%s\r' "$INIT"; then
-	ok "AT+ZECMCALL (с APN) отправляется с CR-терминатором"
+	ok "AT+ZECMCALL (с APN, запасной путь) отправляется с CR-терминатором"
 else
 	fail "AT+ZECMCALL=1,<APN> в ecm_call отправляется с LF - GM510 команду не видит"
 fi
 
 if grep -q "AT+ZECMCALL=1.r'" "$INIT"; then
-	ok "AT+ZECMCALL (без APN) отправляется с CR-терминатором"
+	ok "AT+ZECMCALL (без APN, запасной путь) отправляется с CR-терминатором"
 else
 	fail "AT+ZECMCALL=1 в ecm_call отправляется с LF - GM510 команду не видит"
 fi
