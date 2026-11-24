@@ -1,0 +1,363 @@
+From f564aedb7225034828917fc1a2e0516d38c1af35 Mon Sep 17 00:00:00 2001
+From: pejir-build <pejir@local>
+Date: Tue, 24 Nov 2026 06:52:55 GMT
+Subject: =?utf-8?b?cGVqaXItc21zLCBwZWppci1vdGEsIHBlamlyLXN5bmM6INCz0LDRgNCw0L3RgtC4?=
+ =?utf-8?b?0YDQvtCy0LDQvdC90LDRjyDQutC+0LTQuNGA0L7QstC60LAgU01TINC4INC+0YfQ?=
+ =?utf-8?b?uNGB0YLQutCwINCy0LXRgNGF0L3QtdCz0L4g0YHQu9C+0Y8gb3ZlcmxheQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Три независимых дефекта, из-за которых устройство оставалось сломанным
+после прошивки на .46 и новее.
+
+1. Кодировка SMS не записывалась без AT-ответа.
+
+write_conf() вызывался только ПОСЛЕ успешной detect_at_port(). На
+живом устройстве модем не отвечает на AT, пока активен LTE-вызов
+(в журнале: "modem did not answer (AT port is blocked while the LTE
+data call is active)"), поэтому write_conf() не достигался НИКОГДА.
+/etc/smsd.conf оставался тем, что было записано ещё до патча 0072: с
+нашим маркером, но БЕЗ глобальных опций кодировки. smsd при этом
+читал default_alphabet = ISO-8859-15, кириллица выбрасывалась с
+записью в журнал "Cannot convert N character to GSM", и русский текст
+доходил до телефона нечитаемым.
+
+Кодировка от AT-порта не зависит: это глобальные опции smsd, они нужны
+всегда. Новая функция ensure_charset_options() применяет их к нашему
+конфигу сразу при старте сервиса, не дожидаясь AT-ответа.
+
+Заодно исправлена опасность update_charset_options(): старые опции
+вырезались ДО проверки маркера, поэтому у чужого конфига (без нашего
+маркера) настройки кодировки удалялись, а канонические не добавлялись -
+файл оставался без кодировки вообще. Теперь маркер ищется первым, и
+чужой конфиг не трогается.
+
+2. Протухшие копии файлов пакетов переживали прошивку.
+
+При sysupgrade верхний слой overlay (rootfs_data) НЕ пересоздаётся
+(патч 0037), а бэкап -c собирает ВСЕ файлы из /overlay/upper/etc
+(список packagesfiles строится только для режима -o, для -c он пуст).
+Значит протухшая копия /etc/init.d/40-pejir-sms попадала в
+sysupgrade.tgz и после прошивки восстанавливалась поверх нового
+образа СНОВА - свежие файлы из squashfs так и не были видны. То же с
+ACL luci-app-perenio.json, pejir-ussd и pejir-led.
+
+Новый helper pejir-ovl-purge удаляет из верхнего слоя файлы наших
+пакетов (по спискам /lib/apk/packages/*.list) и вызывается из
+pejir-ota ДО sysupgrade: после прошивки верхний слой уже не
+пересоздаётся, и чистить его поздно. Файлы удаляются напрямую по
+пути в upper, а не через merged: удаление через merged создало бы
+whiteout и скрыло бы файл образа. Пользовательские настройки
+(/etc/config/*, /etc/uci-defaults/*) и файлы чужих пакетов не трогаются.
+
+3. pejir-sync искал не тот верхний слой и не писал в журнал.
+
+find_upper_dir() брал первую строку /proc/mounts с fstype overlay. В
+extroot-системе таких mount'ов несколько, и первый мог указывать не на
+rootfs_data - тогда сервис чистил не тот слой и ничего не
+восстанавливал. Теперь выбирается корневой mount (mountpoint = /),
+а запасные варианты сохранены. Добавлено логирование в syslog с
+тегом pejir-sync, чтобы по logread было видно, отработал ли сервис и
+какой слой он нашёл.
+---
+ package/pejir-ota/Makefile                    |   1 +
+ package/pejir-ota/files/pejir-ota             |  21 ++++
+ package/pejir-ota/files/pejir-ovl-purge       | 118 ++++++++++++++++++
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    |  39 ++++++
+ .../pejir-sync/root/etc/init.d/41-pejir-sync  |  33 +++--
+ 5 files changed, 205 insertions(+), 7 deletions(-)
+ create mode 100755 package/pejir-ota/files/pejir-ovl-purge
+
+diff --git a/package/pejir-ota/Makefile b/package/pejir-ota/Makefile
+index aad047f..dba4820 100644
+--- a/package/pejir-ota/Makefile
++++ b/package/pejir-ota/Makefile
+@@ -37,6 +37,7 @@ endef
+ define Package/pejir-ota/install
+ 	$(INSTALL_DIR) $(1)/usr/bin
+ 	$(INSTALL_BIN) ./files/pejir-ota $(1)/usr/bin/pejir-ota
++	$(INSTALL_BIN) ./files/pejir-ovl-purge $(1)/usr/bin/pejir-ovl-purge
+ 	$(INSTALL_DIR) $(1)/usr/lib/pejir
+ 	$(INSTALL_DATA) ./files/version $(1)/usr/lib/pejir/version
+ 	$(INSTALL_DIR) $(1)/etc/config
+diff --git a/package/pejir-ota/files/pejir-ota b/package/pejir-ota/files/pejir-ota
+index 20d4372..632ec11 100644
+--- a/package/pejir-ota/files/pejir-ota
++++ b/package/pejir-ota/files/pejir-ota
+@@ -195,6 +195,27 @@ cmd_flash() {
+ 	fi
+ 	log "Образ проверен"
+ 
++	# Чистим верхний слой overlay от протухших копий файлов наших
++	# пакетов - ДО sysupgrade.
++	#
++	# При sysupgrade верхний слой не пересоздаётся (патч 0037), а
++	# бэкап -c собирает ВСЕ файлы из /overlay/upper/etc. Значит
++	# протухшая копия файла пакета (например старого
++	# /etc/init.d/40-pejir-sms или ACL luci-app-perenio) попадает в
++	# sysupgrade.tgz и после прошивки восстанавливается поверх нового
++	# образа СНОВА - свежие файлы из squashfs так и не видны.
++	#
++	# После очистки в upper копий нет: бэкап их не содержит, и на
++	# новом образе лежат файлы из squashfs.
++	OVL_PURGE="/usr/bin/pejir-ovl-purge"
++	[ -x "$OVL_PURGE" ] || OVL_PURGE="$(command -v pejir-ovl-purge 2>/dev/null)"
++	if [ -n "$OVL_PURGE" ] && [ -x "$OVL_PURGE" ]; then
++		"$OVL_PURGE" >>"$LOG" 2>&1
++		log "Верхний слой очищен от протухших копий файлов пакетов"
++	else
++		log "helper очистки верхнего слоя не найден, прошивка продолжится без очистки"
++	fi
++
+ 	log "Прошиваю (sysupgrade) ..."
+ 	if [ "$KEEP" = "1" ]; then
+ 		sysupgrade "$img" >>"$LOG" 2>&1
+diff --git a/package/pejir-ota/files/pejir-ovl-purge b/package/pejir-ota/files/pejir-ovl-purge
+new file mode 100755
+index 0000000..616fe63
+--- /dev/null
++++ b/package/pejir-ota/files/pejir-ovl-purge
+@@ -0,0 +1,118 @@
++#!/bin/sh
++# pejir-ovl-purge - очистка верхнего слоя overlay от файлов наших пакетов.
++#
++# Зачем это нужно.
++#
++# При sysupgrade верхний слой overlay (rootfs_data) НЕ пересоздаётся
++# (патч 0037): всё, что хоть раз попало в /overlay/upper, переживает
++# прошивку. Ранние горячие фиксы (apply_fixes.sh, led_hotfix.sh,
++# battery_hotfix.sh) копировали туда файлы наших пакетов - версии .45
++# и .46. Дальше эти протухшие копии перекрывают свежие файлы нового
++# образа:
++#
++#   * /usr/share/rpcd/acl.d/luci-app-perenio.json - без гранта exec на
++#     /rom/usr/libexec/perenio-diag => диагностика в LuCI не работает;
++#   * /usr/libexec/pejir-ussd - без декодера UCS2 => USSD отдаёт мусор;
++#   * /etc/init.d/pejir-led - вызывает "pejir-led off" => авто-режим
++#     индикации стирается при каждой перезагрузке.
++#
++# Почему одной загрузки недостаточно.
++#
++# Бэкап sysupgrade -c собирает ВСЕ файлы из /overlay/upper/etc
++# (список packagesfiles строится только для режима -o, а для -c он
++# пуст). Значит протухшая копия /etc/init.d/40-pejir-sms попадает в
++# sysupgrade.tgz и после прошивки восстанавливается поверх нового
++# образа СНОВА. Пока копия лежит в верхнем слое, каждая прошивка
++# тащит её за собой - поэтому очистка должна происходить ДО sysupgrade.
++#
++# ЧТО ДЕЛАЕМ.
++#
++# Удаляем из верхнего слоя файлы наших пакетов. После этого:
++#   * бэкап sysupgrade их не содержит => на новом образе лежат свежие
++#     файлы из squashfs;
++#   * в upper их нет => они не перекрывают файлы нового образа.
++#
++# Файлы удаляются напрямую по пути в верхнем слое (не через merged):
++# если удалить через merged, overlayfs создаст whiteout, и файл из
++# squashfs тоже станет невидимым. Прямое удаление в upper просто
++# убирает копию, и merged показывает свежий файл из образа.
++#
++# ЧТО НЕ ТРОГАЕМ.
++#
++#   * /etc/config/* - пользовательские настройки (там же /etc/config/cron
++#     из luci-app-perenio.list);
++#   * /etc/uci-defaults/* - одноразовые скрипты установки;
++#   * файлы чужих пакетов;
++#   * /etc/sysupgrade.conf.
++#
++# Скрипт идемпотентен и ничего не делает, если верхнего слоя нет.
++
++set -u
++
++PKG_DIR="${PEJIR_PURGE_PKG_DIR:-/lib/apk/packages}"
++
++# Наши пакеты: только их файлы вычищаем.
++PKGS="${PEJIR_PURGE_PKGS:-pejir-sms luci-app-perenio luci-app-atinout pejir-lte-base pejir-ota pejir-sync}"
++
++# Верхний слой overlay: ищем в /proc/mounts по опциям монтирования
++# (upperdir=...). В extroot-системе корневой mount - единственный
++# overlay с upperdir, поэтому ищем именно его.
++find_upper_dir() {
++	local m dir
++
++	# Корневой mount: в /proc/mounts поля - device / mountpoint /
++	# fstype / options, значит fstype стоит в 3-й колонке.
++	m="$(awk '$3 == "overlay" { for (i = 4; i <= NF; i++) if ($i ~ /^upperdir=/) { sub(/^upperdir=/, "", $i); print $i; exit } }' /proc/mounts 2>/dev/null | head -1)"
++	if [ -n "$m" ] && [ -d "$m" ]; then
++		echo "$m"
++		return 0
++	fi
++
++	# Запасные варианты - стандартные пути.
++	for dir in /overlay/upper /overlay/root/upper; do
++		[ -d "$dir" ] && { echo "$dir"; return 0; }
++	done
++
++	return 1
++}
++
++# Файлы, которые нельзя трогать: пользовательские настройки.
++is_protected() {
++	case "$1" in
++	/etc/config/*|/etc/uci-defaults/*|/etc/sysupgrade.conf) return 0 ;;
++	esac
++	return 1
++}
++
++UPPER="${PEJIR_PURGE_UPPER_DIR:-}"
++[ -n "$UPPER" ] || UPPER="$(find_upper_dir)"
++
++# Верхнего слоя нет - чистить нечего, и это не ошибка.
++[ -n "$UPPER" ] && [ -d "$UPPER" ] || exit 0
++
++REMOVED=0
++SKIPPED=0
++
++for pkg in $PKGS; do
++	list="$PKG_DIR/$pkg.list"
++	[ -f "$list" ] || continue
++
++	while IFS= read -r rel; do
++		case "$rel" in
++		/*) ;;
++		*) continue ;;
++		esac
++
++		is_protected "$rel" && { SKIPPED=$((SKIPPED + 1)); continue; }
++
++		# Копия есть только в верхнем слое - её и удаляем.
++		# Если файла нет, удалять нечего: merged и так показывает
++		# свежий файл из squashfs.
++		if [ -e "$UPPER$rel" ] || [ -L "$UPPER$rel" ]; then
++			rm -f "$UPPER$rel" 2>/dev/null && REMOVED=$((REMOVED + 1))
++		fi
++	done < "$list"
++done
++
++echo "pejir-ovl-purge: удалено протухших копий из верхнего слоя: $REMOVED, защищено: $SKIPPED"
++exit 0
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index c183c84..a1f3b5c 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -225,6 +225,15 @@ incoming_utf8 = yes"
+ update_charset_options() {
+ 	local tmp line
+ 
++	# Сначала ищем маркер, и только потом удаляем старые опции.
++	#
++	# Раньше удаление шло ПЕРВЫМ, а поиск маркера - вторым. Для чужого
++	# конфига (без нашего маркера) это означало: опции кодировки
++	# вырезаны, а канонические не добавлены - файл остался без
++	# настроек кодировки вообще. Наш конфиг мы правим, чужой не трогаем.
++	line="$(grep -n "$MARKER" "$CONF" | head -1 | cut -d: -f1)"
++	[ -n "$line" ] || return 0
++
+ 	sed -i -e '/^[[:space:]]*alphabet[[:space:]]*=/d' \
+ 	       -e '/^[[:space:]]*outgoing_utf8[[:space:]]*=/d' \
+ 	       -e '/^[[:space:]]*incoming_utf8[[:space:]]*=/d' "$CONF"
+@@ -246,6 +255,31 @@ update_charset_options() {
+ 	rm -f "$tmp"
+ }
+ 
++# Применить канонические опции кодировки к нашему конфигу.
++#
++# Зачем это отдельная функция, а не часть write_conf():
++#
++#   write_conf() вызывается только ПОСЛЕ успешной detect_at_port().
++#   На живом устройстве модем не отвечает на AT, пока активен
++#   LTE-вызов (в журнале: "modem did not answer (AT port is blocked
++#   while the LTE data call is active)"), поэтому write_conf() не
++#   достигался НИКОГДА, а /etc/smsd.conf оставался тем, что был записан
++#   ещё до патча 0072: с нашим маркером, но БЕЗ опций кодировки.
++#   smsd при этом читал default_alphabet = ISO-8859-15, кириллица
++#   выбрасывалась ("Cannot convert N character to GSM").
++#
++#   Кодировка от порта не зависит: это глобальные опции smsd, они
++#   нужны всегда. Поэтому применяем их сразу при старте сервиса, не
++#   дожидаясь AT-ответа.
++#
++# Чужой конфиг (без нашего маркера) не трогаем - там настройки
++# кодировки принадлежат пользователю.
++ensure_charset_options() {
++	[ -f "$CONF" ] || return 0
++	grep -q "$MARKER" "$CONF" || return 0
++	update_charset_options
++}
++
+ write_conf() {
+ 	local port="$1"
+ 
+@@ -308,6 +342,11 @@ start_service() {
+ 	mkdir -p /var/spool/sms/incoming /var/spool/sms/outgoing \
+ 	         /var/spool/sms/sent /var/spool/sms/failed /var/spool/sms/checked
+ 
++	# Кодировку настраиваем НЕЗАВИСИМО от того, ответит ли модем на AT.
++	# Иначе при занятом AT-порте (активный LTE-вызов) опции кодировки
++	# не появлялись бы никогда, и русский текст в SMS ломался бы.
++	ensure_charset_options
++
+ 	# Ждём появления USB-модема и пробуем AT-порт.
+ 	wait_for_modem_usb
+ 
+diff --git a/package/pejir-sync/root/etc/init.d/41-pejir-sync b/package/pejir-sync/root/etc/init.d/41-pejir-sync
+index e8fa3c2..272c6f6 100755
+--- a/package/pejir-sync/root/etc/init.d/41-pejir-sync
++++ b/package/pejir-sync/root/etc/init.d/41-pejir-sync
+@@ -55,19 +55,34 @@ is_protected() {
+ }
+ 
+ # Верхний слой overlay: ищем в /proc/mounts (на устройстве это rootfs_data).
++#
++# В /proc/mounts поля идут так: device / mountpoint / fstype / options.
++# Нужен ИМЕННО корневой mount (mountpoint = /) с fstype = overlay: в
++# extroot-системе mount'ов с fstype overlay может быть несколько
++# (extroot-тома тоже монтируются как overlay), и первый подходящий
++# в grep мог указать не на тот каталог - тогда сервис чистил не тот
++# слой и ничего не восстанавливал.
+ find_upper_dir() {
+ 	local m dir
+ 
+ 	[ -n "$UPPER_DIR" ] && { echo "$UPPER_DIR"; return 0; }
+ 
+-	# mount с типом overlay: в опциях есть upperdir=...
+-	m="$(grep -E '[[:space:]]overlay[[:space:]].*upperdir=' /proc/mounts 2>/dev/null | head -1)"
+-	if [ -n "$m" ]; then
+-		dir="$(echo "$m" | sed -n 's/.*upperdir=\([^,]*\).*/\1/p')"
+-		[ -n "$dir" ] && { echo "$dir"; return 0; }
++	# Корневой mount: $2 = "/", $3 = "overlay", в $4.. - опции,
++	# среди которых upperdir=...
++	m="$(awk '$2 == "/" && $3 == "overlay" { for (i = 4; i <= NF; i++) if ($i ~ /^upperdir=/) { sub(/^upperdir=/, "", $i); print $i; exit } }' /proc/mounts 2>/dev/null | head -1)"
++	if [ -n "$m" ] && [ -d "$m" ]; then
++		echo "$m"
++		return 0
+ 	fi
+ 
+-	# Запасной вариант - стандартные пути.
++	# Запасной вариант - любой mount с fstype overlay.
++	m="$(awk '$3 == "overlay" { for (i = 4; i <= NF; i++) if ($i ~ /^upperdir=/) { sub(/^upperdir=/, "", $i); print $i; exit } }' /proc/mounts 2>/dev/null | head -1)"
++	if [ -n "$m" ] && [ -d "$m" ]; then
++		echo "$m"
++		return 0
++	fi
++
++	# Последний запасной вариант - стандартные пути.
+ 	for dir in /overlay/upper /overlay/root/upper; do
+ 		[ -d "$dir" ] && { echo "$dir"; return 0; }
+ 	done
+@@ -174,9 +189,13 @@ start_service() {
+ 	local upper
+ 
+ 	# Без /rom сверять не с чем - это не squashfs-система.
+-	[ -d "$ROM_DIR" ] || return 0
++	if [ ! -d "$ROM_DIR" ]; then
++		logger -t pejir-sync "образ $ROM_DIR недоступен, восстановление пропущено"
++		return 0
++	fi
+ 
+ 	upper="$(find_upper_dir)"
++	logger -t pejir-sync "верхний слой: ${upper:-не найден}"
+ 
+ 	for pkg in $PEJIR_SYNC_PKGS; do
+ 		sync_package "$pkg"

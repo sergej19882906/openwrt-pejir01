@@ -496,7 +496,8 @@ if [ -n "$SU" ]; then
         fi
         echo "  sing-box и LXC в образе отсутствуют - OK"
         OTA_MISSING=""
-        for f in usr/bin/pejir-ota usr/lib/pejir/version etc/config/pejir_ota \
+        for f in usr/bin/pejir-ota usr/bin/pejir-ovl-purge usr/lib/pejir/version \
+                 etc/config/pejir_ota \
                  www/luci-static/resources/view/perenio/ota.js \
                  usr/share/luci/menu.d/luci-app-pejir-ota.json \
                  usr/share/rpcd/acl.d/luci-app-pejir-ota.json; do
