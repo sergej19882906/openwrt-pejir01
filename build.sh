@@ -115,6 +115,28 @@ if [ -f "$OTA_VER_FILE" ] && [ -f "$OTA_DST" ]; then
   OTA_VER="$(tr -d ' \t\r\n' <"$OTA_VER_FILE")"
   printf '%s\n' "$OTA_VER" >"$OTA_DST"
   echo "    OTA: версия в образе — $OTA_VER"
+
+  # ЗАЩИТА ОТ РАСХОЖДЕНИЯ ВЕРСИИ. Сборка идёт по тегу, а маркер версии
+  # берётся из файла VERSION в репозитории. Если забыть его поднять,
+  # образ получится с ЧУЖОЙ версией: устройство будет показывать старую,
+  # а pejir-upgrade-purge сравнивает маркер с меткой в overlay - чистка
+  # остатков стока просто не запустится (ровно так и вышло с релизом
+  # .58, собранным с маркером .57).
+  BUILD_TAG=""
+  if [ -n "${GITHUB_REF_NAME:-}" ]; then
+    BUILD_TAG="$GITHUB_REF_NAME"
+  else
+    BUILD_TAG="$(git describe --exact-match --tags HEAD 2>/dev/null || true)"
+  fi
+  if [ -n "$BUILD_TAG" ]; then
+    TAG_VER="${BUILD_TAG#v}"
+    if [ "$TAG_VER" != "$OTA_VER" ]; then
+      echo "ОШИБКА: тег сборки $BUILD_TAG, а в VERSION — $OTA_VER"
+      echo "        образ получится с неверной версией. Поднимите VERSION до $TAG_VER"
+      exit 1
+    fi
+    echo "    OTA: версия совпадает с тегом сборки ($BUILD_TAG)"
+  fi
 else
   echo "    OTA: VERSION не найден, версия в образе останется 0.0.0-dev"
 fi
