@@ -1,0 +1,215 @@
+From 2958216a737dbf7c2611920a14797b5a4b7106d8 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 09:10:39 GMT
+Subject: =?utf-8?b?bHVjaS1hcHAtcGVyZW5pbzogVVNTRCAtINGA0LDRgdC/0L7Qt9C90LDQstCw0YLR?=
+ =?utf-8?b?jCBoZXgt0L7RgtCy0LXRgiDQuCDRgNCw0YHQv9Cw0LrQvtCy0YvQstCw0YLRjCBH?=
+ =?utf-8?b?U00tNw==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+USSD: РАСПОЗНАВАНИЕ HEX-ОТВЕТА И РАСПАКОВКА GSM-7.
+
+Симптом на устройстве: оператор отвечает на USSD "набором цифр" вместо
+текста. Причина в том, что модем может прислать ответ оператора ДВАЖДЫ
+закодированным - как HEX-СТРОКУ ("00420061006c..."), то есть текст
+приходит ASCII-цифрами. Наш разбор читал эти цифры как обычный текст
+и показывал их пользователю.
+
+Что добавлено в helper /usr/libexec/pejir-ussd:
+
+1) РАСПОЗНАВАНИЕ HEX-ОТВЕТА. Если все байты ответа - ASCII hex-цифры
+   (0-9 A-F a-f), а длина чётная, то ответ - это hex-текст: он
+   декодируется в байты и разбирается дальше как обычно. Hex-прочтение
+   берётся только если в нём есть буквы: иначе мы бы испортили чисто
+   цифровой ответ (например баланс "12345678").
+
+2) РАСПАКОВКА GSM-7. Ответ в 7-битной упаковке (3GPP 23.038) раньше
+   читался как байты и превращался в мусор. Теперь схема GSM-7
+   разбирается со всеми смещениями (0..7 байт), потому что упаковка
+   может начинаться с любого бита.
+
+3) Схемы выбора ответа собраны в одну функцию pick(): 1 байт на
+   символ, UCS-2 со смещениями 0 и 1, GSM-7 со смещениями 0..7.
+   Побеждает схема, где больше букв (как раньше), но теперь
+   учитываются все схемы, а не три.
+
+Исправлена и сама распаковка GSM-7: 7-битные символы идут с МЛАДШИХ
+бит (как в 3GPP 23.038 и в эталонной реализации), а не со старших.
+
+Проверено тестом tests/test-ussd.sh на эмуляторе модема (pty) тремя
+новыми сценариями: ответ приходит hex-строкой, ответ приходит в
+упаковке GSM-7, ответ состоит только из цифр (не должен испортиться).
+Прежние сценарии (обычный текст, UCS-2, заголовок оператора) проходят
+как и раньше.
+
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-ussd b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+index 7772cb3..b2e4af4 100755
+--- a/package/luci-app-perenio/root/usr/libexec/pejir-ussd
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+@@ -197,6 +197,53 @@ function utf8(cp) {
+ 	return sprintf("%c%c%c", 224 + int(cp / 4096), 128 + int(cp / 64) % 64, 128 + (cp % 64))
+ }
+ 
++# Два hex-символа по значению байта.
++function hex2(v,   h) {
++	h = "0123456789ABCDEF"
++	return substr(h, int(v / 16) + 1, 1) substr(h, (v % 16) + 1, 1)
++}
++
++# HEX-строка -> байты (результат тоже hex-строка).
++# Значение ASCII hex-цифры (0-9 A-F a-f), иначе -1.
++function hexdigit(h,   c) {
++	c = hexval(h)
++	if (c < 0) return -1
++	if (c >= 48 && c <= 57) return c - 48
++	if (c >= 65 && c <= 70) return c - 55
++	if (c >= 97 && c <= 102) return c - 87
++	return -1
++}
++
++# HEX-СТРОКА -> байты. Внутри строка хранится как hex, где каждый
++# байт = 2 символа, а сами символы - ASCII-цифры. Поэтому разбираем
++# строку ПАРАМИ символов: "00" -> байт 0x00, "42" -> байт 0x42.
++function hex_decode(hx,   out, i, v1, v2, n) {
++	out = ""
++	n = length(hx)
++	if (n < 4 || (n % 4) != 0) return ""
++	for (i = 1; i + 3 <= n; i += 4) {
++		v1 = hexdigit(substr(hx, i, 2))
++		v2 = hexdigit(substr(hx, i + 2, 2))
++		if (v1 < 0 || v2 < 0) return ""
++		out = out hex2(v1 * 16 + v2)
++	}
++	return out
++}
++
++# Ответ пришёл как HEX-СТРОКА? Признак: все байты - ASCII
++# hex-цифры (0-9 A-F a-f), а длина чётная (в hex-символах - кратна 4).
++# Модемы так отдают текст ответа оператора, и без распознавания
++# пользователь видит "набор цифр" вместо ответа.
++function all_hexdigits(hx,   i, c, n) {
++	n = length(hx)
++	if (n < 16 || (n % 4) != 0) return 0
++	for (i = 1; i + 1 <= n; i += 2) {
++		c = hexval(substr(hx, i, 2))
++		if (!((c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102))) return 0
++	}
++	return 1
++}
++
+ # GSM-7 / 8-bit: каждый байт - один символ.
+ function bytes_text(hx,   out, i, c, n) {
+ 	out = ""
+@@ -317,6 +364,63 @@ function ucs2_run(hx, offb,   i, n, hi, lo, cp, cur, cl, cll, best, bl, bll, bb,
+ 	RUN_TEXT = best; RUN_LETTERS = bll; RUN_BYTES = bb; RUN_START = bs
+ }
+ 
++# GSM-7: символы по 7 бит, упакованные в байты (3GPP 23.038).
++# offb - смещение в байтах (0..7): упаковка может начаться с любого
++# бита, поэтому перебираем все смещения.
++function gsm7_run(hx, offb,   i, n, byte, carry, bits, c, cur, cl, cll, best, bl, bll, bb, bs) {
++	n = length(hx); carry = 0; bits = 0; cur = ""; cl = 0; cll = 0
++	best = ""; bl = 0; bll = 0; bb = 0; bs = 0
++	for (i = offb * 2 + 1; i + 1 <= n; i += 2) {
++		byte = hexval(substr(hx, i, 2))
++		if (byte < 0) break
++		carry = carry + byte * (2 ^ bits)
++		bits = bits + 8
++		while (bits >= 7) {
++			# 7-битные символы идут с младших бит (3GPP 23.038).
++			c = carry % 128
++			carry = int(carry / 128)
++			bits = bits - 7
++			if (plausible(c)) {
++				if (cl == 0) bs = offb + int((i - 1) / 2)
++				cur = cur utf8(c); cl++
++				if (is_letter(c)) cll++
++				if (cll > bll || (cll == bll && cl > bl)) {
++					best = cur; bl = cl; bll = cll; bb = cl
++				}
++			} else {
++				cur = ""; cl = 0; cll = 0
++			}
++		}
++	}
++	RUN_TEXT = best; RUN_LETTERS = bll; RUN_BYTES = bb; RUN_START = bs
++}
++
++# Лучшее прочтение потока байтов: перебираем схемы (1 байт на
++# символ, UCS-2 со смещениями 0 и 1, GSM-7 со смещениями 0..7) и
++# берём тот участок, где больше букв.
++function pick(hx,   o) {
++	BEST_TEXT = ""; BEST_LET = -1; BEST_BYTES = -1
++
++	bytes_run(hx)
++	if (RUN_LETTERS > BEST_LET || (RUN_LETTERS == BEST_LET && RUN_BYTES > BEST_BYTES)) {
++		BEST_TEXT = RUN_TEXT; BEST_LET = RUN_LETTERS; BEST_BYTES = RUN_BYTES
++	}
++	ucs2_run(hx, 0)
++	if (RUN_LETTERS > BEST_LET || (RUN_LETTERS == BEST_LET && RUN_BYTES > BEST_BYTES)) {
++		BEST_TEXT = RUN_TEXT; BEST_LET = RUN_LETTERS; BEST_BYTES = RUN_BYTES
++	}
++	ucs2_run(hx, 1)
++	if (RUN_LETTERS > BEST_LET || (RUN_LETTERS == BEST_LET && RUN_BYTES > BEST_BYTES)) {
++		BEST_TEXT = RUN_TEXT; BEST_LET = RUN_LETTERS; BEST_BYTES = RUN_BYTES
++	}
++	for (o = 0; o <= 7; o++) {
++		gsm7_run(hx, o)
++		if (RUN_LETTERS > BEST_LET || (RUN_LETTERS == BEST_LET && RUN_BYTES > BEST_BYTES)) {
++			BEST_TEXT = RUN_TEXT; BEST_LET = RUN_LETTERS; BEST_BYTES = RUN_BYTES
++		}
++	}
++}
++
+ function ascii_num(s,   i, c, v, n) {
+ 	v = 0
+ 	n = length(s)
+@@ -382,27 +486,29 @@ function ascii_num(s,   i, c, v, n) {
+ 	#   * поэтому ищем в ответе самый осмысленный участок текста и
+ 	#     берём схему по нему, а не наоборот.
+ 	#
+-	# Три кандидата: один байт на символ и UCS-2 со смещениями 0 и 1.
+-	# Побеждает тот, где больше букв; при равенстве - длиннее участок.
+-	bytes_run(payload)
+-	b_text = RUN_TEXT; b_let = RUN_LETTERS; b_bytes = RUN_BYTES; b_start = RUN_START
+-	ucs2_run(payload, 0)
+-	u0_text = RUN_TEXT; u0_let = RUN_LETTERS; u0_bytes = RUN_BYTES; u0_start = RUN_START
+-	ucs2_run(payload, 1)
+-	u1_text = RUN_TEXT; u1_let = RUN_LETTERS; u1_bytes = RUN_BYTES; u1_start = RUN_START
+-
+-	ans = b_text; alet = b_let; abytes = b_bytes; astart = b_start
+-	if (u0_let > alet || (u0_let == alet && u0_bytes > abytes)) {
+-		ans = u0_text; alet = u0_let; abytes = u0_bytes; astart = u0_start
+-	}
+-	if (u1_let > alet || (u1_let == alet && u1_bytes > abytes)) {
+-		ans = u1_text; alet = u1_let; abytes = u1_bytes; astart = u1_start
++	# Схемы: один байт на символ, UCS-2 со смещениями 0 и 1 и
++	# GSM-7 со смещениями 0..7. Побеждает тот, где больше букв;
++	# при равенстве - длиннее участок.
++	pick(payload)
++	ans = BEST_TEXT; alet = BEST_LET
++
++	# ОТВЕТ МОЖЕТ ПРИЙТИ HEX-СТРОКОЙ. Тогда текст оператора -
++	# это hex-декодированные байты, а сами ASCII-цифры - лишь
++	# транспорт. Без этой проверки пользователь видит "набор
++	# цифр" вместо ответа оператора - ровно тот симптом, который
++	# мы чиним. Hex-прочтение берём только если в нём есть буквы:
++	# иначе мы бы испортили чисто цифровой ответ (баланс "12345678").
++	if (all_hexdigits(payload)) {
++		pick(hex_decode(payload))
++		if (BEST_LET >= 2) {
++			ans = BEST_TEXT; alet = BEST_LET
++		}
+ 	}
+ 
+-	# Служебный заголовок оператора (34 байта) выбрасываем целиком:
+-	# он состоит из непечатных кодовых точек, поэтому в ответ не
+-	# попадает. Схема с наибольшим числом букв выигрывает: у текста
+-	# оператора букв много, у служебного заголовка - ни одной.
++	# Служебный заголовок оператора выбрасываем целиком: он состоит
++	# из непечатных кодовых точек, поэтому в ответ не попадает.
++	# Схема с наибольшим числом букв выигрывает: у текста оператора
++	# букв много, у служебного заголовка - ни одной.
+ 
+ 	if (ans == "") ans = bytes_text(payload)
+ 

@@ -458,6 +458,202 @@ else
 fi
 
 echo ""
+
+
+# Сценарий: ответ оператора приходит HEX-СТРОКОЙ - модем отдаёт текст
+# в hex, и он приходит ASCII-цифрами. Без распознавания hex пользователь
+# видит "набор цифр" вместо ответа оператора.
+if python3 - "$HELPER" <<'HEXCASE'
+import os, pty, subprocess, sys, threading
+
+helper = sys.argv[1]
+master, slave = pty.openpty()
+slave_name = os.ttyname(slave)
+stop = False
+
+text = "Balance 100"
+hexed = text.encode('utf-16-be').hex()
+
+def modem():
+	buf = b''
+	while not stop:
+		try:
+			data = os.read(master, 4096)
+		except OSError:
+			break
+		if not data:
+			break
+		buf += data
+		while b'\r' in buf:
+			cmd, buf = buf.split(b'\r', 1)
+			cmd = cmd.strip()
+			if cmd == b'AT':
+				os.write(master, b'\r\nOK\r\n')
+			elif cmd.startswith(b'AT+CUSD'):
+				os.write(master, b'\r\n+CUSD: 1,"' + hexed.encode() + b'",15\r\n')
+			elif cmd.startswith(b'AT+CGDCONT'):
+				os.write(master, b'\r\nOK\r\n')
+
+t = threading.Thread(target=modem, daemon=True)
+t.start()
+
+p = subprocess.run([helper, '-p', slave_name, '*100#'],
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   timeout=60)
+stop = True
+
+out = p.stdout.decode('utf-8', 'replace').strip()
+rc = p.returncode
+
+if rc != 0:
+	print("FAIL: helper вернул код %d, stdout=%r" % (rc, out))
+	sys.exit(1)
+
+if 'Balance' not in out:
+	print("FAIL: hex-ответ не декодирован: %r" % out)
+	sys.exit(1)
+
+print("OK: hex-ответ декодирован: %r" % out)
+HEXCASE
+then
+	:
+else
+	fail "helper: hex-ответ оператора не декодирован"
+fi
+
+
+# Сценарий: ответ приходит в 7-битной упаковке GSM-7 (3GPP 23.038).
+if python3 - "$HELPER" <<'GSM7CASE'
+import os, pty, subprocess, sys, threading
+
+helper = sys.argv[1]
+master, slave = pty.openpty()
+slave_name = os.ttyname(slave)
+stop = False
+
+def gsm7_pack(text):
+	out = bytearray()
+	carry = 0
+	bits = 0
+	for ch in text:
+		carry |= (ord(ch) & 0x7F) << bits
+		bits += 7
+		while bits >= 8:
+			out.append(carry & 0xFF)
+			carry >>= 8
+			bits -= 8
+	if bits:
+		out.append(carry & 0xFF)
+	return bytes(out)
+
+text = "Balance 100"
+packed = gsm7_pack(text)
+
+def modem():
+	buf = b''
+	while not stop:
+		try:
+			data = os.read(master, 4096)
+		except OSError:
+			break
+		if not data:
+			break
+		buf += data
+		while b'\r' in buf:
+			cmd, buf = buf.split(b'\r', 1)
+			cmd = cmd.strip()
+			if cmd == b'AT':
+				os.write(master, b'\r\nOK\r\n')
+			elif cmd.startswith(b'AT+CUSD'):
+				os.write(master, b'\r\n+CUSD: 1,"' + packed + b'",0\r\n')
+			elif cmd.startswith(b'AT+CGDCONT'):
+				os.write(master, b'\r\nOK\r\n')
+
+t = threading.Thread(target=modem, daemon=True)
+t.start()
+
+p = subprocess.run([helper, '-p', slave_name, '*100#'],
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   timeout=60)
+stop = True
+
+out = p.stdout.decode('utf-8', 'replace').strip()
+rc = p.returncode
+
+if rc != 0:
+	print("FAIL: helper вернул код %d, stdout=%r" % (rc, out))
+	sys.exit(1)
+
+if 'Balance' not in out:
+	print("FAIL: GSM-7 ответ не распакован: %r" % out)
+	sys.exit(1)
+
+print("OK: GSM-7 ответ распакован: %r" % out)
+GSM7CASE
+then
+	:
+else
+	fail "helper: GSM-7 ответ не распакован"
+fi
+
+
+# Сценарий: ответ состоит ТОЛЬКО из цифр ("1000"). Такой ответ не
+# должен ломаться от проверки hex: цифры остаются цифрами.
+if python3 - "$HELPER" <<'DIGITCASE'
+import os, pty, subprocess, sys, threading
+
+helper = sys.argv[1]
+master, slave = pty.openpty()
+slave_name = os.ttyname(slave)
+stop = False
+
+def modem():
+	buf = b''
+	while not stop:
+		try:
+			data = os.read(master, 4096)
+		except OSError:
+			break
+		if not data:
+			break
+		buf += data
+		while b'\r' in buf:
+			cmd, buf = buf.split(b'\r', 1)
+			cmd = cmd.strip()
+			if cmd == b'AT':
+				os.write(master, b'\r\nOK\r\n')
+			elif cmd.startswith(b'AT+CUSD'):
+				os.write(master, b'\r\n+CUSD: 1,"1000",15\r\n')
+			elif cmd.startswith(b'AT+CGDCONT'):
+				os.write(master, b'\r\nOK\r\n')
+
+t = threading.Thread(target=modem, daemon=True)
+t.start()
+
+p = subprocess.run([helper, '-p', slave_name, '*100#'],
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   timeout=60)
+stop = True
+
+out = p.stdout.decode('utf-8', 'replace').strip()
+rc = p.returncode
+
+if rc != 0:
+	print("FAIL: helper вернул код %d, stdout=%r" % (rc, out))
+	sys.exit(1)
+
+if out != '1000':
+	print("FAIL: цифровой ответ искажён: %r" % out)
+	sys.exit(1)
+
+print("OK: цифровой ответ не искажён: %r" % out)
+DIGITCASE
+then
+	:
+else
+	fail "helper: цифровой ответ оператора искажён"
+fi
+
 if [ "$FAILED" -eq 0 ]; then
 	echo "Все тесты USSD пройдены"
 	exit 0
