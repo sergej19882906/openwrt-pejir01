@@ -1,0 +1,911 @@
+From 6fcd827b3e93891d5653a118ec5b31fd43122fda Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 06:29:58 GMT
+Subject: =?utf-8?b?cGVqaXItemlnYmVlLW5jcDog0L/RgNC+0YjQuNCy0LrQsCBOQ1At0L/RgNC+0YjQ?=
+ =?utf-8?b?uNCy0LrQuCBaaWdiZWUt0LzQvtC00YPQu9GPIEVGUjMyIChFWlNQICsgWE1PREVN?=
+ =?utf-8?b?KQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ПРОШИВКА NCP-ПРОШИВКИ ZIGBEE-МОДУЛЯ EFR32 (ПЕРЕНИО PEJIR01).
+
+ФАКТ: HOMEd работает с модулем Zigbee через адаптер ezsp, то есть модуль
+должен отвечать по протоколу EZSP. Если модуль отвечает как EZSP NCP - всё
+работает. Если нет - его нужно перепрошить Gecko-образом (.gbl) через
+XMODEM-CRC, иначе Zigbee не заработает вовсе.
+
+Что добавлено:
+
+  * Новый пакет pejir-zigbee-ncp:
+      - usr/bin/pejir-ncp-flash - утилита прошивки на C (в образе роутера
+        нет python3, а рабочий скрипт ncp.py написан на python + pyserial +
+        xmodem, поэтому прошивка переписана на C: EZSP-рукопожатие
+        (RST/RSTACK, кадры конфигурации версий v8..v4), запуск автономного
+        загрузчика (launchStandaloneBootloader 0x8F), сессия Gecko
+        bootloader и передача образа по XMODEM-CRC с проверкой CRC;
+      - usr/bin/pejir-zigbee-ncp - обёртка: status / ensure / flash.
+        Образ .gbl качается из релиза по метке версии (в образ роутера он
+        постоянно не нужен, весит 180 КБ), поэтому сам пакет маленький.
+
+  * pejir-autosetup (zigbee-setup.sh): перед установкой HOMEd проверяется
+    модуль (ensure): если он не отвечает по EZSP - выполняется прошивка.
+    Драйвер ставится в любом случае (модуль может появиться позже), но
+    прошивка NCP нужна, чтобы HOMEd вообще смог с ним говорить.
+
+  * LuCI (страница «Диагностика»): блок «Модуль Zigbee (PEJIR01)» с
+    кнопкой «Проверить / прошить NCP»; в сводную диагностику добавлен
+    раздел о модуле EFR32 и HOMEd (на месте ли модуль, установлен ли
+    HOMEd, какой адаптер прописан).
+
+  * ACL: разрешён exec /usr/bin/pejir-zigbee-ncp (status/ensure).
+
+Тест tests/test-zigbee-ncp.sh проверяет протокол по-настоящему: утилита
+собирается host-gcc и прогоняется против эмулятора модуля и загрузчика
+(tests/fake_ncp.py, обмен через PTY). Проверяется: распознавание
+отвечающего/не отвечающего модуля, полный цикл прошивки, совпадение
+принятого образа с исходным БАЙТ В БАЙТ, верность CRC всех блоков,
+отправка команды запуска (2) и корректная ошибка, если загрузчик не
+готов к XMODEM.
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+index 8e2a4c4..3da5369 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+@@ -26,6 +26,11 @@ var DIAG = '/usr/libexec/perenio-diag';
+    который не перекрывается overlay, и всегда исполняема. */
+ var DIAG_ROM = '/rom/usr/libexec/perenio-diag';
+ 
++/* Прошивка NCP-прошивки Zigbee-модуля EFR32. Обёртка сама решает,
++   нужен ли прошив (если модуль отвечает по EZSP - не нужен), скачивает
++   образ из релиза и прошивает модуль через XMODEM. */
++var NCP = '/usr/bin/pejir-zigbee-ncp';
++
+ /* Запуск helper'а диагностики.
+    fs.exec в LuCI 25.12 возвращает объект {code, stdout, stderr}.
+    Считаем запуск удачным, только если код 0 и вывод непустой: пустой
+@@ -55,6 +60,21 @@ function runDiag(path) {
+ 	});
+ }
+ 
++/* Запуск обёртки прошивки NCP: fs.exec возвращает {code, stdout, stderr}. */
++function runNcp(action) {
++	return fs.exec(NCP, [action]).then(function(r) {
++		var out = (r && r.stdout ? r.stdout : '');
++		var err = (r && r.stderr ? r.stderr : '');
++		var code = (r && typeof r.code !== 'undefined') ? r.code : 0;
++		return {
++			ok: (code === 0),
++			text: (out ? out : '') + (err ? ((out ? '\n' : '') + err) : '')
++		};
++	}).catch(function(e) {
++		return { ok: false, text: (e && e.message ? e.message : String(e || '')) };
++	});
++}
++
+ return view.extend({
+ 	load: function() {
+ 		return runDiag(DIAG).then(function(r) {
+@@ -78,6 +98,22 @@ return view.extend({
+ 			E('p', { 'class': 'cbi-value-description' }, _('Status summary: USB controller and connected devices, modem, LTE interface, STM32 services and battery data. Copy the contents of the block below.')),
+ 			E('pre', { 'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:65vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
+ 				(data && data[0]) ? data[0] : _('(empty)')),
++			E('h2', _('Zigbee module (PEJIR01)')),
++			E('p', { 'class': 'cbi-value-description' }, _('Check the EFR32 Zigbee module and flash the NCP firmware if the module does not answer as an EZSP NCP. Flashing resets the Zigbee module only; the STM32 channel is not affected. Requires internet access to download the firmware from the release.')),
++			E('pre', {
++				'id': 'perenio-zigbee-ncp-out',
++				'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; border:1px solid #ccc; padding:8px;'
++			}, _('(not checked yet)')),
++			E('button', {
++				'class': 'cbi-button cbi-button-neutral',
++				'click': ui.createHandlerFn(this, function() {
++					var box = document.getElementById('perenio-zigbee-ncp-out');
++					if (box) box.textContent = _('Checking, please wait...');
++					return runNcp('ensure').then(function(r) {
++						if (box) box.textContent = r.text ? r.text : _('(no output)');
++					});
++				})
++			}, _('Check / flash NCP firmware')),
+ 			E('button', {
+ 				'class': 'cbi-button cbi-button-neutral',
+ 				'click': ui.createHandlerFn(this, function() { window.location.reload(); })
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 0bcad77..5d36fee 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -380,3 +380,15 @@ msgid "Restart modem"
+ msgstr "Перезагрузить модем"
+ msgid "Talking to the modem..."
+ msgstr "Обмен с модемом..."
++msgid "Zigbee module (PEJIR01)"
++msgstr "Модуль Zigbee (PEJIR01)"
++msgid "Check the EFR32 Zigbee module and flash the NCP firmware if the module does not answer as an EZSP NCP. Flashing resets the Zigbee module only; the STM32 channel is not affected. Requires internet access to download the firmware from the release."
++msgstr "Проверка модуля Zigbee EFR32 и прошивка NCP-прошивки, если модуль не отвечает как EZSP NCP. Прошивка перезапускает только модуль Zigbee, канал STM32 не затрагивается. Нужен интернет, чтобы скачать прошивку из релиза."
++msgid "(not checked yet)"
++msgstr "(ещё не проверялось)"
++msgid "Checking, please wait..."
++msgstr "Проверка, подождите..."
++msgid "(no output)"
++msgstr "(нет вывода)"
++msgid "Check / flash NCP firmware"
++msgstr "Проверить / прошить NCP"
+diff --git a/package/luci-app-perenio/root/usr/libexec/perenio-diag b/package/luci-app-perenio/root/usr/libexec/perenio-diag
+index 1e26009..5a5b6c4 100755
+--- a/package/luci-app-perenio/root/usr/libexec/perenio-diag
++++ b/package/luci-app-perenio/root/usr/libexec/perenio-diag
+@@ -54,6 +54,12 @@ main() {
+ 	/usr/bin/mcu getvolt 2>&1; echo
+ 	/usr/bin/mcu getsys 2>&1; echo
+ 	/usr/bin/mcu getver 2>&1; echo
++	echo "=== Zigbee: модуль EFR32 и HOMEd ==="
++	echo -n "модуль Zigbee (/dev/umxtty1): "; [ -c /dev/umxtty1 ] && echo "на месте" || echo "нет"
++	echo -n "HOMEd: "; [ -x /usr/bin/homed-zigbee ] && echo "установлен" || echo "не установлен"
++	echo -n "конфиг адаптера: "; grep -E "^(adapter|port)=" /etc/homed/homed-zigbee.conf 2>/dev/null | tr '\n' ' '; echo
++	echo -n "служба homed-zigbee: "; /etc/init.d/homed-zigbee status 2>/dev/null | head -2 | tr '\n' ' '; echo
++	echo -n "прошивка NCP: "; [ -x /usr/bin/pejir-ncp-flash ] && echo "инструмент есть (pejir-zigbee-ncp status)" || echo "инструмента нет"
+ 	echo "=== Журнал: usb/mcu/lte ==="
+ 	logread 2>/dev/null | grep -iE "mcu|uartmux|umxtty|usb|lte|modem|smsd" | tail -30
+ }
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 4528c64..212402a 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -99,6 +99,15 @@
+ 				],
+ 				"/etc/init.d/47-pejir-lte restart": [
+ 					"exec"
++				],
++				"/usr/bin/pejir-zigbee-ncp": [
++					"exec"
++				],
++				"/usr/bin/pejir-zigbee-ncp status": [
++					"exec"
++				],
++				"/usr/bin/pejir-zigbee-ncp ensure": [
++					"exec"
+ 				]
+ 			},
+ 			"ubus": {
+diff --git a/package/pejir-autosetup/files/zigbee-setup.sh b/package/pejir-autosetup/files/zigbee-setup.sh
+index 6154736..be18e36 100644
+--- a/package/pejir-autosetup/files/zigbee-setup.sh
++++ b/package/pejir-autosetup/files/zigbee-setup.sh
+@@ -66,6 +66,23 @@ if [ ! -e "$PORT" ]; then
+ 	log "установку не прерываем - HOMEd будет ждать адаптер."
+ fi
+ 
++# --- 0) прошивка NCP (если модуль не отвечает по EZSP) --------------------
++# HOMEd работает с модулем через адаптер ezsp. Если модуль не отвечает как
++# EZSP NCP, его надо перепрошить Gecko-образом (.gbl) через XMODEM - иначе
++# Zigbee не заработает вовсе. Образ берётся из релиза, в образ роутера не
++# встроен (нужен только на момент прошивки).
++if [ -x /usr/bin/pejir-zigbee-ncp ]; then
++	log "проверяю модуль Zigbee (EZSP)..."
++	if sh /usr/bin/pejir-zigbee-ncp ensure; then
++		log "модуль Zigbee готов к работе по EZSP."
++	else
++		log "не удалось подготовить модуль Zigbee - HOMEd может не заработать."
++		log "проверить вручную: pejir-zigbee-ncp status"
++	fi
++else
++	log "утилита pejir-zigbee-ncp отсутствует - прошивка NCP не проверялась."
++fi
++
+ # --- 1) фид ----------------------------------------------------------------
+ mkdir -p /etc/apk/repositories.d
+ if [ ! -f "$KEY" ]; then
+diff --git a/package/pejir-zigbee-ncp/Makefile b/package/pejir-zigbee-ncp/Makefile
+new file mode 100644
+index 0000000..45b88f1
+--- /dev/null
++++ b/package/pejir-zigbee-ncp/Makefile
+@@ -0,0 +1,40 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-zigbee-ncp
++PKG_VERSION:=0.1.0
++PKG_RELEASE:=1
++
++PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-zigbee-ncp
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=Zigbee NCP (EZSP) firmware flasher for Perenio PEJIR01
++endef
++
++define Package/pejir-zigbee-ncp/description
++ Utility to flash the Gecko bootloader image (.gbl) into the EFR32MG1
++ Zigbee module of Perenio PEJIR01 over /dev/umxtty1 (EZSP handshake +
++ launchStandaloneBootloader + XMODEM-CRC). Needed when the module does
++ not answer as an EZSP NCP, otherwise HOMEd (adapter ezsp) cannot work.
++endef
++
++define Build/Prepare
++	mkdir -p $(PKG_BUILD_DIR)
++	$(CP) ./src/* $(PKG_BUILD_DIR)/
++endef
++
++define Build/Compile
++	$(TARGET_CC) $(TARGET_CFLAGS) -O2 -Wall -Wextra \
++		-o $(PKG_BUILD_DIR)/pejir-ncp-flash $(PKG_BUILD_DIR)/pejir-ncp-flash.c
++endef
++
++define Package/pejir-zigbee-ncp/install
++	$(INSTALL_DIR) $(1)/usr/bin
++	$(INSTALL_BIN) $(PKG_BUILD_DIR)/pejir-ncp-flash $(1)/usr/bin/pejir-ncp-flash
++	$(INSTALL_BIN) ./files/pejir-zigbee-ncp $(1)/usr/bin/pejir-zigbee-ncp
++endef
++
++$(eval $(call BuildPackage,pejir-zigbee-ncp))
+diff --git a/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+new file mode 100755
+index 0000000..ca98e3d
+--- /dev/null
++++ b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+@@ -0,0 +1,107 @@
++#!/bin/sh
++# Прошивка NCP-прошивки Zigbee-модуля EFR32 на Perenio PEJIR01.
++#
++# Модуль доступен как /dev/umxtty1: uartmuxd мультиплексирует /dev/ttyS1
++# в umxtty0=STM32, umxtty1=Zigbee (EFR32), umxtty2=Z-Wave.
++#
++# HOMEd работает с модулем по EZSP (adapter=ezsp). Если модуль отвечает
++# как EZSP NCP - всё в порядке. Если нет - его надо перепрошить Gecko-
++# образом (.gbl) через XMODEM-CRC, иначе Zigbee не заработает.
++#
++# Команды:
++#   pejir-zigbee-ncp status   - отвечает ли модуль по EZSP
++#   pejir-zigbee-ncp ensure   - прошить, если модуль не отвечает как NCP
++#   pejir-zigbee-ncp flash    - прошить принудительно
++#
++# Образ NCP берётся из релиза (по метке версии в /usr/lib/pejir/version):
++# в образе роутера он постоянно не нужен, а весит 180 КБ.
++# Если версия в образе новее опубликованного релиза, образа в релизе ещё
++# нет - тогда используется releases/latest.
++#
++# Прошивка сбрасывает модуль EFR32 (не STM32): после неё Zigbee-модуль
++# стартует с новой прошивкой, каналы umxtty0 (STM32) и umxtty2 (Z-Wave)
++# не затрагиваются.
++
++set -u
++
++PORT="${ZIGBEE_PORT:-/dev/umxtty1}"
++VERSION_FILE=/usr/lib/pejir/version
++CACHE_DIR=/tmp/pejir-ncp
++IMAGE_NAME=NCP_USW_EFR32MG1B-256_678_PA0-PA1-PB11.gbl
++REPO=https://github.com/sergej19882906/openwrt-pejir01/releases/download
++
++log() {
++	echo "[zigbee-ncp] $*"
++	logger -t zigbee-ncp "$*" 2>/dev/null || true
++}
++
++image_url() {
++	tag=""
++	[ -f "$VERSION_FILE" ] && tag="v$(cat "$VERSION_FILE" 2>/dev/null)"
++	if [ -n "$tag" ]; then
++		echo "$REPO/$tag/$IMAGE_NAME"
++	else
++		echo "$REPO/latest/$IMAGE_NAME"
++	fi
++}
++
++image_path() {
++	echo "$CACHE_DIR/$IMAGE_NAME"
++}
++
++download_image() {
++	dst="$(image_path)"
++	[ -s "$dst" ] && return 0
++	mkdir -p "$CACHE_DIR" || return 1
++	url="$(image_url)"
++	log "скачиваю образ NCP: $url"
++	if ! wget -q -O "$dst.tmp" "$url"; then
++		rm -f "$dst.tmp"
++		log "НЕ УДАЛОСЬ скачать образ NCP ($url)"
++		return 1
++	fi
++	mv "$dst.tmp" "$dst"
++	log "образ NCP скачан: $dst"
++	return 0
++}
++
++cmd_status() {
++	if [ ! -e "$PORT" ]; then
++		log "порта $PORT нет - модуль Zigbee не подключён (uartmuxd не поднялся?)"
++		return 2
++	fi
++	pejir-ncp-flash status -p "$PORT"
++}
++
++cmd_ensure() {
++	if [ ! -e "$PORT" ]; then
++		log "порта $PORT нет - прошивка NCP невозможна, модуль не подключён"
++		return 2
++	fi
++	if pejir-ncp-flash status -p "$PORT" >/dev/null 2>&1; then
++		log "модуль $PORT отвечает по EZSP - прошивка NCP не нужна"
++		return 0
++	fi
++	log "модуль $PORT не отвечает по EZSP - нужна прошивка NCP"
++	download_image || return 1
++	pejir-ncp-flash flash -p "$PORT" -f "$(image_path)"
++}
++
++cmd_flash() {
++	if [ ! -e "$PORT" ]; then
++		log "порта $PORT нет - прошивка NCP невозможна, модуль не подключён"
++		return 2
++	fi
++	download_image || return 1
++	pejir-ncp-flash flash -p "$PORT" -f "$(image_path)"
++}
++
++case "${1:-}" in
++	status) cmd_status ;;
++	ensure) cmd_ensure ;;
++	flash)  cmd_flash ;;
++	*)
++		echo "Использование: pejir-zigbee-ncp {status|ensure|flash}"
++		exit 1
++		;;
++esac
+diff --git a/package/pejir-zigbee-ncp/src/pejir-ncp-flash.c b/package/pejir-zigbee-ncp/src/pejir-ncp-flash.c
+new file mode 100644
+index 0000000..1ea7c51
+--- /dev/null
++++ b/package/pejir-zigbee-ncp/src/pejir-ncp-flash.c
+@@ -0,0 +1,551 @@
++/*
++ * pejir-ncp-flash - прошивка NCP (EZSP) в модуль EFR32MG1 роутера Perenio
++ * PEJIR01 ("Elegance").
++ *
++ * Модуль EFR32 (Zigbee) подключён к UART процессора MT7621 (/dev/ttyS1),
++ * который мультиплексирует uartmuxd: каналы /dev/umxtty0 (STM32),
++ * /dev/umxtty1 (Zigbee EFR32), /dev/umxtty2 (Z-Wave).
++ *
++ * Чтобы HOMEd (адаптер ezsp) заработал, модуль должен говорить по EZSP.
++ * Если он отвечает как NCP - прошивка не нужна. Если нет - его надо
++ * перепрошить Gecko-прошивкой (файл .gbl) через XMODEM-CRC.
++ *
++ * Протокол (проверен по рабочему скрипту ncp.py проекта HOMEd):
++ *
++ *   1) EZSP-инициализация: RST-кадр 1A C0 38 BC 7E, ответ RSTACK
++ *      1A C1 02 0B 0A 52 7E; затем кадр конфигурации версии протокола
++ *      (пробуем v8, v7, v6, v5, v4) и ACK 81 60 59 7E.
++ *
++ *   2) Запуск автономного загрузчика: кадр EZSP launchStandaloneBootloader
++ *      (0x8F) с экранированием байта счётчика кадров:
++ *      7D 31 43 21 27 55 6E 90 7E. Модуль перезагружается в bootloader.
++ *
++ *   3) Сессия Gecko-bootloader: приглашение "\n", баннер "Gecko Bootloader
++ *      v1.8.4" (у legacy-загрузчика - "EFR32 Serial Btl" третьей строкой),
++ *      меню из трёх пунктов, "1" - переход в режим XMODEM, далее загрузчик
++ *      шлёт 'C'.
++ *
++ *   4) Передача образа по XMODEM-CRC: блоки по 128 байт, SOH(0x01),
++ *      номер блока, ~номер, данные, CRC-16/XMODEM. В конце EOT(0x04).
++ *
++ *   5) "2" - запуск приложения (reboot NCP).
++ *
++ * Использование:
++ *   pejir-ncp-flash status [-p /dev/umxtty1]      модуль отвечает как EZSP?
++ *   pejir-ncp-flash flash  [-p /dev/umxtty1] -f FILE
++ *   pejir-ncp-flash crc FILE                        самопроверка CRC-16
++ *
++ * Сделано без внешних зависимостей: в образе роутера нет python3.
++ */
++
++#include <errno.h>
++#include <stdarg.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/select.h>
++#include <sys/stat.h>
++#include <termios.h>
++#include <time.h>
++#include <unistd.h>
++
++#define DEFAULT_PORT "/dev/umxtty1"
++#define DEFAULT_BAUD 115200
++
++/* Таймауты, мс */
++#define T_EZSP 3000      /* ответ на RST/кадр конфигурации */
++#define T_BOOT 10000     /* баннер загрузчика и 'C' */
++#define T_XMODEM 10000   /* ACK на блок */
++
++/* ------------------------------------------------------------------ порт */
++
++static int port_open(const char *path, int baud)
++{
++	struct termios t;
++	int fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
++	if (fd < 0) {
++		fprintf(stderr, "pejir-ncp-flash: не открыть %s: %s\n", path, strerror(errno));
++		return -1;
++	}
++	if (tcgetattr(fd, &t) == 0) {
++		cfmakeraw(&t);
++		cfsetispeed(&t, baud == 57600 ? B57600 : B115200);
++		cfsetospeed(&t, baud == 57600 ? B57600 : B115200);
++		t.c_cc[VMIN] = 0;
++		t.c_cc[VTIME] = 0;
++		/* Програмное управление потоком (XON/XOFF) выключаем намеренно:
++		 * байты 0x11/0x13 могут быть частью данных, а линия идёт через
++		 * мультиплексор, где аппаратного flow control нет вовсе.
++		 * Целостность передачи обеспечивает XMODEM (повтор блока). */
++		t.c_iflag &= ~(IXON | IXOFF | IXANY);
++		t.c_oflag &= ~OPOST;
++		tcsetattr(fd, TCSANOW, &t);
++	}
++	return fd;
++}
++
++static int write_all(int fd, const void *buf, size_t len)
++{
++	const uint8_t *p = buf;
++	size_t done = 0;
++	while (done < len) {
++		ssize_t n = write(fd, p + done, len - done);
++		if (n < 0) {
++			if (errno == EAGAIN || errno == EINTR) {
++				struct timespec ts = { 0, 2000000 };
++				nanosleep(&ts, NULL);
++				continue;
++			}
++			return -1;
++		}
++		done += (size_t)n;
++	}
++	return 0;
++}
++
++/* Читает ровно len байт, но не дольше timeout_ms. Возвращает сколько прочитано. */
++static ssize_t read_exact(int fd, void *buf, size_t len, int timeout_ms)
++{
++	uint8_t *p = buf;
++	size_t done = 0;
++	struct timespec start, now;
++	clock_gettime(CLOCK_MONOTONIC, &start);
++	while (done < len) {
++		fd_set rf;
++		struct timeval tv;
++		int ms;
++		clock_gettime(CLOCK_MONOTONIC, &now);
++		ms = timeout_ms - (int)((now.tv_sec - start.tv_sec) * 1000 +
++					(now.tv_nsec - start.tv_nsec) / 1000000);
++		if (ms <= 0)
++			break;
++		FD_ZERO(&rf);
++		FD_SET(fd, &rf);
++		tv.tv_sec = ms / 1000;
++		tv.tv_usec = (ms % 1000) * 1000;
++		if (select(fd + 1, &rf, NULL, NULL, &tv) <= 0)
++			break;
++		ssize_t n = read(fd, p + done, len - done);
++		if (n < 0) {
++			if (errno == EAGAIN || errno == EINTR)
++				continue;
++			break;
++		}
++		if (n == 0)
++			break;
++		done += (size_t)n;
++	}
++	return (ssize_t)done;
++}
++
++/* Один байт с таймаутом; -1 при таймауте */
++static int read_byte(int fd, int timeout_ms)
++{
++	uint8_t c;
++	if (read_exact(fd, &c, 1, timeout_ms) != 1)
++		return -1;
++	return c;
++}
++
++/* Читает строку до '\n'. Возвращает длину или -1. */
++static int read_line(int fd, char *buf, size_t sz, int timeout_ms)
++{
++	size_t n = 0;
++	struct timespec start, now;
++	clock_gettime(CLOCK_MONOTONIC, &start);
++	while (n + 1 < sz) {
++		int ms;
++		clock_gettime(CLOCK_MONOTONIC, &now);
++		ms = timeout_ms - (int)((now.tv_sec - start.tv_sec) * 1000 +
++					(now.tv_nsec - start.tv_nsec) / 1000000);
++		if (ms <= 0)
++			break;
++		int c = read_byte(fd, ms);
++		if (c < 0)
++			break;
++		if (c == '\n')
++			break;
++		if (c == '\r')
++			continue;
++		buf[n++] = (char)c;
++	}
++	buf[n] = '\0';
++	/* 0 - пустая строка (это не ошибка), -1 - таймаут/конец потока */
++	return (int)n;
++}
++
++static void drain(int fd)
++{
++	uint8_t tmp[256];
++	while (read(fd, tmp, sizeof(tmp)) > 0)
++		;
++}
++
++/* ------------------------------------------------------------------- CRC-16 */
++
++static uint16_t crc16_xmodem(const uint8_t *data, size_t len)
++{
++	uint16_t crc = 0;
++	for (size_t i = 0; i < len; i++) {
++		crc ^= (uint16_t)data[i] << 8;
++		for (int b = 0; b < 8; b++)
++			crc = (uint16_t)((crc & 0x8000) ? ((crc << 1) ^ 0x1021) : (crc << 1));
++	}
++	return crc;
++}
++
++/* -------------------------------------------------------------------- EZSP */
++
++static const uint8_t EZSP_RST[] = { 0x1A, 0xC0, 0x38, 0xBC, 0x7E };
++static const uint8_t EZSP_RSTACK[] = { 0x1A, 0xC1, 0x02, 0x0B, 0x0A, 0x52, 0x7E };
++static const uint8_t EZSP_ACK[] = { 0x81, 0x60, 0x59, 0x7E };
++/* launchStandaloneBootloader (0x8F), счётчик кадров 0x11 экранирован */
++static const uint8_t EZSP_LAUNCH_BL[] = { 0x7D, 0x31, 0x43, 0x21, 0x27, 0x55, 0x6E, 0x90, 0x7E };
++
++struct ezsp_ver {
++	const char *name;
++	uint8_t cfg[8];
++	uint8_t resp[4];	/* ожидаемые байты ответа [1..4] */
++};
++
++static const struct ezsp_ver VERSIONS[] = {
++	{ "v8", { 0x00, 0x42, 0x21, 0xA8, 0x5C, 0x2C, 0xA0, 0x7E }, { 0x42, 0xA1, 0xA8, 0x5C } },
++	{ "v7", { 0x00, 0x42, 0x21, 0xA8, 0x53, 0xDD, 0x4F, 0x7E }, { 0x42, 0xA1, 0xA8, 0x53 } },
++	{ "v6", { 0x00, 0x42, 0x21, 0xA8, 0x52, 0xCD, 0x6E, 0x7E }, { 0x42, 0xA1, 0xA8, 0x52 } },
++	{ "v5", { 0x00, 0x42, 0x21, 0xA8, 0x51, 0xFD, 0x0D, 0x7E }, { 0x42, 0xA1, 0xA8, 0x51 } },
++	{ "v4", { 0x00, 0x42, 0x21, 0xA8, 0x50, 0xED, 0x2C, 0x7E }, { 0x42, 0xA1, 0xA8, 0x50 } },
++};
++
++/* Ответ модуля на RST: только EZSP-совместимый NCP ответит RSTACK. */
++static int ezsp_rst(int fd, int timeout_ms)
++{
++	uint8_t resp[16];
++	drain(fd);
++	if (write_all(fd, EZSP_RST, sizeof(EZSP_RST)) < 0)
++		return -1;
++	ssize_t n = read_exact(fd, resp, sizeof(EZSP_RSTACK), timeout_ms);
++	if (n != (ssize_t)sizeof(EZSP_RSTACK))
++		return -1;
++	if (memcmp(resp, EZSP_RSTACK, sizeof(EZSP_RSTACK)) != 0)
++		return -1;
++	return 0;
++}
++
++/* Полная инициализация EZSP; возвращает номер версии (8..4) или -1. */
++static int ezsp_init(int fd)
++{
++	for (size_t i = 0; i < sizeof(VERSIONS) / sizeof(VERSIONS[0]); i++) {
++		uint8_t resp[16];
++		if (ezsp_rst(fd, T_EZSP) < 0)
++			continue;
++		if (write_all(fd, VERSIONS[i].cfg, sizeof(VERSIONS[i].cfg)) < 0)
++			continue;
++		if (read_exact(fd, resp, 11, T_EZSP) != 11)
++			continue;
++		if (memcmp(resp + 1, VERSIONS[i].resp, 4) != 0)
++			continue;
++		write_all(fd, EZSP_ACK, sizeof(EZSP_ACK));
++		return (int)(8 - i);
++	}
++	return -1;
++}
++
++/* ------------------------------------------------------------------ XMODEM */
++
++#define XMODEM_SOH 0x01
++#define XMODEM_EOT 0x04
++#define XMODEM_ACK 0x06
++#define XMODEM_NAK 0x15
++#define XMODEM_CAN 0x18
++
++static int xmodem_send_file(int fd, const char *path)
++{
++	FILE *f = fopen(path, "rb");
++	if (!f) {
++		fprintf(stderr, "pejir-ncp-flash: не открыть %s: %s\n", path, strerror(errno));
++		return -1;
++	}
++	uint8_t blk[134];
++	uint8_t data[128];
++	unsigned char n = 0;
++	int rc = 0;
++
++	for (;;) {
++		size_t got = fread(data, 1, sizeof(data), f);
++		if (got == 0) {
++			if (ferror(f)) {
++				fprintf(stderr, "pejir-ncp-flash: ошибка чтения %s\n", path);
++				rc = -1;
++			}
++			break;
++		}
++		/* нехватающие байты дополняем 0x1A (SUB) */
++		for (size_t i = got; i < sizeof(data); i++)
++			data[i] = 0x1A;
++
++		unsigned char seq = (unsigned char)(n == 255 ? 0 : n + 1);
++		n = seq;
++
++		for (int attempt = 0; attempt < 8; attempt++) {
++			uint16_t crc = crc16_xmodem(data, sizeof(data));
++			blk[0] = XMODEM_SOH;
++			blk[1] = seq;
++			blk[2] = (unsigned char)(255 - seq);
++			memcpy(blk + 3, data, sizeof(data));
++			blk[131] = (uint8_t)(crc >> 8);
++			blk[132] = (uint8_t)(crc & 0xFF);
++			blk[133] = 0;
++
++			if (write_all(fd, blk, 133) < 0) {
++				rc = -1;
++				break;
++			}
++			int c = read_byte(fd, T_XMODEM);
++			if (c == XMODEM_ACK)
++				break;
++			if (c == XMODEM_CAN) {
++				fprintf(stderr, "pejir-ncp-flash: загрузчик прервал передачу (CAN)\n");
++				rc = -1;
++				break;
++			}
++			/* NAK или таймаут - повторяем блок */
++			if (attempt == 7) {
++				fprintf(stderr, "pejir-ncp-flash: блок %u не подтверждён\n", seq);
++				rc = -1;
++				break;
++			}
++		}
++		if (rc < 0)
++			break;
++	}
++
++	if (rc == 0) {
++		/* завершение передачи */
++		uint8_t eot = XMODEM_EOT;
++		for (int attempt = 0; attempt < 8; attempt++) {
++			if (write_all(fd, &eot, 1) < 0) {
++				rc = -1;
++				break;
++			}
++			int c = read_byte(fd, T_XMODEM);
++			if (c == XMODEM_ACK)
++				break;
++			if (attempt == 7) {
++				fprintf(stderr, "pejir-ncp-flash: передача не завершена\n");
++				rc = -1;
++			}
++		}
++	}
++	fclose(f);
++	return rc;
++}
++
++/* ------------------------------------------------------------------ команды */
++
++static int cmd_status(const char *port)
++{
++	int fd = port_open(port, DEFAULT_BAUD);
++	if (fd < 0)
++		return 2;
++	int v = ezsp_init(fd);
++	close(fd);
++	if (v < 0) {
++		printf("NCP-ОТВЕТА-НЕТ\n");
++		return 1;
++	}
++	printf("NCP-ОТВЕТА-ДА v%d\n", v);
++	return 0;
++}
++
++static int cmd_flash(const char *port, const char *file)
++{
++	int fd = port_open(port, DEFAULT_BAUD);
++	if (fd < 0)
++		return 2;
++
++	int v = ezsp_init(fd);
++	if (v < 0) {
++		fprintf(stderr,
++			"pejir-ncp-flash: модуль %s не отвечает по EZSP - прошивка невозможна.\n"
++			"Проверьте, что uartmuxd работает и модуль на месте: ps w | grep uartmuxd; ls -l /dev/umxtty*\n",
++			port);
++		close(fd);
++		return 3;
++	}
++	printf("EZSP v%d - модуль отвечает, запрашиваю загрузчик...\n", v);
++
++	/* launchStandaloneBootloader */
++	if (write_all(fd, EZSP_LAUNCH_BL, sizeof(EZSP_LAUNCH_BL)) < 0) {
++		fprintf(stderr, "pejir-ncp-flash: не отправить команду загрузчика\n");
++		close(fd);
++		return 4;
++	}
++	uint8_t junk[16];
++	read_exact(fd, junk, sizeof(junk), 1000);
++	close(fd);
++
++	/* Модуль перезагружается в bootloader */
++	sleep(4);
++
++	fd = port_open(port, DEFAULT_BAUD);
++	if (fd < 0)
++		return 5;
++
++	char line[256];
++	/* приглашение: пустая строка, затем версия загрузчика */
++	drain(fd);
++	uint8_t nl = '\n';
++	write_all(fd, &nl, 1);
++
++	int gecko = 0;
++	for (int i = 0; i < 4; i++) {
++		if (read_line(fd, line, sizeof(line), T_BOOT) < 0)
++			break;
++		if (strstr(line, "Gecko Bootloader")) {
++			gecko = 1;
++			printf("%s\n", line);
++			break;
++		}
++		if (strstr(line, "Serial Btl") || strstr(line, "EFR32 Serial")) {
++			printf("%s\n", line);
++			break;
++		}
++	}
++	if (!gecko) {
++		/* строка с версией могла не попасть в первые строки - читаем дальше */
++		for (int i = 0; i < 3 && !gecko; i++) {
++			if (read_line(fd, line, sizeof(line), T_BOOT) < 0)
++				break;
++			printf("%s\n", line);
++			if (strstr(line, "Gecko Bootloader"))
++				gecko = 1;
++		}
++	}
++	if (!gecko) {
++		fprintf(stderr,
++			"pejir-ncp-flash: загрузчик не ответил - прошивка прервана.\n"
++			"Проверьте, что модуль на месте и uartmuxd работает.\n");
++		close(fd);
++		return 6;
++	}
++
++	/* меню загрузчика: 1 - upload, 2 - run, 3 - info */
++	for (int i = 0; i < 3; i++)
++		read_line(fd, line, sizeof(line), T_BOOT);
++
++	const char one = '1';
++	write_all(fd, &one, 1);
++	read_line(fd, line, sizeof(line), T_BOOT);
++	read_line(fd, line, sizeof(line), T_BOOT);
++
++	/* ждём 'C' от загрузчика */
++	int got_c = 0;
++	for (int i = 0; i < T_BOOT && !got_c; i++) {
++		int c = read_byte(fd, 1000);
++		if (c < 0)
++			continue;
++		if (c == 'C')
++			got_c = 1;
++	}
++	if (!got_c) {
++		fprintf(stderr, "pejir-ncp-flash: загрузчик не перешёл в режим XMODEM\n");
++		close(fd);
++		return 7;
++	}
++	printf("Загрузчик готов, передаю образ %s ...\n", file);
++
++	int rc = xmodem_send_file(fd, file);
++	if (rc < 0) {
++		close(fd);
++		return 8;
++	}
++	printf("Образ передан.\n");
++
++	/* 2 - run (перезапуск NCP в приложение) */
++	const char two = '2';
++	write_all(fd, &two, 1);
++	close(fd);
++	printf("NCP перезапущен.\n");
++	return 0;
++}
++
++static int cmd_crc(const char *file)
++{
++	FILE *f = fopen(file, "rb");
++	if (!f) {
++		fprintf(stderr, "pejir-ncp-flash: не открыть %s\n", file);
++		return 1;
++	}
++	uint8_t data[128];
++	size_t got = fread(data, 1, sizeof(data), f);
++	fclose(f);
++	if (got == 0) {
++		fprintf(stderr, "pejir-ncp-flash: файл пуст\n");
++		return 1;
++	}
++	uint16_t crc = crc16_xmodem(data, got);
++	printf("CRC16 %04X\n", crc);
++	return 0;
++}
++
++static void usage(void)
++{
++	fprintf(stderr,
++		"Использование:\n"
++		"  pejir-ncp-flash status [-p ПОРТ]\n"
++		"  pejir-ncp-flash flash  [-p ПОРТ] -f ФАЙЛ\n"
++		"  pejir-ncp-flash crc -f ФАЙЛ\n"
++		"\nПорт по умолчанию: %s\n", DEFAULT_PORT);
++}
++
++int main(int argc, char **argv)
++{
++	const char *port = DEFAULT_PORT;
++	const char *file = NULL;
++
++	if (argc < 2) {
++		usage();
++		return 1;
++	}
++	const char *cmd = argv[1];
++	for (int i = 2; i < argc; i++) {
++		if (!strcmp(argv[i], "-p") && i + 1 < argc) {
++			port = argv[++i];
++		} else if (!strcmp(argv[i], "-f") && i + 1 < argc) {
++			file = argv[++i];
++		} else if (!strncmp(argv[i], "--port=", 7)) {
++			port = argv[i] + 7;
++		} else if (!strncmp(argv[i], "--file=", 7)) {
++			file = argv[i] + 7;
++		} else if (argv[i][0] != '-' && !file) {
++			/* позиционный аргумент - имя файла образа */
++			file = argv[i];
++		} else {
++			usage();
++			return 1;
++		}
++	}
++
++	if (!strcmp(cmd, "status"))
++		return cmd_status(port);
++	if (!strcmp(cmd, "flash")) {
++		if (!file) {
++			fprintf(stderr, "pejir-ncp-flash: нужен файл образа (-f)\n");
++			return 1;
++		}
++		return cmd_flash(port, file);
++	}
++	if (!strcmp(cmd, "crc")) {
++		if (!file && argc > 2)
++			file = argv[2];
++		if (!file) {
++			fprintf(stderr, "pejir-ncp-flash: нужен файл (-f)\n");
++			return 1;
++		}
++		return cmd_crc(file);
++	}
++	usage();
++	return 1;
++}

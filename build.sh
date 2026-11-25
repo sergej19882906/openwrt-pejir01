@@ -341,6 +341,7 @@ CONFIG_PACKAGE_pejir-sms=y
 # перекрывают свежие файлы нового образа.
 CONFIG_PACKAGE_pejir-sync=y
 CONFIG_PACKAGE_pejir-homed-feed=y
+CONFIG_PACKAGE_pejir-zigbee-ncp=y
 # stock migration: Wi-Fi SSID/keys, country, root password from idata
 CONFIG_PACKAGE_pejir-idata=y
 # LuCI: battery/power status and SMS pages for PEJIR01

@@ -89,6 +89,21 @@ if tr -d '\000' < "$MOCK/dt/model" | wc -c | grep -qv "^33$"; then
 	ok "проверка на NUL осмысленна"
 fi
 
+# --- 4) раздел Zigbee ------------------------------------------------------
+# В сводной диагностике должен быть блок о модуле Zigbee: без него
+# нельзя понять, на месте ли модуль EFR32 и установлен ли HOMEd.
+if grep -qF 'Zigbee' "$OUT"; then
+	ok "в диагностике есть раздел про Zigbee"
+else
+	fail "в диагностике нет раздела про Zigbee"
+fi
+
+if grep -qF 'umxtty1' "$OUT"; then
+	ok "в диагностике проверяется модуль Zigbee (/dev/umxtty1)"
+else
+	fail "в диагностике не проверяется /dev/umxtty1"
+fi
+
 if [ "$FAILED" -gt 0 ]; then
 	echo "Провалено тестов: $FAILED"
 	exit 1
