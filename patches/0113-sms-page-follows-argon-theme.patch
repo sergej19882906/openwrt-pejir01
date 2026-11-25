@@ -1,0 +1,303 @@
+From bacb012206c1ef3807f76f9cbfde57352f203643 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 16:34:07 GMT
+Subject: =?utf-8?b?bHVjaS1hcHAtcGVyZW5pbzog0YHRgtGA0LDQvdC40YbQsCBTTVMg0YHQu9C10LTR?=
+ =?utf-8?b?g9C10YIg0LfQsCDRgtC10LzQvtC5IEFyZ29uICjRgdCy0LXRgtC70LDRjy/RgtGR?=
+ =?utf-8?b?0LzQvdCw0Y8p?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Страница SMS задавала все цвета своими значениями (#fff, #f1f3f4,
+#e8eaed), поэтому в тёмной теме Argon она оставалась светлой и
+выглядела как чужеродный вклейка.
+
+Теперь цвета берутся из переменных темы: --primary, --surface-color,
+--surface-inset, --text-color, --text-strong, --muted-text,
+--border-color, --input-bg, --danger, --success. Argon переопределяет
+их и в режиме data-argon-mode="dark", и по prefers-color-scheme,
+поэтому страница сама следует за выбором пользователя. Если активна
+другая тема LuCI, где переменных нет, остаются запасные значения -
+страница выглядит как раньше.
+
+Полупрозрачные подложки (розовый пузырь неотправленного, зелёная
+плашка "работает", подложка поиска) собираются через color-mix из
+цветов темы, иначе в тёмной теме светлый оттенок всплывает на тёмном
+фоне. Для браузеров без color-mix оставлены запасные цвета.
+
+Заодно убрана лишняя рамка: Argon оформляет h2 и h3 как отдельные
+карточки с фоном и отступами, а внутри наших карточек это выглядело
+как вложенная рамка - заголовки теперь без неё.
+---
+ .../resources/view/perenio/sms.css            | 117 ++++++++++++------
+ 1 file changed, 80 insertions(+), 37 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css
+index 2cf13f36..ace65645 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css
+@@ -13,27 +13,67 @@
+ 	box-sizing: border-box;
+ }
+ 
++/* Цвета берём из активной темы. Argon отдаёт эти переменные и
++ * переопределяет их в тёмной теме (через data-argon-mode или
++ * prefers-color-scheme) - поэтому страница сама следует за выбором
++ * пользователя. Если активна другая тема LuCI, переменных нет, и
++ * остаются запасные значения (как было раньше). */
+ .pejir-sms {
+-	--ps-accent: #1a73e8;
+-	--ps-accent-soft: #e8f0fe;
+-	--ps-in: #f1f3f4;
+-	--ps-err: #c5221f;
+-	--ps-err-soft: #fce8e6;
+-	--ps-ok: #137333;
+-	--ps-ok-soft: #e6f4ea;
+-	--ps-text: #202124;
+-	--ps-muted: #5f6368;
+-	--ps-line: #e2e4e8;
++	--ps-accent: var(--primary, #1a73e8);
++	--ps-on-accent: var(--text-on-accent, #fff);
++	--ps-surface: var(--surface-color, #fff);
++	--ps-inset: var(--surface-inset, #f1f3f4);
++	--ps-input: var(--input-bg, #fff);
++	--ps-text: var(--text-color, #202124);
++	--ps-text-strong: var(--text-strong, #202124);
++	--ps-muted: var(--muted-text, #5f6368);
++	--ps-line: var(--border-color, #e2e4e8);
++	--ps-line-soft: var(--border-color-low, #f1f3f4);
++	--ps-err: var(--danger, #c5221f);
++	--ps-ok: var(--success, #137333);
++
++	/* Аватар отправителя оставляем фиолетовым: в тёмной теме серый
++	 * аватар с белой надписью был бы нечитаем. */
++	--ps-av: #7e57c2;
++	--ps-av-text: #fff;
++
++	--ps-shadow: 0 1px 2px rgba(0, 0, 0, .06);
++}
++
++/* Полупрозрачные подложки собираем из цвета темы, иначе в тёмной теме
++ * светлый оттенок «всплывает» на тёмном фоне. color-mix появился в
++ * браузерах 2023 года; для старых оставлены запасные цвета. */
++@supports (color: color-mix(in srgb, red, blue)) {
++	.pejir-sms {
++		--ps-accent-soft: color-mix(in srgb, var(--ps-accent) 14%, var(--ps-surface));
++		--ps-inset-strong: color-mix(in srgb, var(--ps-muted) 18%, var(--ps-inset));
++		--ps-in: var(--ps-inset);
++		--ps-err-soft: color-mix(in srgb, var(--ps-err) 15%, var(--ps-surface));
++		--ps-err-line: color-mix(in srgb, var(--ps-err) 45%, var(--ps-surface));
++		--ps-ok-soft: color-mix(in srgb, var(--ps-ok) 15%, var(--ps-surface));
++	}
++}
++
++/* Тема Argon оформляет h2 и h3 как отдельные карточки (фон, рамка,
++ * отступы). Внутри наших карточек это лишняя вложенная рамка, поэтому
++ * заголовки оставляем без неё. */
++.pejir-sms-title h2,
++.pejir-sms-card h3 {
++	background: transparent;
++	padding: 0;
++	border-radius: 0;
++	box-shadow: none;
++	width: auto;
+ }
+ 
+ /* --- Шапка --- */
+ .pejir-sms-head {
+-	background: #fff;
++	background: var(--ps-surface);
+ 	border: 1px solid var(--ps-line);
+ 	border-radius: 14px;
+ 	padding: 14px 14px 12px;
+ 	margin: 0 0 12px;
+-	box-shadow: 0 1px 2px rgba(0, 0, 0, .05);
++	box-shadow: var(--ps-shadow);
+ }
+ 
+ .pejir-sms-title {
+@@ -68,7 +108,7 @@
+ }
+ 
+ .pejir-sms-pill.grey {
+-	background: #f1f3f4;
++	background: var(--ps-inset);
+ 	color: var(--ps-muted);
+ }
+ 
+@@ -90,7 +130,7 @@
+ 	line-height: 1.2;
+ 	padding: 7px 10px;
+ 	border-radius: 999px;
+-	background: #f1f3f4;
++	background: var(--ps-inset);
+ 	color: var(--ps-muted);
+ 	border: 1px solid transparent;
+ 	cursor: pointer;
+@@ -98,12 +138,12 @@
+ }
+ 
+ .pejir-sms-tab:hover {
+-	background: #e8eaed;
++	background: var(--ps-inset-strong, var(--ps-inset));
+ }
+ 
+ .pejir-sms-tab.on {
+ 	background: var(--ps-accent);
+-	color: #fff;
++	color: var(--ps-on-accent);
+ 	font-weight: 600;
+ }
+ 
+@@ -123,7 +163,7 @@
+ 	align-items: center;
+ 	gap: 8px;
+ 	margin-top: 10px;
+-	background: #f1f3f4;
++	background: var(--ps-inset);
+ 	border-radius: 10px;
+ 	padding: 9px 12px;
+ }
+@@ -153,7 +193,7 @@
+ }
+ 
+ .pejir-sms-card {
+-	background: #fff;
++	background: var(--ps-surface);
+ 	border: 1px solid var(--ps-line);
+ 	border-radius: 14px;
+ 	padding: 12px 12px 14px;
+@@ -165,7 +205,7 @@
+ 	margin: 0 0 10px;
+ 	font-size: 15px;
+ 	font-weight: 600;
+-	color: var(--ps-text);
++	color: var(--ps-text-strong);
+ 	display: flex;
+ 	align-items: center;
+ 	justify-content: space-between;
+@@ -198,8 +238,8 @@
+ 	width: 34px;
+ 	height: 34px;
+ 	border-radius: 50%;
+-	background: #7e57c2;
+-	color: #fff;
++	background: var(--ps-av);
++	color: var(--ps-av-text);
+ 	display: flex;
+ 	align-items: center;
+ 	justify-content: center;
+@@ -228,12 +268,12 @@
+ 
+ .pejir-sms-row.out .pejir-sms-bubble {
+ 	background: var(--ps-accent);
+-	color: #fff;
++	color: var(--ps-on-accent);
+ }
+ 
+ .pejir-sms-row.err .pejir-sms-bubble {
+ 	background: var(--ps-err-soft);
+-	border: 1px solid #f5c6c2;
++	border: 1px solid var(--ps-err-line, var(--ps-err));
+ }
+ 
+ .pejir-sms-name {
+@@ -243,7 +283,8 @@
+ }
+ 
+ .pejir-sms-row.out .pejir-sms-name {
+-	color: rgba(255, 255, 255, .85);
++	color: var(--ps-on-accent);
++	opacity: .85;
+ }
+ 
+ .pejir-sms-text {
+@@ -263,7 +304,8 @@
+ }
+ 
+ .pejir-sms-row.out .pejir-sms-time {
+-	color: rgba(255, 255, 255, .8);
++	color: var(--ps-on-accent);
++	opacity: .8;
+ }
+ 
+ .pejir-sms-del {
+@@ -277,7 +319,7 @@
+ 	padding: 2px 8px;
+ 	border-radius: 999px;
+ 	border: 1px solid var(--ps-line);
+-	background: #fff;
++	background: var(--ps-surface);
+ 	color: var(--ps-muted);
+ 	cursor: pointer;
+ }
+@@ -288,15 +330,16 @@
+ }
+ 
+ .pejir-sms-row.out .pejir-sms-del {
+-	background: rgba(255, 255, 255, .18);
+-	border-color: rgba(255, 255, 255, .35);
+-	color: #fff;
++	background: var(--ps-on-accent);
++	opacity: .18;
++	border-color: var(--ps-on-accent);
++	color: var(--ps-on-accent);
+ }
+ 
+ /* На розовом пузыре (не отправлено) кнопка должна быть читаемой. */
+ .pejir-sms-row.err .pejir-sms-del {
+-	background: #fff;
+-	border-color: #f0b4ae;
++	background: var(--ps-surface);
++	border-color: var(--ps-err-line, var(--ps-err));
+ 	color: var(--ps-err);
+ }
+ 
+@@ -308,14 +351,14 @@
+ .pejir-sms-input,
+ .pejir-sms-textarea {
+ 	width: 100%;
+-	border: 1px solid #dadce0;
++	border: 1px solid var(--control-border, var(--ps-line));
+ 	border-radius: 10px;
+ 	padding: 10px 12px;
+ 	font-size: 15px;
+ 	font-family: inherit;
+-	color: var(--ps-text);
++	color: var(--control-text, var(--ps-text));
+ 	outline: none;
+-	background: #fff;
++	background: var(--ps-input);
+ }
+ 
+ .pejir-sms-input:focus,
+@@ -345,7 +388,7 @@
+ 	gap: 10px;
+ 	font-size: 13px;
+ 	padding: 5px 0;
+-	border-bottom: 1px solid #f1f3f4;
++	border-bottom: 1px solid var(--ps-line-soft);
+ }
+ 
+ .pejir-sms-kv:last-child {
+@@ -363,7 +406,7 @@
+ }
+ 
+ .pejir-sms-log {
+-	background: #f8f9fa;
++	background: var(--ps-inset);
+ 	border: 1px solid var(--ps-line);
+ 	border-radius: 10px;
+ 	padding: 10px;
+@@ -396,7 +439,7 @@
+ 	align-items: center;
+ 	gap: 8px;
+ 	padding: 6px 0;
+-	border-bottom: 1px solid #f1f3f4;
++	border-bottom: 1px solid var(--ps-line-soft);
+ 	font-size: 13px;
+ }
+ 
+-- 
+2.39.5
+

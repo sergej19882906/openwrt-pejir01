@@ -122,6 +122,39 @@ for s in "Outgoing SMS" "Recipient" "Sent messages" "Failed messages"; do
 	fi
 done
 
+# --- 4) вкладки, тема Argon и сохранение настроек моста ------------------
+# Вкладка "Все сообщения" должна быть такой же кнопкой, как остальные:
+# раньше у неё не было обработчика, и после перехода на другую вкладку
+# вернуться было нельзя.
+if grep -q "tabBtn('all'" "$JS"; then
+	ok "sms.js: вкладка 'Все сообщения' сделана кнопкой (есть обработчик)"
+else
+	fail "sms.js: вкладка 'Все сообщения' без обработчика - вернуться нельзя"
+fi
+
+# Страница должна следовать за темой Argon (светлая/тёмная): цвета
+# берём из переменных темы, а не задаём свои.
+CSS="$PKG/htdocs/luci-static/resources/view/perenio/sms.css"
+if [ -f "$CSS" ]; then
+	for v in "var(--primary" "var(--surface-color" "var(--text-color" "var(--border-color" "var(--input-bg"; do
+		if grep -q -- "$v" "$CSS"; then
+			ok "sms.css: используется переменная темы $v"
+		else
+			fail "sms.css: нет переменной темы $v - страница не сменит тему"
+		fi
+	done
+else
+	fail "sms.css: файла нет"
+fi
+
+# Настройки моста Telegram: конфиг надо загрузить, иначе LuCI молча
+# игнорирует uci.set() и apply падает с "данные не получены".
+if grep -q "uci.load('pejir_telegram')" "$JS"; then
+	ok "sms.js: конфиг моста загружается перед сохранением"
+else
+	fail "sms.js: нет uci.load('pejir_telegram') - сохранение не сработает"
+fi
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
 	echo "Все тесты блока 'Исходящие SMS' пройдены"

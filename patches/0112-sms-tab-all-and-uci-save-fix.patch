@@ -1,0 +1,206 @@
+From fdd7816f89b5c5f1dffa0f2a848d63f39226e930 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 16:34:07 GMT
+Subject: =?utf-8?b?bHVjaS1hcHAtcGVyZW5pbzog0LLQutC70LDQtNC60LAgItCS0YHQtSDRgdC+0L7Q?=
+ =?utf-8?b?sdGJ0LXQvdC40Y8iINC4INGB0L7RhdGA0LDQvdC10L3QuNC1INC90LDRgdGC0YDQ?=
+ =?utf-8?b?vtC10Log0LzQvtGB0YLQsA==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Три ошибки на странице SMS, все из-за недосмотра при переписывании
+страницы в стиле мессенджера.
+
+1) ВКЛАДКА "ВСЕ СООБЩЕНИЯ" БЕЗ ОБРАБОТЧИКА. Она была создана статичным
+   элементом, а не через tabBtn(), поэтому клик по ней ничего не
+   делал: переключившись на "Входящие" или "Отправленные", вернуться
+   к общему списку было уже нельзя. Теперь это такая же кнопка, как
+   остальные, и она активна по умолчанию.
+
+2) СОХРАНЕНИЕ НАСТРОЕК МОСТА TELEGRAM НЕ РАБОТАЛО. LuCI молча игнорирует
+   uci.set() для конфига, который не загружен в кэш: set() просто
+   выходит, uci.save() нечего применять, и apply() отвечает
+   "RPC call to uci/apply failed with ubus code 5" ("данные не
+   получены"). Теперь конфиг pejir_telegram грузится перед записью, а
+   поля формы заполняются текущими значениями, так что настройки видно
+   сразу. Ошибка с кодом 5 трактуется как "уже сохранено".
+
+3) ACL: В SCOPE "uci" СВЕРЯЕТСЯ ИМЯ КОНФИГА, А НЕ "КОНФИГ.СЕКЦИЯ".
+   rpcd вызывает rpc_session_access(sid, "uci", <имя конфига>, "write")
+   и сравнивает шаблон через fnmatch, поэтому запись "network.lte" не
+   совпадает с именем "network" и НЕ ДАЁТ НИКАКИХ ПРАВ. Из-за этого
+   кнопка "Сохранить" на странице настроек LTE (APN, логин, пароль,
+   pdptype, DNS) не работала ни в одной версии: uci/set отвечал
+   "Permission denied". Теперь в write.uci указаны имена конфигов:
+   network и pejir_telegram.
+
+4) КНОПКА "ЗАГРУЗИТЬ ИЗ IDATA" ПАДАЛА. Внутри then() this равен
+   undefined (файл в строгом режиме), поэтому вызов this.refresh() в
+   обработчике всегда давал "Cannot read properties of undefined
+   (reading 'refresh')". Ссылка на страницу теперь берётся до then().
+
+В read.uci оставлен network - чтение работало и раньше.
+---
+ .../resources/view/perenio/idata.js           |  8 +-
+ .../luci-static/resources/view/perenio/sms.js | 78 ++++++++++++++-----
+ .../share/rpcd/acl.d/luci-app-perenio.json    |  4 +-
+ 3 files changed, 66 insertions(+), 24 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
+index f7b11d73..86018b64 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/idata.js
+@@ -141,6 +141,12 @@ return view.extend({
+ 	},
+ 
+ 	handleLoad: function(ev) {
++		/* Внутри then() this равен undefined (файл в строгом режиме),
++		 * поэтому ссылку на страницу берём заранее. Раньше здесь был
++		 * this.refresh(), и кнопка "Загрузить из idata" всегда
++		 * заканчивалась ошибкой "Cannot read properties of undefined". */
++		var self = this;
++
+ 		setText('idata-status', _('Reading idata…'));
+ 
+ 		return fs.exec(LOADER, [ '--force' ]).then(function(res) {
+@@ -151,7 +157,7 @@ return view.extend({
+ 			}
+ 
+ 			setText('idata-status', _('Done'));
+-			return this.refresh();
++			return self.refresh();
+ 		}).catch(function(err) {
+ 			setText('idata-status', _('Error: ') + (err && err.message ? err.message : err));
+ 		});
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index e219b529..ef774b50 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -23,9 +23,9 @@ var FILTER = '';
+ var TAB = 'all';
+ 
+ /* Кнопка-вкладка переписки со счётчиком сообщений. */
+-function tabBtn(id, label, countId) {
+-	var b = E('span', { 'class': 'pejir-sms-tab', 'id': 'sms-tabbtn-' + id,
+-		'data-tab': id }, [
++function tabBtn(id, label, countId, active) {
++	var b = E('span', { 'class': 'pejir-sms-tab' + (active ? ' on' : ''),
++		'id': 'sms-tabbtn-' + id, 'data-tab': id }, [
+ 		label,
+ 		E('span', { 'class': 'n', 'id': countId }, '0')
+ 	]);
+@@ -546,6 +546,34 @@ return view.extend({
+ 
+ 		loadCss();
+ 
++		/* Настройки моста Telegram. Конфиг надо ЗАГРУЗИТЬ: LuCI молча
++		 * игнорирует uci.set() для незагруженного конфига, и тогда
++		 * uci.save() нечего применять - apply падает с "данные не
++		 * получены". Заодно заполняем поля текущими значениями. */
++		uci.load('pejir_telegram').then(function() {
++			var val = function(key, dflt) {
++				var v = uci.get('pejir_telegram', 'main', key);
++				return (v == null || v === '') ? dflt : v;
++			};
++			var put = function(id, v) {
++				var el = document.getElementById(id);
++				if (el)
++					el.value = v;
++			};
++
++			put('tg-token', val('token', ''));
++			put('tg-chat', val('chat', ''));
++			put('tg-interval', val('interval', '60'));
++			put('tg-protect', val('protect', ''));
++
++			var en = document.getElementById('tg-enabled');
++			if (en)
++				en.checked = (val('enabled', '0') == '1');
++			var cm = document.getElementById('tg-commands');
++			if (cm)
++				cm.checked = (val('commands', '0') == '1');
++		}).catch(function() {});
++
+ 		var body = E('div', { 'class': 'pejir-sms' }, [
+ 			E('div', { 'class': 'pejir-sms-head' }, [
+ 				E('div', { 'class': 'pejir-sms-title' }, [
+@@ -553,11 +581,7 @@ return view.extend({
+ 					E('span', { 'class': 'pejir-sms-pill', 'id': 'sms-svc' }, _('checking…'))
+ 				]),
+ 				E('div', { 'class': 'pejir-sms-tabs' }, [
+-					E('span', { 'class': 'pejir-sms-tab on', 'id': 'sms-tabbtn-all',
+-						'data-tab': 'all' }, [
+-						_('All messages'),
+-						E('span', { 'class': 'n', 'id': 'sms-tab-all' }, '0')
+-					]),
++					tabBtn('all', _('All messages'), 'sms-tab-all', true),
+ 					tabBtn('inbox', _('Incoming messages'), 'sms-tab-inbox'),
+ 					tabBtn('out', _('Sent messages'), 'sms-tab-out'),
+ 					tabBtn('failed', _('Failed messages'), 'sms-tab-failed')
+@@ -719,23 +743,35 @@ return view.extend({
+ 		var en = document.getElementById('tg-enabled');
+ 		var cm = document.getElementById('tg-commands');
+ 
+-		uci.set('pejir_telegram', 'main', 'enabled', (en && en.checked) ? '1' : '0');
+-		uci.set('pejir_telegram', 'main', 'commands', (cm && cm.checked) ? '1' : '0');
+-		uci.set('pejir_telegram', 'main', 'token',
+-			((document.getElementById('tg-token') || {}).value || '').trim());
+-		uci.set('pejir_telegram', 'main', 'chat',
+-			((document.getElementById('tg-chat') || {}).value || '').trim());
+-		uci.set('pejir_telegram', 'main', 'interval',
+-			((document.getElementById('tg-interval') || {}).value || '60').trim() || '60');
+-		uci.set('pejir_telegram', 'main', 'protect',
+-			((document.getElementById('tg-protect') || {}).value || '').trim());
+-
+-		return uci.save().then(function() {
++		setText('tg-status', _('Saving...'));
++
++		/* Конфиг должен быть загружен - иначе uci.set() молча ничего
++		 * не делает, а apply() падает с "данные не получены". */
++		return uci.load('pejir_telegram').then(function() {
++			uci.set('pejir_telegram', 'main', 'enabled', (en && en.checked) ? '1' : '0');
++			uci.set('pejir_telegram', 'main', 'commands', (cm && cm.checked) ? '1' : '0');
++			uci.set('pejir_telegram', 'main', 'token',
++				((document.getElementById('tg-token') || {}).value || '').trim());
++			uci.set('pejir_telegram', 'main', 'chat',
++				((document.getElementById('tg-chat') || {}).value || '').trim());
++			uci.set('pejir_telegram', 'main', 'interval',
++				((document.getElementById('tg-interval') || {}).value || '60').trim() || '60');
++			uci.set('pejir_telegram', 'main', 'protect',
++				((document.getElementById('tg-protect') || {}).value || '').trim());
++
++			return uci.save();
++		}).then(function() {
+ 			return uci.apply();
+ 		}).then(function() {
+ 			setText('tg-status', _('Saved'));
+ 		}).catch(function(e) {
+-			setText('tg-status', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++			/* ubus-код 5 (нет данных) означает, что применять было
++			 * нечего: настройки уже записаны. */
++			var msg = (e && e.message) ? e.message : String(e || '');
++			if (msg.indexOf('code 5') >= 0)
++				setText('tg-status', _('Saved'));
++			else
++				setText('tg-status', _('Error: ') + msg);
+ 		});
+ 	},
+ 
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index f0d95b7f..5ca374b7 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -155,8 +155,8 @@
+ 				]
+ 			},
+ 			"uci": [
+-				"network.lte",
+-				"pejir_telegram.main"
++				"network",
++				"pejir_telegram"
+ 			]
+ 		}
+ 	}
+-- 
+2.39.5
+

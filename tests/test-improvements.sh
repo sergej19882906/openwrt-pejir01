@@ -264,3 +264,17 @@ fi
 
 echo "Все тесты улучшений пройдены"
 exit 0
+# --- 10) страница «Заводские данные»: кнопка загрузки ----------------------
+# Внутри then() this равен undefined (строгий режим), поэтому this.refresh()
+# в обработчике всегда падало: "Cannot read properties of undefined".
+IDATA_JS="$LUCI/htdocs/luci-static/resources/view/perenio/idata.js"
+if [ -f "$IDATA_JS" ]; then
+	if grep -q "var self = this" "$IDATA_JS" && grep -q "self.refresh()" "$IDATA_JS"; then
+		ok "idata.js: this сохранён до then() - кнопка загрузки работает"
+	else
+		fail "idata.js: this используется внутри then() - кнопка загрузки падает"
+	fi
+else
+	fail "idata.js: файла нет"
+fi
+

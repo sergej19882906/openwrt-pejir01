@@ -75,9 +75,13 @@ grep -q "pejir-tg watch" "$INIT" && ok "init: запускает helper в ре�
 	|| fail "init: не запускает helper в режиме watch"
 
 # --- 3) ACL -----------------------------------------------------------------
-grep -q '"pejir_telegram.main"' "$ACL" \
-	&& ok "ACL: есть грант на запись uci pejir_telegram.main" \
-	|| fail "ACL: нет гранта на запись uci pejir_telegram.main"
+# ВАЖНО: rpcd сверяет в scope "uci" ИМЯ КОНФИГА (fnmatch по имени), а не
+# "конфиг.секция": запись "pejir_telegram.main" не даёт никаких прав, и
+# uci/set отвечает "Permission denied". Поэтому в ACL должно быть
+# именно "pejir_telegram".
+grep -q '"pejir_telegram"' "$ACL" \
+	&& ok "ACL: есть грант на запись конфига pejir_telegram" \
+	|| fail "ACL: нет гранта на запись конфига pejir_telegram"
 grep -q '"/usr/libexec/pejir-tg"' "$ACL" \
 	&& ok "ACL: есть грант на exec /usr/libexec/pejir-tg" \
 	|| fail "ACL: нет гранта на exec /usr/libexec/pejir-tg"

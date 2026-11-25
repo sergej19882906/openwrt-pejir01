@@ -161,6 +161,21 @@ else
 	fail "helper: check не признал мёртвый порт"
 fi
 
+# --- 3a) занятый модем не считается мёртвым --------------------------------
+# Пока активен LTE-вызов, модем на AT не отвечает. Если сторож считает
+# это зависанием, он рвёт USB-драйвер - и SMS перестают работать
+# совсем (smsd.conf остаётся на старом порту).
+if grep -q "iface_bytes" "$HELPER" && grep -q "lte_ifname" "$HELPER"; then
+	ok "helper: учитывает трафик LTE (занятый модем не рвётся)"
+else
+	fail "helper: нет проверки трафика LTE - сторож убьёт работающий модем"
+fi
+if grep -q "40-pejir-sms" "$HELPER"; then
+	ok "helper: после восстановления порта перезапускает SMS"
+else
+	fail "helper: не перезапускает SMS после восстановления порта"
+fi
+
 # --- 4) безопасность: перепривязка только для USB ------------------------
 if grep -q '/dev/ttyUSB\*' "$HELPER" && grep -q 'unbind' "$HELPER" && grep -q 'bind' "$HELPER"; then
 	ok "helper: перепривязка есть и ограничена USB-портами (/dev/ttyUSB*)"

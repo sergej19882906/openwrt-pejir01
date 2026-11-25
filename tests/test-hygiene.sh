@@ -98,19 +98,21 @@ else
 fi
 
 # --- F16: write.uci сужён -------------------------------------------------
-# Разрешены ровно две секции: network.lte (настройки LTE) и
-# pejir_telegram.main (настройки моста Telegram). Больше - нельзя.
+# ВАЖНО: rpcd сверяет в scope "uci" ИМЯ КОНФИГА, а не "конфиг.секция":
+# запись вида "network.lte" не даёт никаких прав (fnmatch не совпадёт с
+# именем "network"), и uci/set отвечает "Permission denied". Поэтому
+# здесь именно имена конфигов: network и pejir_telegram.
 if python3 - "$ACL" <<'PYEOF'
 import json,sys
 a=json.load(open(sys.argv[1]))
 w=sorted(a['luci-app-perenio']['write']['uci'])
 r=a['luci-app-perenio']['read']['uci']
-sys.exit(0 if w==['network.lte','pejir_telegram.main'] and r==['network'] else 1)
+sys.exit(0 if w==['network','pejir_telegram'] and r==['network'] else 1)
 PYEOF
 then
-	ok "ACL: write.uci = network.lte + pejir_telegram.main, read.uci = network"
+	ok "ACL: write.uci = network + pejir_telegram (имена конфигов), read.uci = network"
 else
-	fail "ACL: write.uci не сужён до network.lte и pejir_telegram.main (или сломан read.uci)"
+	fail "ACL: write.uci не равен именам конфигов network и pejir_telegram (или сломан read.uci)"
 fi
 
 # --- F24: modeminfo device из /etc/pejir/at-port --------------------------

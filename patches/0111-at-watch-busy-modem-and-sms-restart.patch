@@ -1,0 +1,126 @@
+From 128c270d5ed594af2f66b89ea481cb7a17789a1b Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 16:32:57 GMT
+Subject: =?utf-8?b?cGVqaXItbHRlOiDRgdGC0L7RgNC+0LYgQVQt0L/QvtGA0YLQsCDQvdC1INC00L7Q?=
+ =?utf-8?b?u9C20LXQvSDRg9Cx0LjQstCw0YLRjCDQt9Cw0L3Rj9GC0YvQuSDQvNC+0LTQtdC8?=
+ =?utf-8?b?ICsg0L/QtdGA0LXQt9Cw0L/Rg9GB0LogU01T?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Сторож каждые 5 минут спрашивает модем "AT" и ждёт "OK". Пока активен
+LTE-вызов, GM510 на AT не отвечает - это же написано на странице SMS
+(для USSD там приходится перезапускать LTE). Но сторож считал такой
+модем ЗАВИСШИМ и через две проверки перепривязывал USB-драйвер
+последовательного порта.
+
+Последствия были тяжёлыми:
+
+  * порт умирал, а /etc/smsd.conf продолжал указывать на старый
+    /dev/ttyUSB* - SMS переставали работать совсем: входящие не
+    приходили, исходящие не уходили;
+  * страница SMS показывала пустую переписку, хотя spool был на месте.
+
+Почему это стало заметно именно сейчас: на роутере почти всегда
+активен LTE-вызов (mwan3 проверяет сеть, DNS, а в релиз�� .60 ещё и
+мост Telegram опрашивает API каждую минуту), то есть модем отвечает
+на AT почти всегда "нет".
+
+Что исправлено:
+
+1) ЗАНЯТЫЙ МОДЕМ - НЕ МЁРТВЫЙ. Если на AT ответа нет, но по
+   интерфейсу LTE идёт трафик (счётчики rx/tx растут), значит модем
+   жив и просто занят: счётчик неудач сбрасывается, перепривязки не
+   будет. Зависший модем (трафика нет, AT молчит) по-прежнему
+   восстанавливается через две проверки.
+
+2) ПОСЛЕ ВОССТАНОВЛЕНИЯ ПЕРЕЗАПУСКАЕТСЯ И SMS. Порт после
+   перепривязки может сменить имя, поэтому теперь дополнительно
+   запускается 40-pejir-sms: он заново определяет AT-порт, переписывает
+   smsd.conf и перезапускает smsd. Раньше перезапускался только LTE.
+
+Интерфейс LTE берётся из network.lte.ifname, затем network.lte.device,
+а если их нет - из маршрута по умолчанию, поэтому патч работает и при
+другом имени интерфейса.
+---
+ .../root/usr/libexec/pejir-at-watch           | 49 ++++++++++++++++++-
+ 1 file changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-at-watch b/package/pejir-lte-base/root/usr/libexec/pejir-at-watch
+index a7d56e46..8d35e57a 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-at-watch
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-at-watch
+@@ -56,6 +56,31 @@ port_alive() {
+ 	mdm-at "AT" "$p" 2>/dev/null | grep -q "OK"
+ }
+ 
++# Интерфейс LTE (или устройство маршрута по умолчанию).
++lte_ifname() {
++	local ifn
++
++	ifn="$(uci -q get network.lte.ifname 2>/dev/null)"
++	[ -n "$ifn" ] && { printf '%s' "$ifn"; return 0; }
++
++	ifn="$(uci -q get network.lte.device 2>/dev/null)"
++	[ -n "$ifn" ] && { printf '%s' "$ifn"; return 0; }
++
++	ip route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1
++}
++
++# Сколько байт прошло через интерфейс (rx+tx).
++iface_bytes() {
++	local ifn="$1" rx=0 tx=0
++
++	[ -n "$ifn" ] || { echo 0; return 0; }
++	rx="$(cat "/sys/class/net/$ifn/statistics/rx_bytes" 2>/dev/null)"
++	tx="$(cat "/sys/class/net/$ifn/statistics/tx_bytes" 2>/dev/null)"
++	case "$rx" in ''|*[!0-9]*) rx=0 ;; esac
++	case "$tx" in ''|*[!0-9]*) tx=0 ;; esac
++	echo $((rx + tx))
++}
++
+ # USB-интерфейс, которому принадлежит tty-устройство.
+ #
+ # /sys/class/tty/ttyUSB2/device -> ... -> каталог USB-интерфейса
+@@ -130,6 +155,25 @@ cmd_recover() {
+ 
+ 	if port_alive "$port"; then
+ 		printf '0' > "$STATE_DIR/fails" 2>/dev/null
++		printf '%s' "$(iface_bytes "$(lte_ifname)")" > "$STATE_DIR/bytes" 2>/dev/null
++		return 0
++	fi
++
++	# Модем может быть ЗАНЯТ: пока активен LTE-вызов, он не отвечает на
++	# AT (это же видно на странице SMS - там для USSD приходится
++	# перезапускать LTE). Если при этом по LTE идёт трафик, модем жив,
++	# просто не отвечает - рвать USB-драйвер в такой момент нельзя:
++	# после перепривязки порт умирает, а smsd.conf продолжает указывать
++	# на старый /dev/ttyUSB*, и SMS перестают работать совсем.
++	_ifn="$(lte_ifname)"
++	_bytes="$(iface_bytes "$_ifn")"
++	_prev="$(cat "$STATE_DIR/bytes" 2>/dev/null)"
++	case "$_prev" in ''|*[!0-9]*) _prev="$_bytes" ;; esac
++
++	if [ "$_bytes" != "$_prev" ]; then
++		printf '%s' "$_bytes" > "$STATE_DIR/bytes" 2>/dev/null
++		printf '0' > "$STATE_DIR/fails" 2>/dev/null
++		log "порт не отвечает, но трафик по $_ifn идёт - модем занят, не трогаю"
+ 		return 0
+ 	fi
+ 
+@@ -173,8 +217,11 @@ cmd_recover() {
+ 		printf '0' > "$STATE_DIR/fails" 2>/dev/null
+ 		return 1
+ 	fi
+-	log "порт восстановлен: $port -> $newport, перезапускаю LTE"
++	log "порт восстановлен: $port -> $newport, перезапускаю LTE и SMS"
+ 	/etc/init.d/47-pejir-lte restart >/dev/null 2>&1
++	# SMS: порт мог сменить имя, поэтому smsd.conf надо переписать
++	# заново - иначе smsd останется на старом (несуществующем) порту.
++	/etc/init.d/40-pejir-sms restart >/dev/null 2>&1
+ 	printf '0' > "$STATE_DIR/fails" 2>/dev/null
+ 	return 0
+ }
+-- 
+2.39.5
+
