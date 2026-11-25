@@ -198,6 +198,11 @@ if grep -q "pejir-extroot check" "$AUTOINIT"; then
 else
 	fail "init-скрипт не проверяет раздел extroot (флешка заменена - extroot молча не заработает)"
 fi
+if grep -q "umxtty1" "$AUTOINIT"; then
+	ok "init-скрипт проверяет наличие модуля Zigbee (/dev/umxtty1)"
+else
+	fail "init-скрипт не проверяет модуль Zigbee"
+fi
 if grep -q "homed-zigbee" "$AUTOINIT"; then
 	ok "init-скрипт проверяет установку HOMEd"
 else

@@ -49,10 +49,12 @@ else
 	fail "Makefile: helper или init-скрипт не ставятся в образ"
 fi
 
-if grep -q "^START=91" "$INITD"; then
-	ok "init-скрипт: START=91 (после pejir-sync, до модема и LTE)"
+# START=11 - ДО uartmuxd (14) и до стокового mcud (15): иначе стоковый
+# демон успевает занять /dev/umxtty* (Zigbee/STM32) и AT-порт.
+if grep -q "^START=11" "$INITD"; then
+	ok "init-скрипт: START=11 (до uartmuxd=14 и стокового mcud=15)"
 else
-	fail "init-скрипт: нет START=91"
+	fail "init-скрипт: нет START=11"
 fi
 
 if grep -q "^start()" "$INITD"; then
@@ -118,13 +120,33 @@ else
 	fail "helper: остатки стоковых скриптов не удалены"
 fi
 
-if grep -q "нужна перезагрузка" <<EOF
+if grep -q "удалены чужие init-скрипты" <<EOF
 $out
 EOF
 then
-	ok "helper: сообщает о необходимости перезагрузки (чужие скрипты уже стартовали)"
+	ok "helper: сообщает об удалённых чужих init-скриптах"
 else
-	fail "helper: не сообщает о перезагрузке"
+	fail "helper: не сообщает об удалённых чужих скриптах"
+fi
+
+# Проверка Zigbee: helper сообщает о состоянии модуля /dev/umxtty1
+# В песочнице /dev/umxtty1 нет, поэтому проверяем сам факт проверки:
+# helper обязан упомянуть состояние Zigbee-модуля.
+if grep -q "Zigbee: " <<EOF
+$out
+EOF
+then
+	ok "helper: проверяет наличие Zigbee-модуля (/dev/umxtty1)"
+else
+	fail "helper: нет проверки Zigbee-модуля"
+fi
+
+# Свежая версия чистки берётся из /rom (в верхнем слое может лежать
+# протухшая копия pejir-ovl-purge).
+if grep -q "/rom/usr/bin/pejir-ovl-purge" "$HELPER"; then
+	ok "helper: чистку запускает из /rom (свежая версия)"
+else
+	fail "helper: чистка запускается не из /rom"
 fi
 
 # --- повторный запуск при той же версии - ничего не делает -----------------

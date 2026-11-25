@@ -1,0 +1,166 @@
+From 2d650751cf15ea8cc59b0e1c37eb5b14e6074b0d Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 05:58:49 GMT
+Subject: =?utf-8?b?cGVqaXItb3RhOiDQv9GA0L7QstC10YDRj9GC0Ywg0LTRgNCw0LnQstC10YAgWmln?=
+ =?utf-8?b?YmVlINC4INGH0LjRgdGC0LjRgtGMINCy0LXRgNGF0L3QuNC5INGB0LvQvtC5INC0?=
+ =?utf-8?b?0L4g0YHRgtCw0YDRgtCwIHVhcnRtdXhk?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ПРОВЕРКА ДРАЙВЕРА ZIGBEE ПРИ ПЕРВОЙ УСТАНОВКЕ ПОСЛЕ СТОКА + РАННЯЯ ЧИСТКА.
+
+ФАКТ (стоковая прошивка Perenio 9.0.4): Zigbee/STM32/Z-Wave мультиплексирует
+демон mcud (START=15) - он создаёт /dev/umxtty0 (STM32), /dev/umxtty1
+(Zigbee EFR32), /dev/umxtty2 (Z-Wave). В НАШЕЙ прошивке это делает
+uartmuxd (START=14) из образа.
+
+Отсюда две проблемы при переходе со стока:
+
+  1) КОНФЛИКТ ЗА UART. Если стоковый mcud останется в верхнем слое, он
+     запустится (START=15) рядом с нашим uartmuxd (START=14) и будет
+     драться за /dev/ttyS1 и за устройства /dev/umxtty*. Связь с
+     Zigbee-модулем и с STM32 (батарея, индикация) станет нестабильной.
+     Поэтому очистка верхнего слоя перенесена на START=11 - ДО uartmuxd
+     и ДО стокового mcud: чужие init-скрипты просто не стартуют, и
+     дополнительный перезапуск не нужен.
+
+  2) ПРОВЕРКА САМОГО ДРАЙВЕРА. Теперь при первой загрузке проверяется
+     наличие Zigbee-модуля: /dev/umxtty1 (его создаёт uartmuxd).
+     - pejir-autosetup (do_homed) пишет в журнал, есть модуль или нет
+       (с подсказкой: ps w | grep uartmuxd; ls -l /dev/umxtty*), и только
+       потом решает, ставить ли HOMEd;
+     - pejir-upgrade-purge тоже сообщает состояние модуля.
+
+Заодно: чистку запускаем из /rom (/rom/usr/bin/pejir-ovl-purge), а не из
+объединённого /usr/bin - в верхнем слое может лежать протухшая копия
+чистки, а /rom всегда соответствует поставленному образу.
+
+Закреплено тестами tests/test-upgrade-purge.sh (START=11, чистка из /rom,
+проверка Zigbee) и tests/test-autosetup.sh (проверка модуля Zigbee).
+
+diff --git a/package/pejir-autosetup/files/pejir-autosetup.init b/package/pejir-autosetup/files/pejir-autosetup.init
+index 6021f6d..05c63ba 100644
+--- a/package/pejir-autosetup/files/pejir-autosetup.init
++++ b/package/pejir-autosetup/files/pejir-autosetup.init
+@@ -104,7 +104,32 @@ do_extroot() {
+ 	return 1
+ }
+ 
++# Модуль Zigbee (EFR32) виден как /dev/umxtty1: его создаёт uartmuxd
++# (START=14), мультиплексирующий /dev/ttyS1 в umxtty0=STM32,
++# umxtty1=Zigbee, umxtty2=Z-Wave.
++#
++# В стоковой прошивке то же самое делал демон mcud (START=15) - он удалён
++# при переходе на нашу прошивку (pejir-upgrade-purge, START=11, чистит
++# верхний слой ДО старта uartmuxd). Поэтому наличие /dev/umxtty1 -
++# признак того, что Zigbee-модуль доступен и мультиплексер наш.
++zigbee_port() {
++	echo /dev/umxtty1
++}
++
++zigbee_present() {
++	local p
++	p="$(zigbee_port)"
++	[ -c "$p" ]
++}
++
+ do_homed() {
++	if zigbee_present; then
++		log "модуль Zigbee на месте: $(zigbee_port)"
++	else
++		log "модуль Zigbee ($(zigbee_port)) не найден - uartmuxd не поднялся или модуля нет."
++		log "проверьте: ps w | grep uartmuxd; ls -l /dev/umxtty*"
++	fi
++
+ 	if [ -x /usr/bin/homed-zigbee ]; then
+ 		log "HOMEd Zigbee уже установлен."
+ 		return 0
+diff --git a/package/pejir-ota/files/pejir-upgrade-purge b/package/pejir-ota/files/pejir-upgrade-purge
+index d178412..e6c99dd 100755
+--- a/package/pejir-ota/files/pejir-upgrade-purge
++++ b/package/pejir-ota/files/pejir-upgrade-purge
+@@ -48,10 +48,17 @@ for f in etc/init.d/modem etc/init.d/pmwan etc/init.d/lxc-autostart \
+ 	[ -e "$UPPER/$f" ] && stale="$stale $f"
+ done
+ 
+-if [ -x "$PURGE_CMD" ]; then
+-	"$PURGE_CMD" 2>&1 | sed 's/^/  /'
++# Свежая версия чистки - из /rom (текущий образ). В верхнем слое может
++# лежать протухшая копия, а /rom всегда соответствует поставленному образу.
++purge_bin="$PURGE_CMD"
++if [ -x /rom/usr/bin/pejir-ovl-purge ]; then
++	purge_bin=/rom/usr/bin/pejir-ovl-purge
++fi
++
++if [ -x "$purge_bin" ]; then
++	"$purge_bin" 2>&1 | sed 's/^/  /'
+ else
+-	echo "  pejir-ovl-purge не найден ($PURGE_CMD) - остатки стока могут остаться"
++	echo "  pejir-ovl-purge не найден ($purge_bin) - остатки стока могут остаться"
+ fi
+ 
+ mkdir -p "$(dirname "$MARKER")" 2>/dev/null
+@@ -59,8 +66,17 @@ printf '%s\n' "$version" > "$MARKER" 2>/dev/null
+ 
+ echo "pejir-upgrade-purge: чистка выполнена"
+ if [ -n "$stale" ]; then
+-	echo "нужна перезагрузка: остались чужие скрипты:$stale"
++	echo "удалены чужие init-скрипты (до их запуска):$stale"
++else
++	echo "чужих init-скриптов не было"
++fi
++
++# Проверка Zigbee: модуль EFR32 виден как /dev/umxtty1 - его создаёт
++# uartmuxd (START=14), мультиплексирующий /dev/ttyS1. Стоковый mcud
++# делал то же самое и удалён выше, поэтому устройство теперь наше.
++if [ -c /dev/umxtty1 ]; then
++	echo "Zigbee: модуль /dev/umxtty1 на месте"
+ else
+-	echo "перезагрузка не требуется"
++	echo "Zigbee: /dev/umxtty1 пока нет (uartmuxd ещё не поднялся или модуля нет)"
+ fi
+ exit 0
+diff --git a/package/pejir-ota/root/etc/init.d/42-pejir-upgrade-purge b/package/pejir-ota/root/etc/init.d/42-pejir-upgrade-purge
+index 661e46e..3c70eee 100755
+--- a/package/pejir-ota/root/etc/init.d/42-pejir-upgrade-purge
++++ b/package/pejir-ota/root/etc/init.d/42-pejir-upgrade-purge
+@@ -6,29 +6,23 @@
+ # сделанное через системное меню LuCI (наша OTA-страница чистит верхний
+ # слой сама, но прошивку можно поставить и через LuCI).
+ #
+-# Порядок запуска: START=91 - после pejir-sync (START=90), который
+-# возвращает в верхний слой свежие файлы пакетов из образа, и ДО
+-# скриптов модема (93) и LTE (94).
++# Порядок запуска: START=11 - ДО uartmuxd (START=14) и до стокового
++# mcud (START=15), который тоже мультиплексирует /dev/ttyS1 в
++# /dev/umxtty0..2. Если стоковые init-скрипты удалить после их старта,
++# они уже успеют занять AT-порт и UART модулей. Поэтому чистка идёт
++# раньше всех: стоковые демоны (modem, pmwan, mcud, lxc-*) просто не
++# стартуют, и дополнительный перезапуск не нужен.
+ #
+-# Если после чистки остались чужие init-скрипты (значит они уже стартовали
+-# на этой загрузке), делаем ещё один перезапуск - чтобы стоковые демоны
+-# модема и multi-WAN не мешали работе.
++# Свежую версию pejir-ovl-purge берём из /rom: в верхнем слое может
++# лежать протухшая копия (в верхнем слое переживают обновления), а
++# /rom - это всегда текущий образ.
+ 
+-START=91
++START=11
+ STOP=0
+ 
+-REBOOT_DELAY="${PEJIR_PURGE_REBOOT_DELAY:-20}"
+-
+ start() {
+ 	local out
+ 
+ 	out="$(/usr/bin/pejir-upgrade-purge 2>&1)"
+ 	echo "$out" | logger -t pejir-upgrade-purge
+-
+-	case "$out" in
+-	*"нужна перезагрузка"*)
+-		logger -t pejir-upgrade-purge "остатки чужих скриптов удалены, перезагружаю через $REBOOT_DELAY с"
+-		( sleep "$REBOOT_DELAY"; reboot -f ) >/dev/null 2>&1 &
+-		;;
+-	esac
+ }
