@@ -56,8 +56,11 @@ EOF
 chmod 755 "$TMP/mcu"
 export MCU_LOG="$LOG"
 
+BRIGHT="$TMP/led-brightness"
+export BRIGHT_CONF="$BRIGHT"
+
 run_led() {
-	LED_CONF="$CONF" MCU_BIN="$TMP/mcu" sh "$HELPER" "$@" 2>&1
+	LED_CONF="$CONF" MCU_BIN="$TMP/mcu" BRIGHT_CONF="$BRIGHT" sh "$HELPER" "$@" 2>&1
 }
 
 # --- 0) состояние по умолчанию -----------------------------------------------
@@ -203,6 +206,66 @@ if grep -q 'mcu -p l' "$PAGE"; then
 	ok "страница описывает протокол mcu -p l"
 else
 	fail "страница не упоминает протокол mcu -p l"
+fi
+
+# --- яркость (общий уровень STM32, 0..7) -----------------------------------
+# Светодиодами управляет STM32, у него есть общий уровень яркости 0..7:
+# команда "mcu setbright N". В заводской прошивке уровень выставляется один
+# раз при загрузке из /etc/init.d/stm32_setup; у нас он хранится в
+# /etc/pejir/led-brightness и применяется при старте авто-режима.
+: > "$LOG"
+OUT="$(run_led brightness 5)"
+if printf '%s' "$OUT" | grep -q "OK brightness=5"; then
+	ok "команда brightness возвращает подтверждение"
+else
+	fail "команда brightness не подтвердилась: $OUT"
+fi
+if grep -q "^setbright 5$" "$LOG"; then
+	ok "в STM32 ушла команда setbright 5"
+else
+	fail "в STM32 не ушла команда setbright 5: $(cat "$LOG" | tr '\n' ' ')"
+fi
+if [ "$(cat "$BRIGHT" 2>/dev/null)" = "5" ]; then
+	ok "яркость сохранена в файле ($BRIGHT)"
+else
+	fail "яркость не сохранена: $(cat "$BRIGHT" 2>/dev/null)"
+fi
+OUT="$(run_led status)"
+if printf '%s' "$OUT" | grep -q "^BRIGHTNESS 5$"; then
+	ok "status показывает текущую яркость"
+else
+	fail "status не показывает яркость: $OUT"
+fi
+
+for bad in 8 abc -1 99; do
+	: > "$LOG"
+	OUT="$(run_led brightness "$bad" 2>&1)"
+	if printf '%s' "$OUT" | grep -q "ERROR" && [ ! -s "$LOG" ]; then
+		ok "недопустимая яркость '$bad' отклонена, в STM32 ничего не ушло"
+	else
+		fail "недопустимая яркость '$bad' не отклонена: $OUT"
+	fi
+done
+
+# Яркость по умолчанию (как в стоке) и применение при старте авто-режима.
+rm -f "$BRIGHT"
+OUT="$(run_led status)"
+if printf '%s' "$OUT" | grep -q "^BRIGHTNESS 1$"; then
+	ok "яркость по умолчанию 1 (как в заводской прошивке)"
+else
+	fail "яркость по умолчанию не 1: $OUT"
+fi
+
+# На странице должен быть ползунок и команда применения.
+if grep -q "'type': 'range'" "$PAGE"; then
+	ok "на странице LED есть ползунок яркости"
+else
+	fail "на странице LED нет ползунка яркости"
+fi
+if grep -q "'brightness'" "$PAGE"; then
+	ok "страница LED вызывает helper с командой brightness"
+else
+	fail "страница LED не вызывает helper с командой brightness"
 fi
 
 if [ "$FAILED" -gt 0 ]; then

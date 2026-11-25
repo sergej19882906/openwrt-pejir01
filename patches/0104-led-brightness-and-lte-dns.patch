@@ -1,0 +1,316 @@
+From 9a4ccc4f07bd6cec0ae1e2db17f9619fba0ef9b9 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 07:22:22 GMT
+Subject: =?utf-8?b?bHVjaS1hcHAtcGVyZW5pbzog0L/QvtC70LfRg9C90L7QuiDRj9GA0LrQvtGB0YLQ?=
+ =?utf-8?b?uCDQuNC90LTQuNC60LDRgtC+0YDQvtCyINC4IEROUyDQtNC70Y8gTFRFLdC80L7Q?=
+ =?utf-8?b?tNC10LzQsA==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ЯРКОСТЬ ИНДИКАТОРОВ (ПОЛЗУНОК) И DNS ДЛЯ LTE-МОДЕМА.
+
+ЯРКОСТЬ. Светодиодами управляет STM32, и у него есть общий уровень яркости
+0..7 - команда "mcu setbright N" (vendor-клиент просто передаёт строку в
+mcud, а её выполняет прошивка STM32). В заводской прошивке этот уровень
+выставляется один раз при загрузке из /etc/init.d/stm32_setup; у нас такого
+скрипта нет, поэтому уровень:
+
+  * helper pejir-led: новая команда "brightness <0-7>" - проверяет
+    диапазон, сохраняет значение в /etc/pejir/led-brightness и отправляет
+    команду в STM32; в выводе status появилась строка BRIGHTNESS;
+  * авто-режим (init-скрипт pejir-led, START=97) применяет сохранённый
+    уровень при старте - яркость переживает перезагрузку;
+  * страница LuCI «Индикация»: ползунок 0..7 с кнопкой применения.
+
+DNS ДЛЯ МОДЕМА. В стоковом интерфейсе поле DNS есть (сток пишет
+uci set network.lte.dns=<значение>). У нас:
+  * страница LuCI «Настройки LTE»: необязательное поле DNS, пустое значение
+    убирает опцию (тогда DNS берётся у оператора по DHCP);
+  * ВАЖНО: наш init-скрипт создавал секцию network.lte с peerdns=0.
+    С peerdns=0 netifd отбрасывает DNS, полученный от оператора, а
+    статического DNS не было задано - у LTE-интерфейса не оставалось
+    DNS-серверов вовсе: при LTE в качестве WAN интернет переставал
+    разрешать имена. Теперь peerdns не выключается, а статический DNS
+    (если задан) добавляется к DNS оператора;
+  * в сводную диагностику добавлен раздел «DNS и LTE» (network.lte.dns и
+    /etc/resolv.conf).
+
+Тесты: tests/test-led.sh (команда brightness, сохранение, отказ на
+недопустимом значении, ползунок на странице) и tests/test-lte-apn.sh
+(поле DNS на странице, сохранение/удаление опции, запрет peerdns=0).
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/led.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/led.js
+index e7fa321..003e657 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/led.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/led.js
+@@ -74,12 +74,17 @@ return view.extend({
+ 		var state = {};
+ 		var raw = (data && data[0]) ? data[0] : '';
+ 		var lines = raw.split('\n');
++		var brightness = 1;
+ 
+ 		for (var i = 0; i < lines.length; i++) {
+ 			var p = lines[i].split(' ');
+ 			if (p.length >= 3 && p[0] != 'STATE' && p[0] != '')
+ 				state[p[0]] = { mode: p[1], color: p[2], blink: (p.length > 3 ? p[3] : '') };
++			if (p[0] == 'BRIGHTNESS' && p.length >= 2)
++				brightness = parseInt(p[1], 10);
+ 		}
++		if (isNaN(brightness) || brightness < 0 || brightness > 7)
++			brightness = 1;
+ 
+ 		var rows = [];
+ 
+@@ -148,7 +153,7 @@ return view.extend({
+ 		return E('div', { 'class': 'cbi-section' }, [
+ 			E('h2', _('LED indication (Perenio STM32)')),
+ 			E('p', { 'class': 'cbi-value-description' },
+-				_('Indicators are driven by the STM32 microcontroller, exactly as in the stock firmware: mcu -p l <name>=<color>[,<mode>]. Colors: white, red, green, blue, magenta, yellow, cyan, orange; 0 turns the indicator off. Automatic mode paints the indicator by the system state (like the stock pim service).')),
++				_('Indicators are driven by the STM32 microcontroller, exactly as in the stock firmware: mcu -p l <name>=<color>[,<mode>]. Colors: white, red, green, blue, magenta, yellow, cyan, orange; 0 turns the indicator off. Automatic mode paints the indicator by the system state (like the stock pim service). The brightness slider sets the global brightness level of the STM32 (0-7) and keeps it after a reboot.')),
+ 			E('table', { 'class': 'table' }, [
+ 				E('tr', { 'class': 'tr table-titles' }, [
+ 					E('td', { 'class': 'td th' }, _('Indicator')),
+@@ -157,6 +162,31 @@ return view.extend({
+ 					E('td', { 'class': 'td th' }, _('Mode'))
+ 				])
+ 			].concat(rows)),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, _('Brightness')),
++				E('div', { 'class': 'cbi-value-field' }, [
++					E('input', {
++						'type': 'range', 'id': 'led-brightness',
++						'min': '0', 'max': '7', 'step': '1',
++						'value': String(brightness),
++						'style': 'width:180px; vertical-align:middle'
++					}),
++					' ',
++					E('span', { 'id': 'led-brightness-value' }, String(brightness)),
++					' / 7',
++					' ',
++					E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++						'click': ui.createHandlerFn(self, function() {
++							var sl = document.getElementById('led-brightness');
++							var v = sl ? sl.value : '1';
++							return run([ 'brightness', v ]).then(function() {
++								var el = document.getElementById('led-brightness-value');
++								if (el) el.textContent = v;
++								return refresh(_('Brightness applied'));
++							});
++						}) }, _('Apply brightness'))
++				])
++			]),
+ 			E('div', { 'style': 'margin-top:10px; display:flex; gap:8px; flex-wrap:wrap' }, [
+ 				E('button', { 'class': 'cbi-button cbi-button-apply',
+ 					'click': ui.createHandlerFn(self, function() {
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+index ba0b4ed..8ea9a5b 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -9,7 +9,7 @@
+  *
+  * Имена полей - те же, что в стоковой прошивке Perenio:
+  * network.lte.apn, network.lte.pdptype, network.lte.username,
+- * network.lte.password, network.lte.auth, network.lte.modes,
++ * network.lte.password, network.lte.auth, network.lte.dns, network.lte.modes,
+  * network.lte.perenio_band.
+  *
+  * Команды модему собирают helper'ы:
+@@ -123,6 +123,15 @@ return view.extend({
+ 		uci.set('network', 'lte', 'password', document.getElementById('pejir-password').value);
+ 		uci.set('network', 'lte', 'auth', document.getElementById('pejir-auth').value);
+ 
++		/* DNS для LTE-соединения (в стоковом интерфейсе поле тоже есть:
++		 * сток пишет uci set network.lte.dns=<значение>). Пустое поле -
++		 * убрать опцию, чтобы netifd брал DNS из DHCP. */
++		var dns = (document.getElementById('pejir-dns') || {}).value || '';
++		if (dns.trim())
++			uci.set('network', 'lte', 'dns', dns.trim());
++		else
++			uci.unset('network', 'lte', 'dns');
++
+ 		return uci.save().then(function() {
+ 			btn.disabled = false;
+ 			ui.addNotification(null, E('p', {}, _('Saved. Press "Apply now" to send the settings to the modem.')), 'info');
+@@ -319,12 +328,13 @@ return view.extend({
+ 		return E('div', { 'class': 'cbi-section' }, [
+ 			E('h2', {}, _('LTE settings (PEJIR01)')),
+ 			E('div', { 'class': 'cbi-section-descr' },
+-				_('APN settings for the GM510 modem. The values are stored in network.lte and are sent to the modem as AT+CGDCONT and AT+ZECMCALL, exactly as in the stock firmware.')),
++				_('APN settings for the GM510 modem. The values are stored in network.lte and are sent to the modem as AT+CGDCONT and AT+ZECMCALL, exactly as in the stock firmware. The optional DNS overrides the DNS received from the operator via DHCP; leave it empty to use the operator DNS.')),
+ 			row(_('APN'), input('pejir-apn', 'text', cur('apn'))),
+ 			row(_('PDP type'), select('pejir-pdptype', PDP_TYPES, cur('pdptype') || 'ip')),
+ 			row(_('Username'), input('pejir-username', 'text', cur('username'))),
+ 			row(_('Password'), input('pejir-password', 'password', cur('password'))),
+ 			row(_('Authentication type'), select('pejir-auth', AUTH_TYPES, cur('auth') || 'none')),
++			row(_('DNS (optional)'), input('pejir-dns', 'text', cur('dns'))),
+ 			row(_('Channel mode'), select('pejir-mode', CHANNEL_MODES, cur('modes') || 'all')),
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, ''),
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 5d36fee..3f45cb0 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -306,12 +306,12 @@ msgid "Demo finished"
+ msgstr "Демо завершено"
+ msgid "Failed to run: "
+ msgstr "Не удалось выполнить: "
+-msgid "Indicators are driven by the STM32 microcontroller, exactly as in the stock firmware: mcu -p l <name>=<color>[,<mode>]. Colors: white, red, green, blue, magenta, yellow, cyan, orange; 0 turns the indicator off. Automatic mode paints the indicator by the system state (like the stock pim service)."
+-msgstr "Индикаторы зажигает микроконтроллер STM32 - ровно как в заводской прошивке: mcu -p l <имя>=<цвет>[,<режим>]. Цвета: белый, красный, зелёный, синий, пурпурный, жёлтый, голубой, оранжевый; 0 - выключить. Автоматический режим красит индикатор по состоянию системы (как стоковый сервис pim)."
++msgid "Indicators are driven by the STM32 microcontroller, exactly as in the stock firmware: mcu -p l <name>=<color>[,<mode>]. Colors: white, red, green, blue, magenta, yellow, cyan, orange; 0 turns the indicator off. Automatic mode paints the indicator by the system state (like the stock pim service). The brightness slider sets the global brightness level of the STM32 (0-7) and keeps it after a reboot."
++msgstr "Индикаторы зажигает микроконтроллер STM32 - ровно как в заводской прошивке: mcu -p l <имя>=<цвет>[,<режим>]. Цвета: белый, красный, зелёный, синий, пурпурный, жёлтый, голубой, оранжевый; 0 - выключить. Автоматический режим красит индикатор по состоянию системы (как стоковый сервис pim). Ползунок яркости задаёт общий уровень яркости STM32 (0-7) и сохраняет его после перезагрузки."
+ msgid "LTE settings (PEJIR01)"
+ msgstr "Настройки LTE (PEJIR01)"
+-msgid "APN settings for the GM510 modem. The values are stored in network.lte and are sent to the modem as AT+CGDCONT and AT+ZECMCALL, exactly as in the stock firmware."
+-msgstr "Настройки APN модема GM510. Значения хранятся в network.lte и отправляются модему командами AT+CGDCONT и AT+ZECMCALL - точно как в стоковой прошивке."
++msgid "APN settings for the GM510 modem. The values are stored in network.lte and are sent to the modem as AT+CGDCONT and AT+ZECMCALL, exactly as in the stock firmware. The optional DNS overrides the DNS received from the operator via DHCP; leave it empty to use the operator DNS."
++msgstr "Настройки APN модема GM510. Значения хранятся в network.lte и отправляются модему командами AT+CGDCONT и AT+ZECMCALL - точно как в стоковой прошивке. Необязательный DNS переопределяет DNS, полученный от оператора по DHCP; оставьте поле пустым, чтобы использовать DNS оператора."
+ msgid "APN"
+ msgstr "APN"
+ msgid "PDP type"
+@@ -392,3 +392,11 @@ msgid "(no output)"
+ msgstr "(нет вывода)"
+ msgid "Check / flash NCP firmware"
+ msgstr "Проверить / прошить NCP"
++msgid "Brightness"
++msgstr "Яркость"
++msgid "Apply brightness"
++msgstr "Применить яркость"
++msgid "Brightness applied"
++msgstr "Яркость применена"
++msgid "DNS (optional)"
++msgstr "DNS (необязательно)"
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-led b/package/luci-app-perenio/root/usr/libexec/pejir-led
+index 4c01836..7816c0d 100755
+--- a/package/luci-app-perenio/root/usr/libexec/pejir-led
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-led
+@@ -29,6 +29,15 @@
+ #   off                        - погасить все
+ #   demo [секунд]              - мигание (как стоковый blink3.sh)
+ #   auto                       - бесконечный цикл авто-режима (для init)
++#   brightness <0-7>           - общая яркость индикаторов
++#
++# ЯРКОСТЬ. Светодиодами управляет STM32, и у него есть общий уровень
++# яркости 0..7: команда "mcu setbright N" (vendor-клиент просто передаёт
++# строку в mcud, а дальше её выполняет прошивка STM32). В заводской
++# прошивке этот уровень выставляется один раз при загрузке из
++# /etc/init.d/stm32_setup. У нас такого скрипта нет, поэтому уровень
++# хранится в /etc/pejir/led-brightness и применяется при старте
++# авто-режима.
+ 
+ set -u
+ 
+@@ -37,6 +46,7 @@ LEDS="2 5 zb i sh a l"
+ # это /etc/pejir/led.conf и /usr/bin/mcu.
+ CONF="${LED_CONF:-/etc/pejir/led.conf}"
+ MCU="${MCU_BIN:-/usr/bin/mcu}"
++BRIGHT_CONF="${BRIGHT_CONF:-/etc/pejir/led-brightness}"
+ 
+ # --- проверка значений -------------------------------------------------------
+ 
+@@ -93,6 +103,40 @@ conf_init() {
+ 	done > "$CONF"
+ }
+ 
++# --- яркость ----------------------------------------------------------------
++
++bright_get() {
++	# Текущий сохранённый уровень яркости (0..7). Если файла нет - 1
++	# (как в заводской прошивке: минимальная яркость).
++	[ -f "$BRIGHT_CONF" ] || { echo 1; return 0; }
++	b="$(head -1 "$BRIGHT_CONF" 2>/dev/null | tr -cd '0-9')"
++	[ -n "$b" ] || b=1
++	[ "$b" -le 7 ] 2>/dev/null || b=1
++	echo "$b"
++}
++
++bright_set() {
++	# $1 - уровень 0..7
++	case "$1" in
++	''|*[!0-7]*)
++		echo "ERROR: яркость должна быть числом от 0 до 7"
++		return 1
++		;;
++	esac
++	mkdir -p "$(dirname "$BRIGHT_CONF")"
++	printf '%s\n' "$1" > "$BRIGHT_CONF"
++	# Команда уходит в STM32 через vendor-клиент (default-метод - post).
++	"$MCU" setbright "$1" >/dev/null 2>&1
++	echo "OK brightness=$1"
++}
++
++bright_apply() {
++	# Применяет сохранённый уровень (при старте авто-режима).
++	b="$(bright_get)"
++	"$MCU" setbright "$b" >/dev/null 2>&1
++	echo "$b"
++}
++
+ # --- отправка в STM32 --------------------------------------------------------
+ 
+ send_led() {
+@@ -146,6 +190,9 @@ auto_color() {
+ 
+ auto_loop() {
+ 	conf_init
++	# Восстанавливаем общий уровень яркости: в заводской прошивке его
++	# выставляет /etc/init.d/stm32_setup при загрузке, у нас - здесь.
++	bright_apply >/dev/null 2>&1
+ 	last=""
+ 	while true; do
+ 		for l in $LEDS; do
+@@ -171,6 +218,7 @@ cmd_status() {
+ 		set -- $(conf_get "$l")
+ 		echo "$l ${1:-manual} ${2:-0} ${3:-}"
+ 	done
++	echo "BRIGHTNESS $(bright_get)"
+ }
+ 
+ cmd_set() {
+@@ -261,6 +309,7 @@ cmd_demo() {
+ 
+ case "${1:-}" in
+ status) cmd_status ;;
++brightness) shift; bright_set "${1:-}" ;;
+ set) shift; cmd_set "$@" ;;
+ auto)
+ 	if [ "${2:-}" = "" ]; then auto_loop
+@@ -271,7 +320,7 @@ off) cmd_off ;;
+ blank) cmd_blank ;;
+ demo) shift; cmd_demo "$@" ;;
+ *)
+-	echo "Использование: pejir-led status|set <имя> <цвет> [режим]|auto <имя> on|off|off|blank|demo [сек]|auto"
++	echo "Использование: pejir-led status|set <имя> <цвет> [режим]|auto <имя> on|off|off|blank|demo [сек]|brightness <0-7>|auto"
+ 	exit 1
+ 	;;
+ esac
+diff --git a/package/luci-app-perenio/root/usr/libexec/perenio-diag b/package/luci-app-perenio/root/usr/libexec/perenio-diag
+index 5a5b6c4..76d09de 100755
+--- a/package/luci-app-perenio/root/usr/libexec/perenio-diag
++++ b/package/luci-app-perenio/root/usr/libexec/perenio-diag
+@@ -60,6 +60,9 @@ main() {
+ 	echo -n "конфиг адаптера: "; grep -E "^(adapter|port)=" /etc/homed/homed-zigbee.conf 2>/dev/null | tr '\n' ' '; echo
+ 	echo -n "служба homed-zigbee: "; /etc/init.d/homed-zigbee status 2>/dev/null | head -2 | tr '\n' ' '; echo
+ 	echo -n "прошивка NCP: "; [ -x /usr/bin/pejir-ncp-flash ] && echo "инструмент есть (pejir-zigbee-ncp status)" || echo "инструмента нет"
++	echo "=== DNS и LTE ==="
++	echo -n "network.lte.dns: "; uci -q get network.lte.dns 2>/dev/null || echo "(не задан - DNS оператора из DHCP)"; echo
++	echo "resolv.conf:"; cat /etc/resolv.conf 2>/dev/null | sed 's/^/  /'
+ 	echo "=== Журнал: usb/mcu/lte ==="
+ 	logread 2>/dev/null | grep -iE "mcu|uartmux|umxtty|usb|lte|modem|smsd" | tail -30
+ }
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 00a75c2..8ee0a31 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -208,7 +208,11 @@ ensure_lte_section() {
+ 		uci set network.lte.proto=dhcp
+ 		uci set network.lte.device="$ifname"
+ 		uci set network.lte.metric=30
+-		uci set network.lte.peerdns=0
++		# peerdns НЕ выключаем: с peerdns=0 netifd отбрасывает DNS,
++		# полученный от оператора, и если статический DNS не задан
++		# (network.lte.dns, поле в LuCI), у LTE-интерфейса вообще не
++		# остаётся DNS-серверов - при LTE в качестве WAN интернет
++		# перестаёт разрешать имена.
+ 		log "создан network.lte (device=$ifname)"
+ 	else
+ 		# Имя интерфейса модема могло устареть: в старой версии прошивки

@@ -258,6 +258,40 @@ else
 	fail "нет $MK"
 fi
 
+# --- DNS для LTE-интерфейса ------------------------------------------------
+# В стоковом интерфейсе поле DNS есть (сток пишет uci set network.lte.dns).
+# У нас: поле в LuCI + правильное поведение netifd.
+#
+# ВАЖНО: peerdns=0 отбрасывает DNS, полученный от оператора, - и если
+# статический DNS не задан, у LTE-интерфейса не остаётся DNS-серверов
+# вовсе (при LTE в качестве WAN интернет перестаёт разрешать имена).
+LTE_INIT="$OW/package/pejir-lte-base/root/etc/init.d/47-pejir-lte"
+LTE_PAGE="$OW/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js"
+if [ -f "$LTE_INIT" ] && [ -f "$LTE_PAGE" ]; then
+	if grep -q "^[[:space:]]*uci set network.lte.peerdns=0" "$LTE_INIT"; then
+		fail "init-скрипт выключает peerdns - DNS оператора отбрасывается, а статического нет"
+	else
+		ok "init-скрипт не выключает peerdns - DNS оператора используется"
+	fi
+	if grep -q "pejir-dns" "$LTE_PAGE"; then
+		ok "на странице LTE есть поле DNS"
+	else
+		fail "на странице LTE нет поля DNS"
+	fi
+	if grep -q "uci.set('network', 'lte', 'dns'" "$LTE_PAGE"; then
+		ok "страница LTE сохраняет DNS в network.lte.dns"
+	else
+		fail "страница LTE не сохраняет network.lte.dns"
+	fi
+	if grep -q "uci.unset('network', 'lte', 'dns'" "$LTE_PAGE"; then
+		ok "пустое поле DNS убирает опцию (DNS оператора из DHCP)"
+	else
+		fail "пустое поле DNS не убирает опцию network.lte.dns"
+	fi
+else
+	fail "нет файлов init-скрипта LTE или страницы lte.js"
+fi
+
 rm -rf "$WORK"
 
 if [ "$FAILED" -eq 0 ]; then
