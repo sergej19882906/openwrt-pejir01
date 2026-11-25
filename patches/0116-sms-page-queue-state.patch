@@ -1,0 +1,137 @@
+From b25a94d5b16c0ebc89f363333041af6843bd7884 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 16:49:06 GMT
+Subject: =?utf-8?b?cGVqaXItc21zOiDRgdGC0YDQsNC90LjRhtCwIFNNUyDQv9C+0LrQsNC30YvQstCw?=
+ =?utf-8?b?0LXRgiDRgdC+0YHRgtC+0Y/QvdC40LUg0L7Rh9C10YDQtdC00LgsINCwINC90LUg?=
+ =?utf-8?b?0L/Rg9GB0YLQvtC5INC20YPRgNC90LDQuw==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Когда smsd не работает, журнал /var/log/smsd.log пуст или отсутствует, и
+на странице было видно только пустое окно - непонятно было, что именно
+сломано.
+
+Новая команда pejir-sms-ctl status показывает:
+  * работает ли smsd;
+  * есть ли журнал и какого он размера (если файла нет - прямо так и
+    написано, что скорее всего не запущен smsd);
+  * сколько сообщений в каждой очереди (входящие, исходящие,
+    отправленные, неудачные);
+  * какой порт прописан в smsd.conf и какой порт определён как AT-порт
+    (если они разные - вот и причина, почему SMS не ходят).
+
+На странице SMS появилась строка "Состояние очереди" с этими данными.
+Грант ACL на exec /usr/libexec/pejir-sms-ctl уже был (без аргументов
+разрешены любые), поэтому менять ACL не пришлось.
+---
+ .../luci-static/resources/view/perenio/sms.js | 16 +++++++++++-
+ .../po/ru/luci-app-perenio.po                 |  2 ++
+ .../pejir-sms/root/usr/libexec/pejir-sms-ctl  | 25 ++++++++++++++++++-
+ 3 files changed, 41 insertions(+), 2 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index ef774b50..57b997e9 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -90,9 +90,12 @@ function readStatus() {
+ 			.catch(function() { return { code: 1, stdout: '', stderr: '' }; }),
+ 		fs.list('/dev').catch(function() { return []; }),
+ 		fs.read(CONF).catch(function() { return ''; }),
+-		readLog()
++		readLog(),
++		fs.exec(SMSCTL, [ 'status' ])
++			.catch(function() { return { code: 1, stdout: '', stderr: '' }; })
+ 	]).then(function(res) {
+ 		var svc = res[0], devs = res[1] || [], conf = res[2] || '', log = res[3];
++		var st = res[4] || {};
+ 		var ports = devs.map(function(d) { return d.name; })
+ 			.filter(function(n) { return /^ttyUSB|^ttyACM/.test(n); });
+ 		var m = conf.match(/^[ \t]*device[ \t]*=[ \t]*(\S+)/m);
+@@ -111,6 +114,13 @@ function readStatus() {
+ 		setText('sms-ports', ports.length ? ports.join(', ') : _('not found (ttyUSB/ttyACM)'));
+ 		setText('sms-device', m ? m[1] : _('not set in smsd.conf'));
+ 		setText('sms-log', log || _('no log'));
++
++		/* Состояние очереди: сколько сообщений в каждой папке, какой
++		 * порт прописан в smsd.conf и есть ли журнал. Без этого при
++		 * пустом журнале непонятно, что именно сломалось. */
++		var stOut = (st.stdout || '') + (st.stderr || '');
++
++		setText('sms-state', stOut.trim() || _('unknown'));
+ 	});
+ }
+ 
+@@ -698,6 +708,10 @@ return view.extend({
+ 					E('div', { 'class': 'k' }, _('Port in smsd.conf')),
+ 					E('div', { 'class': 'v', 'id': 'sms-device' }, _('checking…'))
+ 				]),
++				E('div', { 'class': 'pejir-sms-kv' }, [
++					E('div', { 'class': 'k' }, _('Queue state')),
++					E('div', { 'class': 'v', 'id': 'sms-state' }, _('checking…'))
++				]),
+ 				E('div', { 'class': 'pejir-sms-note' }, _('smsd log')),
+ 				E('pre', { 'id': 'sms-log', 'class': 'pejir-sms-log' }, '')
+ 			])
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 129c5da4..af94dfea 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -564,3 +564,5 @@ msgid "Starting, please wait..."
+ msgstr "Запуск, подождите..."
+ msgid "Saving..."
+ msgstr "Сохранение..."
++msgid "Queue state"
++msgstr "Состояние очереди"
+diff --git a/package/pejir-sms/root/usr/libexec/pejir-sms-ctl b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+index 16b16a18..a27dfb0b 100755
+--- a/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
++++ b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+@@ -2,6 +2,7 @@
+ # Управление SMS: экспорт переписки и шаблоны текста.
+ #
+ # Команды:
++#   status                 состояние SMS: smsd, журнал, очереди, порты;
+ #   export                 выгрузить все сообщения в /www/sms-export-<время>.txt
+ #                         (файл отдаёт uhttpd, его можно скачать из браузера);
+ #   templates              показать сохранённые шаблоны (нумерованные);
+@@ -95,13 +96,35 @@ cmd_template_del() {
+ 	echo "OK шаблон $n удалён"
+ }
+ 
++# Состояние SMS: работает ли smsd, есть ли журнал, что в очередях.
++# Нужно, чтобы на странице было видно причину, а не пустое окно.
++cmd_status() {
++	echo "POOL=$POOL"
++	echo "smsd_running=$(ps w 2>/dev/null | grep -c "[s]msd" || true)"
++	echo "journal=/var/log/smsd.log"
++	if [ -f /var/log/smsd.log ]; then
++		echo "journal_size=$(wc -c < /var/log/smsd.log 2>/dev/null | tr -d " ")"
++	else
++		echo "journal_size=0"
++		echo "journal_note=файла /var/log/smsd.log нет - smsd не запущен или ещё не писал журнал"
++	fi
++	for d in incoming outgoing sent failed; do
++		n=0
++		[ -d "$POOL/$d" ] && n="$(ls -1 "$POOL/$d" 2>/dev/null | wc -l | tr -d " ")"
++		echo "queue_$d=$n"
++	done
++	echo "smsd_port=$(sed -n "s/^device = //p" /etc/smsd.conf 2>/dev/null | head -1)"
++	echo "at_port=$(cat /etc/pejir/at-port 2>/dev/null | head -1)"
++}
++
+ case "${1:-}" in
++	status)       cmd_status ;;
+ 	export)       cmd_export ;;
+ 	templates)    cmd_templates ;;
+ 	template-add) shift; cmd_template_add "$@" ;;
+ 	template-del) shift; cmd_template_del "$1" ;;
+ 	*)
+-		echo "Использование: pejir-sms-ctl {export|templates|template-add <текст>|template-del <N>}" >&2
++		echo "Использование: pejir-sms-ctl {status|export|templates|template-add <текст>|template-del <N>}" >&2
+ 		exit 1
+ 		;;
+ esac
+-- 
+2.39.5
+

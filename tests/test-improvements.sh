@@ -87,6 +87,19 @@ else
 	else
 		fail "pejir-mwan3 не настраивает LTE как резервный участник"
 	fi
+	# Интерфейсы mwan3 не должны ставить свой маршрут по умолчанию:
+	# иначе netifd и mwan3 спорят за default route. И remove должен
+	# возвращать это право, иначе роутер останется без интернета.
+	if grep -q 'network.\$i.defaultroute=0' "$MWAN3"; then
+		ok "pejir-mwan3: интерфейсам отдан маршрут по умолчанию (defaultroute=0)"
+	else
+		fail "pejir-mwan3: не отключает свой default route у интерфейсов mwan3"
+	fi
+	if grep -q 'delete "network.\$i.defaultroute"' "$MWAN3"; then
+		ok "pejir-mwan3: remove возвращает маршрут по умолчанию"
+	else
+		fail "pejir-mwan3: remove не возвращает default route - роутер останется без интернета"
+	fi
 	# Настройка должна быть ОПЦИОНАЛЬНОЙ: молча менять маршрутизацию нельзя.
 	if grep -q "cmd_setup" "$MWAN3" && grep -q "cmd_remove" "$MWAN3"; then
 		ok "настройка mwan3 включается и выключается по явной команде"

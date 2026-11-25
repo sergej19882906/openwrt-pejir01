@@ -1,0 +1,67 @@
+From 7c155bd4fa7046ba40ee091f7d9aaffffa092638 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 16:46:57 GMT
+Subject: =?utf-8?b?cGVqaXItbHRlOiBtd2FuMyDQt9Cw0LHQuNGA0LDQtdGCINC80LDRgNGI0YDRg9GC?=
+ =?utf-8?b?INC/0L4g0YPQvNC+0LvRh9Cw0L3QuNGOINGDINGB0LLQvtC40YUg0LjQvdGC0LXR?=
+ =?utf-8?b?gNGE0LXQudGB0L7Qsg==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Схема "проводной WAN основной, LTE резервный" настраивалась, но
+интерфейсы продолжали ставить СВОЙ маршрут по умолчанию: маршрутизацией
+управляет mwan3, а netifd про него не знает. В итоге два источника
+default route спорят, и при переключении на резервный канал интернет
+пропадал.
+
+Что сделано:
+
+1) При настройке (setup) обоим интерфейсам - проводному WAN и LTE -
+   ставится "option defaultroute 0": маршрут по умолчанию теперь
+   определяет только mwan3.
+
+2) При удалении настройки (remove) это право возвращается обратно
+   (опция удаляется). Без этого после снятия mwan3 роутер остался бы
+   без маршрута по умолчанию, то есть без интернета.
+---
+ .../pejir-lte-base/root/usr/libexec/pejir-mwan3 | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-mwan3 b/package/pejir-lte-base/root/usr/libexec/pejir-mwan3
+index 30ddef2b..48c71b8b 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-mwan3
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-mwan3
+@@ -92,6 +92,15 @@ cmd_setup() {
+ 
+ 	uci commit "$CFG"
+ 
++	# Интерфейсы, которые ведёт mwan3, не должны ставить СВОЙ маршрут
++	# по умолчанию: маршрутизацией занимается mwan3, иначе netifd и
++	# mwan3 спорят за default route (интернет то есть, то нет).
++	# Возвращаем этот параметр в cmd_remove.
++	for i in "$WAN_IF" "$LTE_IF"; do
++		uci set "network.$i.defaultroute=0" 2>/dev/null
++	done
++	uci commit network
++
+ 	# mwan3 должен стартовать после того, как поднялись интерфейсы.
+ 	/etc/init.d/mwan3 enable >/dev/null 2>&1
+ 	/etc/init.d/mwan3 restart >/dev/null 2>&1
+@@ -109,6 +118,14 @@ cmd_remove() {
+ 		uci -q delete "$CFG.$s" 2>/dev/null
+ 	done
+ 	uci commit "$CFG"
++
++	# Возвращаем интерфейсам право ставить свой маршрут по умолчанию:
++	# без этого после удаления mwan3 роутер остался бы без интернета.
++	for i in "$WAN_IF" "$LTE_IF"; do
++		uci -q delete "network.$i.defaultroute" 2>/dev/null
++	done
++	uci commit network
++
+ 	/etc/init.d/mwan3 restart >/dev/null 2>&1
+ 	log "настройка резервного канала убрана"
+ 	cmd_status
+-- 
+2.39.5
+
