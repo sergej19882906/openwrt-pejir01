@@ -1,0 +1,506 @@
+From 021ec0eff57a51b1ee537f3f41d679bb2e6b97bd Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 17:04:38 GMT
+Subject: =?utf-8?b?bHVjaTog0LfQvdCw0YfQvtC6INCw0LrQutGD0LzRg9C70Y/RgtC+0YDQsCDQsiDR?=
+ =?utf-8?b?iNCw0L/QutC1INCy0LXQsS3QuNC90YLQtdGA0YTQtdC50YHQsA==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+В стоковой прошивке Perenio в шапке LuCI всегда висит иконка батареи
+из /luci-static/perenio/images/battery/*.svg. В нашем порте её не
+было: батарея была видна только на отдельной странице "Батарея и
+питание", и в верхней панели не было видно, что происходит с зарядом.
+
+Что сделано:
+
+  * новый общий модуль resources/perenio-battery.js - разбор ответа
+    STM32 и логика статуса/иконки (full/pre_full/middle/low/
+    critical_low, зарядка, перегрев, чужой адаптер). Раньше эта логика
+    жила прямо в странице батареи, теперь она общая, потому что
+    нужна в двух местах;
+  * страница батареи переведена на общий модуль (поведение не
+    изменилось, тест test-battery.sh продолжает проверять ту же
+    логику);
+  * новый resources/battery-indicator.js - штатный индикатор LuCI
+    (ui.showIndicator-подобный span в блоке #indicators): стоковая
+    иконка батареи, процент заряда и подсказка с состоянием зарядки.
+    Клик по значку открывает страницу батареи;
+  * resources/preload/battery-indicator.js - LuCI подключает файлы из
+    resources/preload/ на каждой странице сам, поэтому значок виден
+    в любой теме (Argon, bootstrap) без правок в теме.
+
+Данные берутся из vendor-демона mcud (/usr/bin/mcu getsys) - тот же
+источник, что и на странице батареи.
+---
+ .../resources/battery-indicator.js            | 123 +++++++++++++++
+ .../luci-static/resources/perenio-battery.js  | 148 ++++++++++++++++++
+ .../resources/preload/battery-indicator.js    |   7 +
+ .../resources/view/perenio/battery.js         | 147 ++---------------
+ 4 files changed, 291 insertions(+), 134 deletions(-)
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/perenio-battery.js
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/preload/battery-indicator.js
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
+new file mode 100644
+index 00000000..81ac379c
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
+@@ -0,0 +1,123 @@
++'use strict';
++'require baseclass';
++'require fs';
++'require poll';
++'require perenio-battery';
++
++/*
++ * Значок аккумулятора в шапке веб-интерфейса - как в стоковой прошивке.
++ *
++ * В стоке Perenio (прошивка 9.0.4) в шапке LuCI всегда висит иконка
++ * батареи из /luci-static/perenio/images/battery/*.svg, а её статус
++ * кладётся в cookie "battery". Здесь то же самое сделано штатным
++ * способом LuCI: индикатор добавляется в блок #indicators, поэтому он
++ * виден в любой теме (Argon, bootstrap) на любой странице.
++ *
++ * Модуль лежит в resources/preload/, поэтому LuCI подключает его сам на
++ * каждой странице - отдельно подключать его в теме не нужно.
++ *
++ * Данные берём у vendor-демона mcud через клиент /usr/bin/mcu (он ходит
++ * в mcud по ubus). Разбор ответа и выбор иконки - в общем модуле
++ * perenio-battery (тот же, что использует страница батареи).
++ */
++
++var BATTERY_LINK = 'admin/status/perenio-battery';
++
++function chargeText(mod, d) {
++	switch (mod.chargeStatus(d)) {
++	case 'fast':
++		return _('Charging');
++	case 'done':
++		return _('Charge complete');
++	default:
++		return _('Not charging');
++	}
++}
++
++/* Найти (или создать) наш индикатор в шапке. */
++function indicator() {
++	var div = document.getElementById('indicators');
++
++	if (!div)
++		return null;
++
++	var el = div.querySelector('span[data-indicator="battery-status"]');
++
++	if (!el) {
++		el = document.createElement('span');
++		el.setAttribute('data-indicator', 'battery-status');
++		el.setAttribute('data-style', 'active');
++		el.className = 'pejir-battery-indicator';
++		el.style.cursor = 'pointer';
++		el.style.whiteSpace = 'nowrap';
++		el.addEventListener('click', function() {
++			window.location.href = L.url(BATTERY_LINK);
++		});
++
++		div.appendChild(el);
++	}
++
++	return el;
++}
++
++function render(el, mod, d) {
++	var status = mod.iconStatus(d);
++	var file = mod.iconFile(status);
++	var pct = isNaN(d.batLev) ? '—' : d.batLev + '%';
++	var title = _('Battery level') + ': ' + pct + ' - ' + chargeText(mod, d);
++
++	while (el.firstChild)
++		el.removeChild(el.firstChild);
++
++	var img = document.createElement('img');
++	img.src = mod.ICON_BASE + file;
++	img.alt = status;
++	img.title = title;
++	img.style.height = '18px';
++	img.style.width = 'auto';
++	img.style.verticalAlign = 'middle';
++	el.appendChild(img);
++
++	var txt = document.createElement('span');
++	txt.textContent = ' ' + pct;
++	txt.style.marginLeft = '4px';
++	txt.style.fontSize = '90%';
++	txt.style.verticalAlign = 'middle';
++	el.appendChild(txt);
++
++	el.setAttribute('title', title);
++	el.style.display = '';
++}
++
++function update() {
++	return fs.exec('/usr/bin/mcu', [ 'getsys' ]).then(function(res) {
++		var el = indicator();
++
++		if (!el)
++			return;
++
++		var out = (res && res.stdout) ? res.stdout : '';
++		var d = perenio_battery.parseSys(out);
++
++		/* mcud не ответил - значок прячем, чтобы не путать. */
++		if (!d) {
++			el.style.display = 'none';
++
++			return;
++		}
++
++		render(el, perenio_battery, d);
++	}).catch(function() {
++		var el = indicator();
++
++		if (el)
++			el.style.display = 'none';
++	});
++}
++
++poll.add(update, 15);
++update();
++
++return baseclass.extend({
++	__name__: 'battery-indicator'
++});
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/perenio-battery.js b/package/luci-app-perenio/htdocs/luci-static/resources/perenio-battery.js
+new file mode 100644
+index 00000000..cc41d6f6
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/perenio-battery.js
+@@ -0,0 +1,148 @@
++'use strict';
++'require baseclass';
++
++/*
++ * Батарея Perenio STM32 - общий разбор данных.
++ *
++ * Модуль вынесен отдельно, потому что одни и те же данные нужны в двух
++ * местах:
++ *   * страница "Батарея и питание" (view/perenio/battery.js);
++ *   * значок аккумулятора в шапке веб-интерфейса (battery-indicator.js),
++ *     который показывается на любой странице - как в стоковой прошивке.
++ *
++ * Формат ответа STM32 (через клиент /usr/bin/mcu, он ходит в mcud по ubus):
++ *
++ *   OK ChrgConn=1 ChrgType=3 ChrgStat=0 BatLev=95% VBat=4164 VBus=12200
++ *      VSys=4224 IChrgBat=0 TBat=51 TCpu=76 TMcu=58 PaErr=0/0/0 Clk=0/0/0/0
++ *
++ * Разбор полей и логика статуса повторяют стоковую прошивку Perenio
++ * (usr/lib/lua/luci/model/status/battery.lua в заводской прошивке 9.0.4),
++ * иконки - тоже стоковые (/luci-static/perenio/images/battery/*.svg).
++ *
++ * Важно: напряжение - это VBat в МИЛЛИВОЛЬТАХ (VBat=4164 => 4.16 V).
++ */
++
++var ICON_BASE = '/luci-static/perenio/images/battery/';
++
++/* Разбор ответа STM32. null - если это не ответ mcud. */
++function parseSys(out) {
++	var s = (out || '').trim();
++
++	if (!s || s.indexOf('OK') < 0)
++		return null;
++
++	function fld(name) {
++		var m = s.match(new RegExp(name + '=([^ ]*)'));
++
++		return m ? m[1] : null;
++	}
++
++	return {
++		raw: s,
++		chrgConn: fld('ChrgConn'),
++		chrgType: fld('ChrgType'),
++		chrgStat: fld('ChrgStat'),
++		batLev: parseInt(fld('BatLev'), 10),
++		vbat: parseInt(fld('VBat'), 10),
++		vbus: parseInt(fld('VBus'), 10),
++		vsys: parseInt(fld('VSys'), 10),
++		iChrgBat: parseInt(fld('IChrgBat'), 10),
++		tBat: parseInt(fld('TBat'), 10),
++		tCpu: parseInt(fld('TCpu'), 10),
++		tMcu: parseInt(fld('TMcu'), 10),
++		paerr: fld('PaErr'),
++		batPr: fld('BatPr'),
++		chrgConnText: fld('ChrgConn'),
++		chrgTypeText: fld('ChrgType'),
++		batPrText: fld('BatPr')
++	};
++}
++
++/* Уровень заряда - как в стоке: full / pre_full / middle / low /
++ * critical_low */
++function levelStatus(d) {
++	if (d.batLev == 100)
++		return 'full';
++	else if (d.batLev > 75)
++		return 'pre_full';
++	else if (d.batLev > 50)
++		return 'middle';
++	else if (d.batLev > 10)
++		return 'low';
++
++	return 'critical_low';
++}
++
++/* Состояние зарядки: fast (заряжается) / done (заряд завершён) / not */
++function chargeStatus(d) {
++	if (d.chrgStat == '1' || d.chrgStat == '2')
++		return 'fast';
++	else if (d.chrgStat == '3')
++		return 'done';
++
++	return 'not';
++}
++
++/* Батарея определяется, если VBat не 2304 и BatPr не "No" */
++function isDetected(d) {
++	if (d.vbat == 2304 || d.batPr == 'No')
++		return false;
++
++	return true;
++}
++
++/* Перегрев: зарядка через чужой адаптер (ChrgConn=2) и PaErr не 0/0/0 */
++function isOverheat(d) {
++	if (d.chrgConn != '2')
++		return false;
++
++	var m = (d.paerr || '').match(/(\d+)\/(\d+)\/(\d+)/);
++
++	if (!m)
++		return false;
++
++	return m[3] != '0';
++}
++
++/* Сток считает "своим" адаптером всё, кроме ChrgConn=3 */
++function isOriginalPA(d) {
++	return d.chrgConn != '3';
++}
++
++/* Итоговый статус иконки - ровно как в стоковом _displayIconStatus */
++function iconStatus(d) {
++	if (!isDetected(d))
++		return 'not_detected';
++
++	if (!isOriginalPA(d))
++		return 'wrong_adapter';
++
++	if (isOverheat(d))
++		return 'overheat';
++
++	switch (chargeStatus(d)) {
++	case 'done':
++		return 'full_done';
++	case 'fast':
++		return levelStatus(d) + '_fast';
++	default:
++		return levelStatus(d);
++	}
++}
++
++/* Статус "_fast" в стоке рисуется файлом "*_charge.svg" */
++function iconFile(status) {
++	return status.replace(/_fast$/, '_charge') + '.svg';
++}
++
++return baseclass.extend({
++	ICON_BASE: ICON_BASE,
++	parseSys: parseSys,
++	levelStatus: levelStatus,
++	chargeStatus: chargeStatus,
++	isDetected: isDetected,
++	isOverheat: isOverheat,
++	isOriginalPA: isOriginalPA,
++	iconStatus: iconStatus,
++	iconFile: iconFile
++});
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/preload/battery-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/preload/battery-indicator.js
+new file mode 100644
+index 00000000..20bd5dae
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/preload/battery-indicator.js
+@@ -0,0 +1,7 @@
++'use strict';
++'require baseclass';
++'require battery-indicator';
++
++return baseclass.extend({
++	__name__: 'preload.battery-indicator'
++});
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+index 392d9016..3199c2dd 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+@@ -3,6 +3,7 @@
+ 'require fs';
+ 'require ui';
+ 'require poll';
++'require perenio-battery';
+ 
+ /*
+  * Батарея и питание (Perenio STM32).
+@@ -25,140 +26,18 @@
+  * ответа getsys - так же, как в стоке.
+  */
+ 
+-var ICON_BASE = '/luci-static/perenio/images/battery/';
+-
+-/* Разбор ответа STM32. null - если это не ответ mcud. */
+-function parseSys(out) {
+-	var s = (out || '').trim();
+-
+-	if (!s || s.indexOf('OK') < 0)
+-		return null;
+-
+-	function fld(name) {
+-		var m = s.match(new RegExp(name + '=([^ ]*)'));
+-
+-		return m ? m[1] : null;
+-	}
+-
+-	return {
+-		raw: s,
+-		chrgConn: fld('ChrgConn'),
+-		chrgType: fld('ChrgType'),
+-		chrgStat: fld('ChrgStat'),
+-		batLev: parseInt(fld('BatLev'), 10),
+-		vbat: parseInt(fld('VBat'), 10),
+-		vbus: parseInt(fld('VBus'), 10),
+-		vsys: parseInt(fld('VSys'), 10),
+-		iChrgBat: parseInt(fld('IChrgBat'), 10),
+-		tBat: parseInt(fld('TBat'), 10),
+-		tCpu: parseInt(fld('TCpu'), 10),
+-		tMcu: parseInt(fld('TMcu'), 10),
+-		paerr: fld('PaErr'),
+-		batPr: fld('BatPr'),
+-		chrgConnText: fld('ChrgConn'),
+-		chrgTypeText: fld('ChrgType'),
+-		batPrText: fld('BatPr')
+-	};
+-}
+-
+-/* Человеческие названия полей STM32 - чтобы таблица была понятна.
+- * Коды заряда: 0 - нет, 1 - заряжается, 2 - почти заряжена, 3 - заряжена;
+- * тип зарядного устройства и состояние адаптера - как в стоковом Pim.lua. */
+-function paConnText(v) {
+-	switch (v) {
+-	case '0': return _('not connected');
+-	case '1': return _('original adapter');
+-	case '2': return _('foreign adapter');
+-	case '3': return _('unknown adapter');
+-	}
+-	return v || '—';
+-}
+-
+-function paTypeText(v) {
+-	switch (v) {
+-	case '0': return _('none');
+-	case '1': return _('USB');
+-	case '2': return _('DC');
+-	case '3': return _('wireless');
+-	}
+-	return v || '—';
+-}
+-
+-/* Уровень заряда - как в стоке: full / pre_full / middle / low / critical_low */
+-function levelStatus(d) {
+-	if (d.batLev == 100)
+-		return 'full';
+-	else if (d.batLev > 75)
+-		return 'pre_full';
+-	else if (d.batLev > 50)
+-		return 'middle';
+-	else if (d.batLev > 10)
+-		return 'low';
+-
+-	return 'critical_low';
+-}
+-
+-/* Состояние зарядки: fast (заряжается) / done (заряд завершён) / not */
+-function chargeStatus(d) {
+-	if (d.chrgStat == '1' || d.chrgStat == '2')
+-		return 'fast';
+-	else if (d.chrgStat == '3')
+-		return 'done';
+-
+-	return 'not';
+-}
+-
+-/* Батарея определяется, если VBat не 2304 и BatPr не "No" */
+-function isDetected(d) {
+-	if (d.vbat == 2304 || d.batPr == 'No')
+-		return false;
+-
+-	return true;
+-}
+-
+-/* Перегрев: зарядка через чужой адаптер (ChrgConn=2) и PaErr не 0/0/0 */
+-function isOverheat(d) {
+-	if (d.chrgConn != '2')
+-		return false;
+-
+-	var m = (d.paerr || '').match(/(\d+)\/(\d+)\/(\d+)/);
+-
+-	if (!m)
+-		return false;
+-
+-	return m[3] != '0';
+-}
+-
+-/* Сток считает "своим" адаптером всё, кроме ChrgConn=3 */
+-function isOriginalPA(d) {
+-	return d.chrgConn != '3';
+-}
+-
+-/* Итоговый статус иконки - ровно как в стоковом _displayIconStatus */
+-function iconStatus(d) {
+-	if (!isDetected(d))
+-		return 'not_detected';
+-
+-	if (!isOriginalPA(d))
+-		return 'wrong_adapter';
+-
+-	if (isOverheat(d))
+-		return 'overheat';
+-
+-	switch (chargeStatus(d)) {
+-	case 'done':
+-		return 'full_done';
+-	case 'fast':
+-		return levelStatus(d) + '_fast';
+-	default:
+-		return levelStatus(d);
+-	}
+-}
+-
+-/* Статус "_fast" в стоке рисуется файлом "*_charge.svg" */
+-function iconFile(status) {
+-	return status.replace(/_fast$/, '_charge') + '.svg';
+-}
++var ICON_BASE = perenio_battery.ICON_BASE;
++
++/* Разбор и логика статуса вынесены в общий модуль perenio-battery:
++ * те же самые данные нужны значку аккумулятора в шапке. */
++var parseSys = perenio_battery.parseSys;
++var levelStatus = perenio_battery.levelStatus;
++var chargeStatus = perenio_battery.chargeStatus;
++var isDetected = perenio_battery.isDetected;
++var isOverheat = perenio_battery.isOverheat;
++var isOriginalPA = perenio_battery.isOriginalPA;
++var iconStatus = perenio_battery.iconStatus;
++var iconFile = perenio_battery.iconFile;
+ 
+ function chargeText(status) {
+ 	switch (status) {
+

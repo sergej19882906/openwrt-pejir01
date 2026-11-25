@@ -27,6 +27,7 @@ fi
 LUCI_PKG="${PEJIR_LUCI_PKG:-$DEFAULT_PKG}"
 
 PAGE="$LUCI_PKG/htdocs/luci-static/resources/view/perenio/battery.js"
+BASE="$LUCI_PKG/htdocs/luci-static/resources/perenio-battery.js"
 PO="$LUCI_PKG/po/ru/luci-app-perenio.po"
 ICONS="$LUCI_PKG/root/www/luci-static/perenio/images/battery"
 
@@ -35,6 +36,7 @@ ok()   { echo "OK: $1"; }
 fail() { echo "FAIL: $1"; FAILED=$((FAILED+1)); }
 
 [ -f "$PAGE" ] || { echo "FAIL: нет файла $PAGE"; exit 1; }
+[ -f "$BASE" ] || { echo "FAIL: нет файла $BASE"; exit 1; }
 [ -f "$PO" ] || { echo "FAIL: нет файла $PO"; exit 1; }
 [ -d "$ICONS" ] || { echo "FAIL: нет каталога $ICONS"; exit 1; }
 
@@ -79,16 +81,28 @@ if ! command -v node >/dev/null 2>&1; then
 	exit 0
 fi
 
-NODE_OUT="$(node - "$PAGE" "$ICONS" <<'NODE'
+NODE_OUT="$(node - "$PAGE" "$ICONS" "$BASE" <<'NODE'
 const fs = require('fs');
 const page = process.argv[2];
 const icons = process.argv[3];
+const base = process.argv[4];
 const src = fs.readFileSync(page, 'utf8');
 
+/* Общий модуль разбора батареи: страница берёт логику из него, поэтому
+ * в тесте он тоже загружается - так проверяется, что страница и значок
+ * в шапке считают статус одинаково. */
+const baseSrc = fs.readFileSync(base, 'utf8');
+const baseFactory = new Function('window', 'document', 'L', 'baseclass', baseSrc);
+const battery = baseFactory({}, {}, {}, { extend: (o) => o });
+
 const stubView = { extend: (o) => o };
-const factory = new Function('view', 'E', 'L', '_', 'fs', 'poll', 'document', src);
-const mod = factory(stubView, () => {}, () => {}, (s) => s,
-                    { exec: () => Promise.resolve(null) }, { add: () => {} }, {});
+const factory = new Function('window', 'document', 'L', 'view', 'fs', 'ui', 'poll',
+                             'perenio_battery', src);
+const mod = factory({}, {}, {}, stubView,
+                    { exec: () => Promise.resolve(null) },
+                    { addNotification: () => {} },
+                    { add: () => {} },
+                    battery);
 
 let fails = 0;
 function check(cond, what) {

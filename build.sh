@@ -736,6 +736,13 @@ if [ -n "$SU" ]; then
                  usr/libexec/pejir-lte-apn \
                  usr/libexec/pejir-modem-ctl \
                  www/luci-static/resources/view/perenio/lte.js \
+                 www/luci-static/resources/perenio-battery.js \
+                 www/luci-static/resources/battery-indicator.js \
+                 www/luci-static/resources/lte-indicator.js \
+                 www/luci-static/resources/preload/battery-indicator.js \
+                 www/luci-static/resources/preload/lte-indicator.js \
+                 usr/libexec/pejir-signal \
+                 etc/init.d/46-pejir-signal \
                  etc/init.d/pejir-led \
                  etc/init.d/41-pejir-sync \
                  etc/init.d/pejir-sms-spool \

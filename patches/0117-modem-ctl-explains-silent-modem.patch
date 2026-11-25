@@ -1,0 +1,67 @@
+From 27a6d2f9c4cc9c7f69e936d1db7bb4aa9758871e Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 16:52:04 GMT
+Subject: =?utf-8?b?cGVqaXItbHRlOiDQvNC+0LTQtdC8INC+0LHRitGP0YHQvdGP0LXRgiwg0L/QvtGH?=
+ =?utf-8?b?0LXQvNGDINC90LUg0L7RgtCy0LXRgtC40LssINCy0LzQtdGB0YLQviDQv9GD0YHR?=
+ =?utf-8?b?gtC+0LPQviDQstGL0LLQvtC00LA=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Кнопка "Показать номер" (AT+CNUM) часто показывала пустой ответ, и
+казалось, что команда не работает. На самом деле модем просто не
+отвечает на AT, пока активен LTE-вызов (то же самое видно на странице
+USSD), а номер SIM к тому же хранится не на всех картах.
+
+Теперь:
+  * если модем не ответил, helper прямо пишет об этом и подсказывает
+    причину (активный LTE-вызов) и что делать - перезапустить LTE;
+  * если на AT+CNUM пришёл ERROR, добавлено пояснение, что номер не
+    сохранён на карте и AT+CNUM есть не у всех SIM и операторов.
+
+То же пояснение касается и остальных команд мода (PIN, сброс): раньше
+при отсутствии ответа вывод был пустым.
+---
+ .../root/usr/libexec/pejir-modem-ctl          | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+index 3a9abb25..b033cc3d 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+@@ -87,6 +87,17 @@ modem_cmd() {
+ 	smsd_stop
+ 	_out=$(at_ask "$_p" "$1")
+ 	smsd_start
++
++	if [ -z "$(printf '%s' "$_out" | tr -d ' \r\n')" ]; then
++		# Модем не ответил. Самая частая причина - активный LTE-вызов:
++		# пока идёт передача данных, модем на AT не отвечает (это же
++		# видно на странице USSD). Без пояснения пользователь видит
++		# пустой ответ и думает, что команда не работает.
++		printf 'модем не ответил на «%s».\n' "$1"
++		printf 'Чаще всего это значит, что активен LTE-вызов: модем не отвечает на AT, пока идёт передача данных - перезапустите LTE и повторите.\n'
++		return 0
++	fi
++
+ 	printf '%s' "$_out"
+ }
+ 
+@@ -200,8 +211,12 @@ pin-disable)
+ 	printf '%s\n' "$_out"
+ 	;;
+ cnum)
+-	modem_cmd 'AT+CNUM'
+-	echo
++	_out="$(modem_cmd 'AT+CNUM')"
++	printf '%s\n' "$_out"
++	if printf '%s' "$_out" | grep -qi "ERROR"; then
++		echo "модем ответил ERROR: номер SIM не сохранён на карте."
++		echo "AT+CNUM есть не у всех SIM и операторов - тогда номер виден только в приложении оператора."
++	fi
+ 	;;
+ reset)
+ 	# Сброс модема: у ZTE/Gosuncn - AT+ZRST (проверенный набор), у всех
+-- 
+2.39.5
+

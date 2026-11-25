@@ -1,0 +1,226 @@
+From d2f93f71ab9ff4f6060892e2b158eacf6ba315eb Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 17:05:02 GMT
+Subject: =?utf-8?b?bHVjaTog0YHRgtGA0LDQvdC40YbQsCBMVEUg0L/QvtC60LDQt9GL0LLQsNC10YIg?=
+ =?utf-8?b?0LLQstC10LTRkdC90L3QvtC1INC4INGB0L7RhdGA0LDQvdGR0L3QvdC+0LUg0LfQ?=
+ =?utf-8?b?vdCw0YfQtdC90LjQtQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Жалоба: заполняешь на странице "Настройки LTE" APN, DNS, логин,
+пароль и режим канала, жмёшь "Сохранить" - и поля пустеют. Выглядит
+так, будто настройки пропали, и непонятно, записалось что-нибудь или
+нет.
+
+Причина в том, что страница показывала только поля ввода: если
+сохранение не проходило (нет прав на uci network, опечатка в имени
+секции), поля выглядели пустыми, и отличить "сохранилось" от
+"не сохранилось" было невозможно.
+
+Что сделано:
+
+  * у каждого поля появилась соседняя ячейка со значением, которое
+    реально лежит в network.lte (рядом с тем, что ввёл пользователь);
+  * если введённое значение отличается от сохранённого, ячейка
+    подсвечивается красным и помечается знаком неравенства;
+  * после сохранения (и после применения режима канала) значения
+    перечитываются из конфига, так что видно, что именно записалось;
+  * при ошибке сохранения тоже показывается фактическое состояние
+    конфига - и остаётся введённое значение в поле, чтобы его можно
+    было повторить;
+  * добавляется строка "Сохранено в <время>".
+
+Ошибка сохранения теперь видна сразу, а не после перезагрузки
+страницы. Права на запись uci network в luci-app-perenio тоже
+исправлены (патч 0112) - без них сохранение было отклонено rpcd.
+---
+ .../luci-static/resources/view/perenio/lte.js | 107 ++++++++++++++++--
+ .../po/ru/luci-app-perenio.po                 |   8 ++
+ 2 files changed, 108 insertions(+), 7 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+index e466b2b2..681e5771 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -60,6 +60,24 @@ var AUTH_TYPES = [
+ 	[ 'both', _('CHAP and PAP') ]
+ ];
+ 
++/* Поля страницы: подпись, id поля ввода и ключ в network.lte.
++ *
++ * Справа от каждого поля показывается значение, которое РЕАЛЬНО лежит
++ * в конфиге (network.lte), а в поле ввода - то, что ввёл пользователь.
++ * Раньше было только поле ввода, поэтому после неудачного сохранения
++ * (нет прав на uci network, опечатка в секции) страница выглядела так,
++ * будто настройки пропали, и понять, записалось что-нибудь или нет,
++ * было невозможно. */
++var FIELDS = [
++	{ 'id': 'pejir-apn', 'label': _('APN'), 'key': 'apn' },
++	{ 'id': 'pejir-pdptype', 'label': _('PDP type'), 'key': 'pdptype' },
++	{ 'id': 'pejir-username', 'label': _('Username'), 'key': 'username' },
++	{ 'id': 'pejir-password', 'label': _('Password'), 'key': 'password' },
++	{ 'id': 'pejir-auth', 'label': _('Authentication type'), 'key': 'auth' },
++	{ 'id': 'pejir-dns', 'label': _('DNS (optional)'), 'key': 'dns' },
++	{ 'id': 'pejir-mode', 'label': _('Channel mode'), 'key': 'modes' }
++];
++
+ function cur(key) {
+ 	var v = uci.get('network', 'lte', key);
+ 
+@@ -104,6 +122,47 @@ function select(id, options, value) {
+ 	return E('select', { 'id': id, 'class': 'cbi-input-select' }, opts);
+ }
+ 
++/* Значение, реально сохранённое в network.lte. */
++function savedText(key) {
++	var v = cur(key);
++
++	return (v == '') ? _('not set') : v;
++}
++
++/* Обновить колонку "сохранено" и подсветить расхождения с введённым. */
++function refreshSaved() {
++	FIELDS.forEach(function(f) {
++		var cell = document.getElementById('pejir-saved-' + f.key);
++		var inp = document.getElementById(f.id);
++
++		if (!cell)
++			return;
++
++		var v = cur(f.key);
++
++		if (inp && inp.value !== v) {
++			cell.className = 'pejir-saved-diff';
++			cell.style.color = '#c0392b';
++			cell.textContent = _('Saved') + ': ' + savedText(f.key) + ' \u2260';
++			cell.title = _('Differs from the entered value');
++		}
++		else {
++			cell.className = 'pejir-saved';
++			cell.style.color = '#888';
++			cell.textContent = _('Saved') + ': ' + savedText(f.key);
++			cell.title = '';
++		}
++	});
++}
++
++/* Отметка времени последнего успешного сохранения. */
++function markSaved() {
++	var el = document.getElementById('pejir-saved-at');
++
++	if (el)
++		el.textContent = _('Last saved') + ': ' + new Date().toLocaleTimeString();
++}
++
+ function row(title, field) {
+ 	return E('div', { 'class': 'cbi-value' }, [
+ 		E('div', { 'class': 'cbi-value-title' }, title),
+@@ -111,6 +170,21 @@ function row(title, field) {
+ 	]);
+ }
+ 
++/* Поле ввода + значение, реально сохранённое в network.lte. */
++function rowSaved(title, field, key) {
++	return E('div', { 'class': 'cbi-value' }, [
++		E('div', { 'class': 'cbi-value-title' }, title),
++		E('div', { 'class': 'cbi-value-field' }, [
++			field, ' ',
++			E('span', {
++				'id': 'pejir-saved-' + key,
++				'class': 'pejir-saved',
++				'style': 'margin-left:8px;color:#888'
++			}, _('Saved') + ': ' + savedText(key))
++		])
++	]);
++}
++
+ return view.extend({
+ 	handleSave: function(ev) {
+ 		var btn = ev.currentTarget;
+@@ -134,9 +208,15 @@ return view.extend({
+ 
+ 		return uci.save().then(function() {
+ 			btn.disabled = false;
++			refreshSaved();
++			markSaved();
+ 			ui.addNotification(null, E('p', {}, _('Saved. Press "Apply now" to send the settings to the modem.')), 'info');
+ 		}).catch(function(e) {
+ 			btn.disabled = false;
++			/* Показываем то, что лежит в конфиге на самом деле:
++			 * если сохранение запрещено правами, поле останется
++			 * пустым, и это будет видно сразу. */
++			refreshSaved();
+ 			ui.addNotification(null, E('p', {}, _('Failed to save: ') + (e && e.message ? e.message : e)), 'error');
+ 		});
+ 	},
+@@ -209,6 +289,7 @@ return view.extend({
+ 		uci.set('network', 'lte', 'perenio_band', val);
+ 
+ 		return uci.save().then(function() {
++			markSaved();
+ 			ui.addNotification(null, E('p', {}, _('Saved. Press "Apply now" to send the setting to the modem.')), 'info');
+ 		}).catch(function(e) {
+ 			ui.addNotification(null, E('p', {}, _('Failed to save: ') + (e && e.message ? e.message : e)), 'error');
+@@ -257,6 +338,9 @@ return view.extend({
+ 		uci.set('network', 'lte', 'modes', document.getElementById('pejir-mode').value);
+ 
+ 		return uci.save().then(function() {
++			refreshSaved();
++			markSaved();
++
+ 			return fs.exec(MODEM, [ 'mode-apply' ]).then(function(r) {
+ 				var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
+ 
+@@ -329,19 +413,28 @@ return view.extend({
+ 			E('h2', {}, _('LTE settings (PEJIR01)')),
+ 			E('div', { 'class': 'cbi-section-descr' },
+ 				_('APN settings for the GM510 modem. The values are stored in network.lte and are sent to the modem as AT+CGDCONT and AT+ZECMCALL, exactly as in the stock firmware. The optional DNS overrides the DNS received from the operator via DHCP; leave it empty to use the operator DNS.')),
+-			row(_('APN'), input('pejir-apn', 'text', cur('apn'))),
+-			row(_('PDP type'), select('pejir-pdptype', PDP_TYPES, cur('pdptype') || 'ip')),
+-			row(_('Username'), input('pejir-username', 'text', cur('username'))),
+-			row(_('Password'), input('pejir-password', 'password', cur('password'))),
+-			row(_('Authentication type'), select('pejir-auth', AUTH_TYPES, cur('auth') || 'none')),
+-			row(_('DNS (optional)'), input('pejir-dns', 'text', cur('dns'))),
+-			row(_('Channel mode'), select('pejir-mode', CHANNEL_MODES, cur('modes') || 'all')),
++			E('div', { 'class': 'cbi-value-description' },
++				_('The saved value is shown next to each field: the field itself keeps what you entered, and the value next to it is what is really stored in network.lte. A red value means the entered value differs from the saved one.')),
++			rowSaved(_('APN'), input('pejir-apn', 'text', cur('apn')), 'apn'),
++			rowSaved(_('PDP type'), select('pejir-pdptype', PDP_TYPES, cur('pdptype') || 'ip'), 'pdptype'),
++			rowSaved(_('Username'), input('pejir-username', 'text', cur('username')), 'username'),
++			rowSaved(_('Password'), input('pejir-password', 'password', cur('password')), 'password'),
++			rowSaved(_('Authentication type'), select('pejir-auth', AUTH_TYPES, cur('auth') || 'none'), 'auth'),
++			rowSaved(_('DNS (optional)'), input('pejir-dns', 'text', cur('dns')), 'dns'),
++			rowSaved(_('Channel mode'), select('pejir-mode', CHANNEL_MODES, cur('modes') || 'all'), 'modes'),
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, ''),
+ 				E('div', { 'class': 'cbi-value-field' }, [
+ 					saveBtn, ' ', applyBtn, ' ', showBtn
+ 				])
+ 			]),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, ''),
++				E('div', { 'class': 'cbi-value-field' }, [
++					E('span', { 'id': 'pejir-saved-at', 'class': 'pejir-saved',
++						'style': 'color:#888' }, '')
++				])
++			]),
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, ''),
+ 				E('div', { 'class': 'cbi-value-field' }, [ modeBtn ])
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index e088b6db..038053aa 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -572,3 +572,11 @@ msgid "Operator"
+ msgstr "Оператор"
+ msgid "Signal level"
+ msgstr "Уровень сигнала"
++msgid "not set"
++msgstr "не задано"
++msgid "Differs from the entered value"
++msgstr "Отличается от введённого значения"
++msgid "Last saved"
++msgstr "Сохранено в"
++msgid "The saved value is shown next to each field: the field itself keeps what you entered, and the value next to it is what is really stored in network.lte. A red value means the entered value differs from the saved one."
++msgstr "Рядом с каждым полем показано сохранённое значение: само поле сохраняет то, что вы ввели, а значение рядом - то, что действительно записано в network.lte. Красное значение означает, что введённое отличается от сохранённого."

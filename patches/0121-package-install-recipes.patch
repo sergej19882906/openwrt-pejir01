@@ -1,0 +1,76 @@
+From 5df598fe3b9fb91c609052bf35c02db5ff5510dc Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 17:07:23 GMT
+Subject: =?utf-8?b?0L/QsNC60LXRgtGLOiDQsiDRgNC10YbQtdC/0YLRiyDRg9GB0YLQsNC90L7QstC6?=
+ =?utf-8?b?0Lgg0LTQvtCx0LDQstC70LXQvdGLINC90L7QstGL0LUg0YTQsNC50LvRiyAo0LfQ?=
+ =?utf-8?b?vdCw0YfQutC4LCDQtNC10LzQvtC9INGB0LXRgtC4KQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Рецепты этих пакетов ставят файлы поимённо, поэтому новые файлы сами
+в образ не попадали бы:
+
+  * luci-app-perenio - модули resources/*.js и resources/preload/*.js
+    (значок батареи и значок сети LTE/3G в шапке). Раньше рецепт
+    ставил только страницы из view/perenio;
+  * pejir-lte-base - /usr/libexec/pejir-signal и /etc/init.d/46-pejir-signal
+    (демон состояния модема).
+
+Подняты версии пакетов: luci-app-perenio 9 -> 10, pejir-lte-base 7 -> 8.
+---
+ package/luci-app-perenio/Makefile | 11 ++++++++++-
+ package/pejir-lte-base/Makefile   |  4 +++-
+ 2 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index b76e03ea..21cd495e 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=luci-app-perenio
+ PKG_VERSION:=1.0.0
+-PKG_RELEASE:=9
++PKG_RELEASE:=10
+ 
+ PKG_LICENSE:=Apache-2.0
+ 
+@@ -27,6 +27,15 @@ define Package/luci-app-perenio/install
+ 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/perenio/*.js \
+ 		./htdocs/luci-static/resources/view/perenio/*.css \
+ 		$(1)/www/luci-static/resources/view/perenio/
++	# Модули LuCI, которые подключаются сами (значки батареи и сети в
++	# шапке). Раньше рецепт ставил только страницы из view/perenio, и
++	# эти файлы в образ просто не попадали бы - значков не было бы.
++	$(INSTALL_DIR) $(1)/www/luci-static/resources
++	$(INSTALL_DATA) ./htdocs/luci-static/resources/*.js \
++		$(1)/www/luci-static/resources/
++	$(INSTALL_DIR) $(1)/www/luci-static/resources/preload
++	$(INSTALL_DATA) ./htdocs/luci-static/resources/preload/*.js \
++		$(1)/www/luci-static/resources/preload/
+ 	$(INSTALL_DIR) $(1)/www/luci-static/perenio/images/battery
+ 	$(INSTALL_DATA) ./root/www/luci-static/perenio/images/battery/*.svg \
+ 		$(1)/www/luci-static/perenio/images/battery/
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index f0f27fa3..d266bcd8 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-lte-base
+ PKG_VERSION:=1
+-PKG_RELEASE:=7
++PKG_RELEASE:=8
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
+@@ -44,6 +44,8 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-at-watch $(1)/usr/libexec/pejir-at-watch
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-mwan3 $(1)/usr/libexec/pejir-mwan3
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-ctl $(1)/usr/libexec/pejir-modem-ctl
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-signal $(1)/usr/libexec/pejir-signal
++	$(INSTALL_BIN) ./root/etc/init.d/46-pejir-signal $(1)/etc/init.d/46-pejir-signal
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-lte-base))

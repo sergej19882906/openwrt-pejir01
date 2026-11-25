@@ -1,0 +1,510 @@
+From 9595af0a8ce87dbc802efe96854d2cdbfa259702 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 17:04:58 GMT
+Subject: =?utf-8?b?bHVjaTog0LfQvdCw0YfQvtC6INGB0LXRgtC4IExURS8zRyDQsiDRiNCw0L/QutC1?=
+ =?utf-8?b?ICsg0LTQtdC80L7QvSDRgdC+0YHRgtC+0Y/QvdC40Y8g0LzQvtC00LXQvNCw?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Рядом со значком батареи нужен значок интернета: сейчас в шапке не
+видно, по какому каналу модем сейчас в сети - LTE или 3G, и кто
+оператор.
+
+Почему данные берёт отдельный демон, а не браузер. Тип сети и
+оператор есть только в модеме (AT+NWINFO / AT+COPS). Если бы LuCI
+спрашивал модем прямо из браузера, то на каждой странице пришлось бы
+дёргать AT-порт, а он в это время занят smsd - запросы сбивают
+отправку SMS (ровно та проблема, из-за которой SMS и не ходили).
+Поэтому демон опрашивает модем в фоне раз в минуту и пишет короткий
+файл состояния, который страница просто читает.
+
+Что сделано:
+
+  * /usr/libexec/pejir-signal - опрос модема: AT+CSQ (уровень
+    сигнала), AT+NWINFO (тип сети), AT+COPS? (оператор и код
+    активности). Разбор ответов на чистом shell, результат пишется в
+    /tmp/pejir-signal (ts/rssi/pct/net/operator). Если в очереди SMS
+    есть исходящие - модем не опрашивается, чтобы не мешать отправке;
+    опрос защищён замком, протухший замок снимается;
+  * /etc/init.d/46-pejir-signal - демон в фоне (START=95, после
+    47-pejir-lte), перезапускается сам;
+  * resources/lte-indicator.js - индикатор в шапке: цветной бейдж
+    LTE/3G/2G (или "нет сети") и столбики уровня сигнала, в подсказке
+    - тип сети, оператор и процент сигнала. Клик открывает страницу
+    настроек LTE;
+  * resources/preload/lte-indicator.js - LuCI подключает его на
+    каждой странице сам;
+  * в ACL luci-app-perenio добавлено чтение /tmp/pejir-signal.
+
+Значок обновляется раз в 15 секунд, но сам модем опрашивается раз в
+минуту - AT-порт почти не трогается.
+---
+ .../luci-static/resources/lte-indicator.js    | 156 +++++++++++++++
+ .../resources/preload/lte-indicator.js        |   7 +
+ .../po/ru/luci-app-perenio.po                 |   6 +
+ .../share/rpcd/acl.d/luci-app-perenio.json    |  21 ++-
+ .../root/etc/init.d/46-pejir-signal           |  26 +++
+ .../root/usr/libexec/pejir-signal             | 177 ++++++++++++++++++
+ 6 files changed, 384 insertions(+), 9 deletions(-)
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/preload/lte-indicator.js
+ create mode 100755 package/pejir-lte-base/root/etc/init.d/46-pejir-signal
+ create mode 100755 package/pejir-lte-base/root/usr/libexec/pejir-signal
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
+new file mode 100644
+index 00000000..464d7b89
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
+@@ -0,0 +1,156 @@
++'use strict';
++'require baseclass';
++'require fs';
++'require poll';
++
++/*
++ * Значок сети (LTE/3G/2G) в шапке веб-интерфейса - рядом со значком
++ * батареи, как в стоковой прошивке Perenio.
++ *
++ * Данные берём не из модема напрямую, а из файла состояния, который
++ * пишет демон /usr/libexec/pejir-signal (раз в минуту опрашивает модем
++ * в фоне). Брать AT-данные из браузера нельзя: тогда на каждой
++ * странице пришлось бы дёргать модем, а AT-порт в это время занят
++ * smsd - запросы сбивают отправку SMS.
++ *
++ * Файл состояния - строки "ключ=значение":
++ *   ts=1730000000 rssi=21 pct=68 net=LTE operator=MegaFon
++ *
++ * Модуль лежит в resources/preload/, поэтому LuCI подключает его сам
++ * на каждой странице - отдельно подключать его в теме не нужно.
++ */
++
++var STATE_FILE = '/tmp/pejir-signal';
++var LTE_LINK = 'admin/status/perenio-lte';
++
++var COLORS = {
++	'LTE': '#2e7d32',
++	'3G': '#ef6c00',
++	'2G': '#6d4c41',
++	'none': '#757575'
++};
++
++function parseState(text) {
++	var st = {};
++
++	(text || '').split('\n').forEach(function(line) {
++		var i = line.indexOf('=');
++
++		if (i > 0)
++			st[line.substring(0, i).trim()] = line.substring(i + 1).trim();
++	});
++
++	return st;
++}
++
++function escapeHtml(s) {
++	return String(s == null ? '' : s)
++		.replace(/&/g, '&amp;')
++		.replace(/</g, '&lt;')
++		.replace(/>/g, '&gt;')
++		.replace(/"/g, '&quot;');
++}
++
++/* Столбики уровня сигнала: 4 полоски, заполнено по уровню в процентах. */
++function barsSvg(pct) {
++	var filled = 0, s, i, h, y;
++
++	if (!isNaN(pct))
++		filled = Math.min(4, Math.max(0, Math.ceil(pct / 25)));
++
++	s = '<svg width="18" height="12" viewBox="0 0 18 12" style="vertical-align:middle">';
++
++	for (i = 0; i < 4; i++) {
++		h = 3 + i * 3;
++		y = 12 - h;
++		s += '<rect x="' + (i * 5) + '" y="' + y + '" width="3.5" height="' + h +
++			'" rx="1" fill="' + (i < filled ? 'currentColor' : 'rgba(128,128,128,0.35)') + '"/>';
++	}
++
++	return s + '</svg>';
++}
++
++function indicator() {
++	var div = document.getElementById('indicators');
++
++	if (!div)
++		return null;
++
++	var el = div.querySelector('span[data-indicator="lte-status"]');
++
++	if (!el) {
++		el = document.createElement('span');
++		el.setAttribute('data-indicator', 'lte-status');
++		el.setAttribute('data-style', 'active');
++		el.className = 'pejir-lte-indicator';
++		el.style.cursor = 'pointer';
++		el.style.whiteSpace = 'nowrap';
++		el.style.marginLeft = '8px';
++		el.addEventListener('click', function() {
++			window.location.href = L.url(LTE_LINK);
++		});
++
++		div.appendChild(el);
++	}
++
++	return el;
++}
++
++function render(el, st) {
++	var net = st.net || 'none';
++	var pct = parseInt(st.pct, 10);
++	var op = st.operator || '';
++	var title, label;
++
++	if (isNaN(pct))
++		pct = NaN;
++
++	label = (net === 'none') ? '—' : net;
++	title = _('Network type') + ': ' + label;
++
++	if (op)
++		title += ', ' + _('Operator') + ': ' + op;
++
++	if (!isNaN(pct))
++		title += ', ' + _('Signal level') + ': ' + pct + '%';
++
++	el.innerHTML =
++		'<span style="display:inline-block;padding:0 5px;border-radius:3px;' +
++		'color:#fff;background:' + (COLORS[net] || COLORS.none) + ';' +
++		'font-size:85%;font-weight:bold;vertical-align:middle">' + escapeHtml(label) + '</span>' +
++		'<span style="margin-left:3px">' + barsSvg(pct) + '</span>';
++
++	el.setAttribute('title', title);
++	el.style.display = '';
++}
++
++function update() {
++	return fs.read(STATE_FILE).then(function(text) {
++		var el = indicator();
++
++		if (!el)
++			return;
++
++		var st = parseState(text);
++
++		if (!st.net && !st.pct) {
++			el.style.display = 'none';
++
++			return;
++		}
++
++		render(el, st);
++	}).catch(function() {
++		var el = indicator();
++
++		if (el)
++			el.style.display = 'none';
++	});
++}
++
++poll.add(update, 15);
++update();
++
++return baseclass.extend({
++	__name__: 'lte-indicator'
++});
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/preload/lte-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/preload/lte-indicator.js
+new file mode 100644
+index 00000000..5e1ad036
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/preload/lte-indicator.js
+@@ -0,0 +1,7 @@
++'use strict';
++'require baseclass';
++'require lte-indicator';
++
++return baseclass.extend({
++	__name__: 'preload.lte-indicator'
++});
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index af94dfea..e088b6db 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -566,3 +566,9 @@ msgid "Saving..."
+ msgstr "Сохранение..."
+ msgid "Queue state"
+ msgstr "Состояние очереди"
++msgid "Network type"
++msgstr "Тип сети"
++msgid "Operator"
++msgstr "Оператор"
++msgid "Signal level"
++msgstr "Уровень сигнала"
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index a6c5c3d1..dd56169b 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -3,18 +3,30 @@
+ 		"description": "Grant access to Perenio STM32 status and SMS",
+ 		"read": {
+ 			"file": {
++				"/dev": [
++					"list"
++				],
+ 				"/etc/config/idata": [
+ 					"read"
+ 				],
+ 				"/etc/smsd.conf": [
+ 					"read"
+ 				],
++				"/tmp/pejir-signal": [
++					"read"
++				],
+ 				"/var/log/smsd.log": [
+ 					"read"
+ 				],
+ 				"/var/log/smsd.log.1": [
+ 					"read"
+ 				],
++				"/var/spool/sms/failed": [
++					"list"
++				],
++				"/var/spool/sms/failed/*": [
++					"read"
++				],
+ 				"/var/spool/sms/incoming": [
+ 					"list"
+ 				],
+@@ -32,15 +44,6 @@
+ 				],
+ 				"/var/spool/sms/sent/*": [
+ 					"read"
+-				],
+-				"/var/spool/sms/failed": [
+-					"list"
+-				],
+-				"/var/spool/sms/failed/*": [
+-					"read"
+-				],
+-				"/dev": [
+-					"list"
+ 				]
+ 			},
+ 			"ubus": {
+diff --git a/package/pejir-lte-base/root/etc/init.d/46-pejir-signal b/package/pejir-lte-base/root/etc/init.d/46-pejir-signal
+new file mode 100755
+index 00000000..c013f6f3
+--- /dev/null
++++ b/package/pejir-lte-base/root/etc/init.d/46-pejir-signal
+@@ -0,0 +1,26 @@
++#!/bin/sh /etc/rc.common
++# Демон состояния сети модема (тип сети, сигнал, оператор).
++#
++# Его данные использует индикатор в шапке веб-интерфейса: значок
++# LTE/3G рядом со значком батареи. Опрос идёт раз в минуту, в фоне,
++# поэтому браузеру не нужно дёргать AT-порт модема (он занят smsd).
++#
++# Порядок запуска: 41-pejir-modem (93) создаёт AT-порт,
++# 47-pejir-lte (94) поднимает связь, демон стартует после них (95).
++
++START=95
++STOP=0
++USE_PROCD=1
++
++start_service() {
++	procd_open_instance
++	procd_set_param command /usr/libexec/pejir-signal watch
++	procd_set_param stdout 1
++	procd_set_param stderr 1
++	procd_set_param respawn 3600 5 5
++	procd_close_instance
++}
++
++stop_service() {
++	return 0
++}
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-signal b/package/pejir-lte-base/root/usr/libexec/pejir-signal
+new file mode 100755
+index 00000000..db944e9e
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-signal
+@@ -0,0 +1,177 @@
++#!/bin/sh
++# Состояние сети модема: тип сети (LTE/3G/2G), уровень сигнала, оператор.
++#
++# Зачем отдельный демон. Эти данные нужны индикатору в шапке веб-интерфейса
++# (значок сети рядом со значком батареи). Брать их прямо из браузера
++# нельзя: тогда на каждой странице пришлось бы дёргать модем AT-командами,
++# а AT-порт в это время занят smsd - запросы сбивают отправку SMS.
++# Поэтому демон сам опрашивает модем раз в минуту и кладёт короткий файл
++# состояния, который LuCI просто читает.
++#
++# Команды:
++#   refresh - один раз опросить модем и обновить файл состояния;
++#   watch   - бесконечный цикл (раз в PEJIR_SIGNAL_INTERVAL секунд);
++#   status  - показать текущее состояние.
++
++PORT_FILE="${PEJIR_AT_PORT_FILE:-/etc/pejir/at-port}"
++STATE_FILE="${PEJIR_SIGNAL_STATE:-/tmp/pejir-signal}"
++INTERVAL="${PEJIR_SIGNAL_INTERVAL:-60}"
++TIMEOUT="${PEJIR_SIGNAL_TIMEOUT:-4}"
++SMS_OUTBOX="${PEJIR_SMS_OUTBOX:-/var/spool/sms/outgoing}"
++LOCK_FILE="${PEJIR_SIGNAL_LOCK:-/tmp/pejir-signal.lock}"
++
++log() {
++	logger -t pejir-signal "$*" 2>/dev/null
++}
++
++at() {
++	MDM_AT_TIMEOUT="$TIMEOUT" mdm-at "$1" "$2" 2>/dev/null
++}
++
++current_port() {
++	[ -f "$PORT_FILE" ] && head -n 1 "$PORT_FILE" 2>/dev/null
++}
++
++# "+CSQ: 21,99" -> 21
++parse_csq() {
++	printf '%s' "$1" | sed -n 's/.*+CSQ: *\([0-9][0-9]*\).*/\1/p' | head -1
++}
++
++# "+NWINFO: LTE,FDD,2100,..." -> LTE
++parse_nwinfo() {
++	printf '%s' "$1" | sed -n 's/.*+NWINFO: *\([A-Za-z-]*\).*/\1/p' | head -1
++}
++
++# '+COPS: 0,0,"MegaFon",2' -> MegaFon
++parse_cops_op() {
++	printf '%s' "$1" | awk '
++		match($0, /\+COPS: *[0-9]+,[0-9]+,"[^"]*"/) {
++			s = substr($0, RSTART, RLENGTH)
++			sub(/^.*,"/, "", s)
++			sub(/"$/, "", s)
++			print s
++			exit
++		}'
++}
++
++# '+COPS: 0,0,"MegaFon",2' -> 2
++parse_cops_act() {
++	printf '%s' "$1" | awk '
++		match($0, /\+COPS: *[0-9]+,[0-9]+("[^"]*"|[^,]*),[0-9]+/) {
++			s = substr($0, RSTART, RLENGTH)
++			n = split(s, a, ",")
++			print a[n]
++			exit
++		}'
++}
++
++# Тип сети по NWINFO
++net_from_nwinfo() {
++	case "$1" in
++	LTE|E-UTRAN|EP-DUP) echo "LTE" ;;
++	UMTS) echo "3G" ;;
++	EDGE|GPRS|GSM|CSD) echo "2G" ;;
++	"No Service"|"no service") echo "none" ;;
++	esac
++}
++
++# Тип сети по коду активности COPS (0=GSM, 2=EPS/LTE, 3..6=UMTS/HSPA)
++net_from_act() {
++	case "$1" in
++	0|1|8) echo "2G" ;;
++	2|7) echo "LTE" ;;
++	3|4|5|6) echo "3G" ;;
++	esac
++}
++
++# Замок считается протухшим, если он старше двух минут (процесс убили).
++lock_stale() {
++	local t now
++
++	[ -d "$LOCK_FILE" ] || return 0
++	t="$(stat -c %Y "$LOCK_FILE" 2>/dev/null)"
++	case "$t" in
++	''|*[!0-9]*) rm -rf "$LOCK_FILE" 2>/dev/null; return 0 ;;
++	esac
++	now="$(date +%s)"
++	[ "$((now - t))" -gt 120 ] && rm -rf "$LOCK_FILE" 2>/dev/null
++	return 0
++}
++
++cmd_refresh() {
++	local port csq nw cops rssi pct net op act
++
++	port="$(current_port)"
++	[ -n "$port" ] || return 1
++
++	# Не мешаем отправке SMS: если в очереди есть исходящие, порт занят
++	# smsd, и AT-запросы в этот момент могут сбить отправку.
++	if [ -n "$(ls -1 "$SMS_OUTBOX" 2>/dev/null | head -1)" ]; then
++		return 1
++	fi
++
++	# Один опрос за раз: иначе два цикла могут лезть в порт одновременно.
++	# Если процесс убили и замок остался - снимаем его через 2 минуты.
++	lock_stale
++	if ! mkdir "$LOCK_FILE" 2>/dev/null; then
++		return 1
++	fi
++	trap 'rmdir "$LOCK_FILE" 2>/dev/null' EXIT INT TERM
++
++	csq="$(at 'AT+CSQ' "$port")"
++	nw="$(at 'AT+NWINFO' "$port")"
++	cops="$(at 'AT+COPS?' "$port")"
++
++	rssi="$(parse_csq "$csq")"
++	net="$(net_from_nwinfo "$(parse_nwinfo "$nw")")"
++	op="$(parse_cops_op "$cops")"
++	act="$(parse_cops_act "$cops")"
++
++	[ -n "$net" ] || net="$(net_from_act "$act")"
++
++	[ -n "$rssi" ] || [ -n "$net" ] || return 1
++
++	case "$rssi" in
++	''|*[!0-9]*) pct="" ;;
++	0) pct="0" ;;
++	99) pct="" ;;
++	*) pct="$(( (rssi * 100 + 15) / 31 ))" ;;
++	esac
++
++	{
++		echo "ts=$(date +%s)"
++		echo "rssi=${rssi:-}"
++		echo "pct=${pct:-}"
++		echo "net=${net:-}"
++		echo "operator=${op:-}"
++	} > "$STATE_FILE.tmp" 2>/dev/null && mv "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null
++
++	rmdir "$LOCK_FILE" 2>/dev/null
++	trap - EXIT INT TERM
++	return 0
++}
++
++cmd_watch() {
++	while :; do
++		sleep "$INTERVAL"
++		cmd_refresh >/dev/null 2>&1
++	done
++}
++
++cmd_status() {
++	if [ -f "$STATE_FILE" ]; then
++		cat "$STATE_FILE"
++	else
++		echo "нет данных"
++	fi
++}
++
++case "$1" in
++refresh) cmd_refresh ;;
++watch)   cmd_watch ;;
++status)  cmd_status ;;
++*)
++	echo "usage: $0 {refresh|watch|status}" >&2
++	exit 2
++	;;
++esac
+
