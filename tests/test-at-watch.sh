@@ -26,6 +26,9 @@ MAKEFILE="$PKG/Makefile"
 ACL="$OW_TEST/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json"
 
 PEJIR_TEST_WORK="${PEJIR_TEST_WORK:-/tmp/pejir-test-at-watch}"
+# Экспорт обязателен: python-блоки берут каталог из окружения, и без
+# export они падали с KeyError - тест проваливался, ничего не проверяя.
+export PEJIR_TEST_WORK
 mkdir -p "$PEJIR_TEST_WORK" 2>/dev/null
 FAILED=0
 ok()   { echo "OK: $1"; }
