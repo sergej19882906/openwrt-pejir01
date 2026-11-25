@@ -134,6 +134,7 @@ jobs:
           sh tests/test-sms-spool.sh
           sh tests/test-lte-apn.sh
           sh tests/test-modem-ctl.sh
+          sh tests/test-menu-json.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый

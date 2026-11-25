@@ -1,0 +1,74 @@
+From 23fdd420de213a94e34af2328048d3c582e93246 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 03:26:07 GMT
+Subject: =?utf-8?b?cGVqaXItbHVjaTog0L/Rg9C90LrRgiDQvNC10L3RjiDCq9Cd0LDRgdGC0YDQvtC5?=
+ =?utf-8?b?0LrQuCBMVEUgKFBFSklSMDEpwrsgLSDQuNGB0L/RgNCw0LLQu9C10L3QuNC1INCy?=
+ =?utf-8?b?0LvQvtC20LXQvdC90L7Qs9C+INGD0LfQu9Cw?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ФАКТ: страница «Настройки LTE (PEJIR01)» была в образе, но пункта меню
+LuCI не было - пользователь не находил настройки APN, SIM PIN, номера SIM и
+режима канала в веб-интерфейсе.
+
+Причина: в патче 0089 (настройка APN с логином/паролем) пункт меню
+admin/status/perenio-lte был вставлен не в то место файла
+package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json -
+он оказался ВЛОЖЕН внутрь объекта admin/status/perenio-bands (hunk зацепил
+чужую закрывающую скобку). Файл при этом остался синтаксически валидным
+JSON, поэтому обычная проверка разбора его не ловила: ключ
+"admin/status/perenio-lte" просто не оказался на верхнем уровне, и LuCI
+такой пункт не регистрирует.
+
+Проверено на распакованном rootfs релиза .57: в
+usr/share/luci/menu.d/luci-app-perenio.json было только 6 пунктов, пункта
+perenio-lte не было, хотя сам perenio/lte.js в образе лежал.
+
+Исправление:
+  * admin/status/perenio-lte - полноценный пункт верхнего уровня, с
+    depends на ACL luci-app-perenio (как у остальных наших пунктов);
+  * admin/status/perenio-bands - его блок depends возвращён на место
+    (после вставки он тоже уехал внутрь bands);
+  * заголовки обоих пунктов сделаны русскими, как остальные пункты меню
+    Perenio ("Полосы 3G/4G (PEJIR01)", "Настройки LTE (PEJIR01)").
+
+Закреплено тестом tests/test-menu-json.sh, который проверяет структуру
+меню: JSON разбирается, в узле нет вложенных узлов-меню, у каждого узла
+есть title и action.path, view-файл существует, и - обратная проверка -
+каждая наша страница зарегистрирована в меню (иначе она недостижима из
+веб-интерфейса). До правки тест падал с двумя ошибками.
+
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 59e240b..73babba 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -60,20 +60,25 @@
+ 		}
+ 	},
+ 	"admin/status/perenio-bands": {
+-		"title": "3G/4G bands (PEJIR01)",
++		"title": "Полосы 3G/4G (PEJIR01)",
+ 		"order": 70,
+ 		"action": {
+ 			"type": "view",
+ 			"path": "perenio/bands"
+ 		},
++		"depends": {
++			"acl": [
++				"luci-app-perenio"
++			]
++		}
++	},
+ 	"admin/status/perenio-lte": {
+-		"title": "LTE settings (PEJIR01)",
++		"title": "Настройки LTE (PEJIR01)",
+ 		"order": 71,
+ 		"action": {
+ 			"type": "view",
+ 			"path": "perenio/lte"
+-		}
+-	},
++		},
+ 		"depends": {
+ 			"acl": [
+ 				"luci-app-perenio"
