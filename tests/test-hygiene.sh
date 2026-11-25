@@ -63,6 +63,22 @@ if grep -q '/usr/libexec/pejir-send-sms' "$SMS_JS"; then
 else
 	fail "sms.js: нет вызова /usr/libexec/pejir-send-sms"
 fi
+# Структура ACL: секция file должна быть ОБЪЕКТОМ "путь": ["операция"].
+# Если её переписать как список строк, rpcd не выдаст ни одного гранта
+# на exec - страницы молча перестанут работать.
+if python3 - "$ACL" <<'PYEOF'
+import json,sys
+a=json.load(open(sys.argv[1]))
+f=a['luci-app-perenio']['write']['file']
+ok=isinstance(f,dict) and all(isinstance(v,list) and v for v in f.values())
+sys.exit(0 if ok else 1)
+PYEOF
+then
+	ok "ACL: write.file - объект с операциями"
+else
+	fail "ACL: write.file - не объект (гранты на exec не выдаются)"
+fi
+
 if grep -q '"/usr/libexec/pejir-send-sms": \[' "$ACL" && \
    grep -q '"/usr/libexec/pejir-sms-clean": \[' "$ACL"; then
 	ok "ACL: точные гранты на pejir-send-sms и pejir-sms-clean"

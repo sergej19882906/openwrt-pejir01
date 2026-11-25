@@ -1,0 +1,231 @@
+From ad8e00efb23a2a964db459e1ee179bd2c8ad3dd3 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 16:40:37 GMT
+Subject: =?utf-8?b?cGVqaXItemlnYmVlLW5jcDog0L/RgNC+0YjQuNCy0LrQsCBOQ1Ag0YPRhdC+0LTQ?=
+ =?utf-8?b?uNGCINCyINGE0L7QvSwg0L/RgNC+0LLQtdGA0LrQsCDQvtGB0YLQsNGR0YLRgdGP?=
+ =?utf-8?b?INCx0YvRgdGC0YDQvtC5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+На странице диагностики кнопка "Проверить" вызывала pejir-zigbee-ncp
+ensure, а та команда при отсутствии ответа от модуля скачивает образ NCP
+с GitHub и прошивает его по XMODEM. И то и другое дольше, чем живёт
+запрос из браузера, поэтому страница падала с "XHR request timed out" -
+пользователю казалось, что кнопка не работает.
+
+Что сделано:
+
+1) СКАЧИВАНИЕ ОБРАЗА С ТАЙМАУТОМ. wget шёл без таймаута: если GitHub
+   недоступен, он висел очень долго. Теперь -T 30.
+
+2) НОВАЯ КОМАНДА flash-bg. Прошивка запускается отдельным процессом
+   (nohup), пишет журнал в /var/log/pejir-zigbee-ncp.log и сразу
+   возвращает управление. Новая команда log показывает этот журнал.
+
+3) КНОПКИ НА СТРАНИЦАХ РАЗДЕЛЕНЫ. На странице диагностики теперь две
+   отдельные кнопки: "Проверить модуль" (pejir-zigbee-ncp status, это
+   быстро) и "Прошить NCP-прошивку" - вторая запускает flash-bg и
+   опрашивает журнал, пока не появится "EXIT=", поэтому таймаут браузера
+   не мешает. На странице Zigbee кнопка прошивки тоже уходит в фон.
+
+4) ACL: добавлены гранты на exec /usr/bin/pejir-zigbee-ncp flash-bg и
+   ... log. ВАЖНО: секция file в ACL - это ОБЪЕКТ "путь": ["операция"];
+   если переписать её как список строк, rpcd не выдаст ни одного гранта
+   на exec и страницы молча перестанут работать.
+
+5) На странице Zigbee модуль uci использовался, но не был подключён
+   ("require uci"), из-за чего страница падала с "ReferenceError: uci is
+   not defined".
+
+6) В .po добавлен перевод строки "Saving..." (кнопка сохранения настроек
+   моста Telegram).
+---
+ .../resources/view/perenio/diag.js            | 44 ++++++++++++++++++-
+ .../resources/view/perenio/zigbee.js          |  3 +-
+ .../po/ru/luci-app-perenio.po                 |  6 +++
+ .../share/rpcd/acl.d/luci-app-perenio.json    |  6 +++
+ .../pejir-zigbee-ncp/files/pejir-zigbee-ncp   | 35 +++++++++++++--
+ 5 files changed, 87 insertions(+), 7 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+index 3da53695..a624da5b 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+@@ -61,6 +61,36 @@ function runDiag(path) {
+ }
+ 
+ /* Запуск обёртки прошивки NCP: fs.exec возвращает {code, stdout, stderr}. */
++/* Прошивка NCP идёт в фоне: она дольше таймаута запроса браузера,
++ * поэтому запускаем её отдельной командой и следим за журналом. */
++function flashNcpInBackground(box) {
++	return runNcp('flash-bg').then(function(r) {
++		if (!r.ok && r.text && r.text.indexOf('EXIT=') < 0) {
++			if (box) box.textContent = r.text;
++			return null;
++		}
++
++		var tries = 0;
++
++		function pollLog() {
++			return runNcp('log').then(function(res) {
++				var t = (res && res.text) ? res.text : '';
++
++				if (box) box.textContent = t || _('Working...');
++
++				if (t.indexOf('EXIT=') >= 0 || ++tries > 90)
++					return null;
++
++				return new Promise(function(resolve) {
++					setTimeout(resolve, 2000);
++				}).then(pollLog);
++			});
++		}
++
++		return pollLog();
++	});
++}
++
+ function runNcp(action) {
+ 	return fs.exec(NCP, [action]).then(function(r) {
+ 		var out = (r && r.stdout ? r.stdout : '');
+@@ -109,11 +139,21 @@ return view.extend({
+ 				'click': ui.createHandlerFn(this, function() {
+ 					var box = document.getElementById('perenio-zigbee-ncp-out');
+ 					if (box) box.textContent = _('Checking, please wait...');
+-					return runNcp('ensure').then(function(r) {
++					/* Только проверка: она быстрая. Прошивка идёт минуты,
++					 * а запрос из браузера не столько живёт. */
++					return runNcp('status').then(function(r) {
+ 						if (box) box.textContent = r.text ? r.text : _('(no output)');
+ 					});
+ 				})
+-			}, _('Check / flash NCP firmware')),
++			}, _('Check the module')),
++			E('button', {
++				'class': 'cbi-button cbi-button-neutral',
++				'click': ui.createHandlerFn(this, function() {
++					var box = document.getElementById('perenio-zigbee-ncp-out');
++					if (box) box.textContent = _('Starting, please wait...');
++					return flashNcpInBackground(box);
++				})
++			}, _('Flash NCP firmware')),
+ 			E('button', {
+ 				'class': 'cbi-button cbi-button-neutral',
+ 				'click': ui.createHandlerFn(this, function() { window.location.reload(); })
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js
+index 28bf4687..9bcb0481 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js
+@@ -2,6 +2,7 @@
+ 'require view';
+ 'require fs';
+ 'require ui';
++'require uci';
+ 
+ /*
+  * Zigbee-модуль Perenio PEJIR01 (EFR32MG1) и стек HOMEd.
+@@ -104,7 +105,7 @@ return view.extend({
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, _('Actions')),
+ 				E('div', { 'class': 'cbi-value-field' }, [
+-					actionBtn(_('Check / flash NCP firmware'), NCP, [ 'ensure' ]),
++					actionBtn(_('Flash NCP firmware'), NCP, [ 'flash-bg' ]),
+ 					' ',
+ 					actionBtn(_('Check the module'), NCP, [ 'status' ]),
+ 					' ',
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 73df969a..129c5da4 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -558,3 +558,9 @@ msgid "Test message sent"
+ msgstr "Тестовое сообщение отправлено"
+ msgid "Chat ID is not set"
+ msgstr "ID чата не задан"
++msgid "Flash NCP firmware"
++msgstr "Прошить NCP-прошивку"
++msgid "Starting, please wait..."
++msgstr "Запуск, подождите..."
++msgid "Saving..."
++msgstr "Сохранение..."
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 5ca374b7..a6c5c3d1 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -147,6 +147,12 @@
+ 				],
+ 				"/usr/libexec/pejir-tg": [
+ 					"exec"
++				],
++				"/usr/bin/pejir-zigbee-ncp flash-bg": [
++					"exec"
++				],
++				"/usr/bin/pejir-zigbee-ncp log": [
++					"exec"
+ 				]
+ 			},
+ 			"ubus": {
+diff --git a/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+index 1a2825a1..f688b826 100755
+--- a/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
++++ b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+@@ -28,6 +28,7 @@ PORT="${ZIGBEE_PORT:-/dev/umxtty1}"
+ VERSION_FILE=/usr/lib/pejir/version
+ NCP_VERSION_FILE=/etc/pejir/ncp-version
+ CACHE_DIR=/tmp/pejir-ncp
++LOG_FILE=/var/log/pejir-zigbee-ncp.log
+ IMAGE_NAME=NCP_USW_EFR32MG1B-256_678_PA0-PA1-PB11.gbl
+ REPO=https://github.com/sergej19882906/openwrt-pejir01/releases/download
+ 
+@@ -56,7 +57,9 @@ download_image() {
+ 	mkdir -p "$CACHE_DIR" || return 1
+ 	url="$(image_url)"
+ 	log "скачиваю образ NCP: $url"
+-	if ! wget -q -O "$dst.tmp" "$url"; then
++	# Таймаут обязателен: если GitHub недоступен, wget без таймаута
++	# висит долго, и страница LuCI падает с "XHR request timed out".
++	if ! wget -q -T 30 -O "$dst.tmp" "$url"; then
+ 		rm -f "$dst.tmp"
+ 		log "НЕ УДАЛОСЬ скачать образ NCP ($url)"
+ 		return 1
+@@ -144,10 +147,34 @@ cmd_flash() {
+ 	log "записана версия NCP: $NCP_VERSION_FILE"
+ }
+ 
++# Прошивка в фоне: она занимает минуты (скачивание образа + XMODEM по
++# последовательному порту), а запрос из браузера живёт около 30 секунд.
++# Поэтому запускаем прошивку отдельным процессом, а страница следит за
++# журналом.
++cmd_flash_bg() {
++	if [ ! -e "$PORT" ]; then
++		log "порта $PORT нет - прошивка NCP невозможна, модуль не подключён"
++		return 2
++	fi
++	mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null
++	rm -f "$LOG_FILE.done" 2>/dev/null
++	nohup /bin/sh -c "$0 flash > '$LOG_FILE' 2>&1; echo \"EXIT=\$?\" >> '$LOG_FILE'; touch '$LOG_FILE.done'" >/dev/null 2>&1 &
++	log "прошивка NCP запущена в фоне, журнал: $LOG_FILE"
++	return 0
++}
++
++# Журнал фоновой прошивки.
++cmd_log() {
++	[ -f "$LOG_FILE" ] && cat "$LOG_FILE" 2>/dev/null
++	return 0
++}
++
+ case "${1:-}" in
+-	status) cmd_status ;;
+-	ensure) cmd_ensure ;;
+-	flash)  cmd_flash ;;
++	status)  cmd_status ;;
++	ensure)  cmd_ensure ;;
++	flash)   cmd_flash ;;
++	flash-bg) cmd_flash_bg ;;
++	log)     cmd_log ;;
+ 	*)
+ 		echo "Использование: pejir-zigbee-ncp {status|ensure|flash}"
+ 		exit 1
+-- 
+2.39.5
+
