@@ -147,11 +147,56 @@ else
 	echo "$out" | sed 's/^/     /'
 fi
 
+# --- универсальность: UUID из fstab должен соответствовать флешке ---------
+# Прошивка универсальна: UUID разделов НЕ зашит в образ, а определяется
+# на месте (block info) и записывается в fstab при первой настройке.
+# Но если флешку заменили (или перенесли настройки с другого роутера), в
+# fstab останется UUID несуществующего раздела. Тогда extroot молча не
+# работает: система грузится на внутренней памяти, swap выключен.
+# Поэтому автонастройка должна ПРОВЕРЯТЬ, что раздел с UUID из fstab
+# действительно есть, и перенастраивать extroot, если флешка заменена.
+printf "config global\n\toption auto_swap '1'\n\nconfig mount\n\toption uuid '1111-2222'\n\toption target '/overlay'\n\toption fstype 'ext4'\n\toption enabled '1'\n" > "$FSTAB"
+if sh "$EXTROOT" check >/dev/null 2>&1; then
+	ok "check: раздел с UUID из fstab найден (флешка на месте)"
+else
+	fail "check: раздел с UUID из fstab не найден, хотя флешка подключена"
+fi
+
+printf "config global\n\toption auto_swap '1'\n\nconfig mount\n\toption uuid '9999-0000'\n\toption target '/overlay'\n\toption fstype 'ext4'\n\toption enabled '1'\n" > "$FSTAB"
+if sh "$EXTROOT" check >/dev/null 2>&1; then
+	fail "check: раздел с чужим UUID не найден, но check сообщил об успехе"
+else
+	ok "check: чужой UUID (флешка заменена) обнаружен"
+fi
+
+rm -f "$FSTAB"
+if sh "$EXTROOT" check >/dev/null 2>&1; then
+	fail "check: fstab без секции extroot - а check сообщил об успехе"
+else
+	ok "check: без секции extroot в fstab - extroot не настроен"
+fi
+
+# Секция swap, записанная старой версией (только путь к разделу), должна
+# быть переписана с UUID - иначе swap отвалится после перенумерации.
+printf "config global\n\toption auto_swap '1'\n\nconfig mount\n\toption uuid '1111-2222'\n\toption target '/overlay'\n\toption fstype 'ext4'\n\toption enabled '1'\n\nconfig swap\n\toption device 'sda2'\n\toption enabled '1'\n" > "$FSTAB"
+sh "$EXTROOT" swap >/dev/null 2>&1
+if grep -A6 "config swap" "$FSTAB" 2>/dev/null | grep -q "option uuid"; then
+	ok "swap: секция со старым путём переписана и получила UUID"
+else
+	fail "swap: секция со старым путём не получила UUID"
+	sed 's/^/     /' "$FSTAB" 2>/dev/null
+fi
+
 # --- init-скрипт автонастройки -------------------------------------------
 if grep -q "pejir-extroot setup" "$AUTOINIT"; then
 	ok "init-скрипт вызывает pejir-extroot setup"
 else
 	fail "init-скрипт не вызывает pejir-extroot setup"
+fi
+if grep -q "pejir-extroot check" "$AUTOINIT"; then
+	ok "init-скрипт проверяет, что раздел extroot из fstab реально есть"
+else
+	fail "init-скрипт не проверяет раздел extroot (флешка заменена - extroot молча не заработает)"
 fi
 if grep -q "homed-zigbee" "$AUTOINIT"; then
 	ok "init-скрипт проверяет установку HOMEd"

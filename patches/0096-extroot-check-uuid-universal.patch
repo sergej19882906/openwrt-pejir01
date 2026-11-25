@@ -1,0 +1,211 @@
+From 63eb054a5c6353df7c7162cb6e393fc37c6ff166 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 04:41:39 GMT
+Subject: =?utf-8?b?cGVqaXItZXh0cm9vdDog0L/RgNC+0LLQtdGA0Y/RgtGMLCDRh9GC0L4g0YDQsNC3?=
+ =?utf-8?b?0LTQtdC7IGV4dHJvb3Qg0LjQtyBmc3RhYiDRgNC10LDQu9GM0L3QviDQtdGB0YLR?=
+ =?utf-8?b?jCAo0YPQvdC40LLQtdGA0YHQsNC70YzQvdC+0YHRgtGMKQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+УНИВЕРСАЛЬНОСТЬ ПРОШИВКИ: UUID разделов не зашит в образ.
+
+Проверено по распакованному rootfs: в образе НЕТ файла /etc/config/fstab
+(и нет /etc/pejir/at-port) - все идентификаторы устройств определяются в
+runtime, поэтому один и тот же образ ставится на любой роутер и любую
+флешку: UUID берётся из "block info" на месте и записывается в fstab
+при первой настройке.
+
+Но была дыра в САМОЙ автонастройке: pejir-autosetup считал extroot
+настроенным по факту наличия секции "target '/overlay'" в fstab и НЕ
+проверял, что раздел с указанным UUID существует. Сценарии, где это
+ломается:
+  * флешку заменили (другая флешка - другой UUID) - extroot молча не
+    работает: система грузится на внутренней памяти, swap выключен, а
+    автонастройка радостно сообщает "extroot уже настроен";
+  * настройки перенесли с другого роутера - тот же случай.
+
+Исправление:
+  * в pejir-extroot появилась команда "check" - есть ли раздел extroot
+    из fstab (код возврата 0 - есть). UUID берётся из секции mount с
+    target '/overlay' и сверяется с подключёнными разделами;
+  * pejir-autosetup при старте вызывает "pejir-extroot check":
+      - раздел на месте - всё как раньше (дописывается секция swap);
+      - раздела нет, флешки тоже нет - сообщает "работаем на внутренней
+        памяти" и ничего не трогает (флешка может быть временно снята);
+      - раздела нет, флешка есть - считается, что флешку заменили:
+        extroot перенастраивается, в fstab пишется UUID ТЕКУЩЕГО
+        раздела;
+  * секция swap, записанная старой версией (только путём к разделу),
+    переписывается с UUID - иначе swap отвалится после перенумерации.
+
+Закреплено тестом tests/test-autosetup.sh: проверяются check с совпадающим
+UUID, с чужим UUID и без секции extroot, а также перезапись старой
+секции swap. До правки тест падал с четырьмя ошибками.
+
+diff --git a/package/pejir-autosetup/files/pejir-autosetup.init b/package/pejir-autosetup/files/pejir-autosetup.init
+index 7f738db..6021f6d 100644
+--- a/package/pejir-autosetup/files/pejir-autosetup.init
++++ b/package/pejir-autosetup/files/pejir-autosetup.init
+@@ -33,12 +33,6 @@ extroot_configured() {
+ 	return 0
+ }
+ 
+-# Есть ли в fstab секция swap
+-swap_configured() {
+-	[ -f /etc/config/fstab ] || return 1
+-	grep -q "config swap" /etc/config/fstab
+-}
+-
+ usb_present() {
+ 	ls /dev/sd[a-z]* >/dev/null 2>&1 || return 1
+ 	for d in /dev/sd[a-z]*; do
+@@ -76,15 +70,28 @@ do_extroot() {
+ 	fi
+ 
+ 	if extroot_configured; then
+-		log "extroot уже настроен."
+-		# swap мог остаться неактивированным - дописываем отдельно,
+-		# полный setup здесь запускать нельзя: он переносит overlay,
+-		# а при уже перенесённом это копирование каталога в самого себя.
+-		if ! swap_configured; then
+-			log "секции swap в fstab нет - добавляю."
++		# Раздел extroot из fstab может отсутствовать: флешку заменили
++		# (UUID в fstab остался от старой) или перенесли настройки с
++		# другого роутера. Тогда extroot молча не работает - система
++		# грузится на внутренней памяти, swap выключен. Поэтому
++		# проверяем, что раздел с этим UUID действительно есть.
++		if pejir-extroot check >/dev/null 2>&1; then
++			log "extroot уже настроен, раздел на месте."
++			# swap мог остаться неактивированным (или быть записан
++			# старой версией - только путём к разделу) - дописываем
++			# отдельно. Полный setup здесь запускать нельзя: он
++			# переносит overlay, а при уже перенесённом это
++			# копирование каталога в самого себя.
+ 			pejir-extroot swap >/dev/null 2>&1
++			return 0
+ 		fi
+-		return 0
++
++		if ! usb_present; then
++			log "extroot настроен, но флешки нет - работаем на внутренней памяти."
++			return 1
++		fi
++
++		log "extroot настроен, но раздела с его UUID нет (флешка заменена) - перенастраиваю."
+ 	fi
+ 
+ 	log "extroot не настроен - переносим overlay на флешку."
+diff --git a/package/pejir-extroot/files/pejir-extroot b/package/pejir-extroot/files/pejir-extroot
+index 87e34cf..732e47a 100755
+--- a/package/pejir-extroot/files/pejir-extroot
++++ b/package/pejir-extroot/files/pejir-extroot
+@@ -34,6 +34,7 @@
+ #   pejir-extroot            - показать состояние и подсказки
+ #   pejir-extroot setup      - подготовить флешку и записать fstab
+ #   pejir-extroot status     - только показать состояние
++#   pejir-extroot check      - есть ли раздел extroot из fstab (0 - да)
+ #   pejir-extroot remove     - отключить extroot (вернуться на NAND)
+ 
+ # Путь к fstab можно переопределить переменной окружения - это нужно
+@@ -111,6 +112,19 @@ find_swap_part() {
+ 	return 1
+ }
+ 
++# UUID раздела extroot из fstab (секция mount с target '/overlay').
++#
++# Прошивка универсальна: UUID не зашит в образ, а берётся с флешки при
++# настройке. Эта функция нужна, чтобы ПРОВЕРИТЬ, что раздел из fstab
++# действительно есть: если флешку заменили (или перенесли настройки с
++# другого роутера), UUID в fstab останется от старой флешки, и extroot
++# молча не заработает.
++fstab_uuid() {
++	grep -B10 "option target '/overlay'" "$FSTAB" 2>/dev/null |
++		grep "option uuid" | tail -1 |
++		sed "s/.*option uuid '\(.*\)'.*/\1/"
++}
++
+ show_status() {
+ 	log "Текущий overlay:"
+ 	if mount | grep -q " /overlay "; then
+@@ -305,6 +319,29 @@ do_setup() {
+ 	return 0
+ }
+ 
++# Проверка: есть ли раздел extroot, прописанный в fstab.
++# Код возврата 0 - раздел на месте, 1 - extroot не настроен или раздела
++# нет (флешка заменена / не вставлена).
++do_check() {
++	local uuid d
++
++	uuid="$(fstab_uuid)"
++	if [ -z "$uuid" ]; then
++		log "extroot не настроен: в $FSTAB нет секции с target '/overlay'."
++		return 1
++	fi
++
++	for d in $(usb_parts); do
++		if [ "$(dev_uuid "$d")" = "$uuid" ]; then
++			log "Раздел extroot на месте: $d (UUID $uuid)."
++			return 0
++		fi
++	done
++
++	log "Раздел с UUID $uuid не найден: флешка заменена или не вставлена."
++	return 1
++}
++
+ do_remove() {
+ 	if [ ! -f "$FSTAB" ]; then
+ 		log "fstab не найден, extroot и так не настроен."
+@@ -325,11 +362,6 @@ do_remove() {
+ do_swap() {
+ 	local dev
+ 
+-	if grep -q "config swap" "$FSTAB" 2>/dev/null; then
+-		log "Секция swap в $FSTAB уже есть."
+-		return 0
+-	fi
+-
+ 	dev="$(find_swap_part || true)"
+ 	swapuuid=""
+ 
+@@ -340,6 +372,19 @@ do_swap() {
+ 
+ 	swapuuid="$(dev_uuid "$dev")"
+ 
++	# Секция swap может быть записана старой версией - только путём к
++	# разделу. Такой путь перестаёт работать после перенумерации
++	# (sda2 -> sdb2), поэтому переписываем секцию с UUID.
++	if grep -q "config swap" "$FSTAB" 2>/dev/null; then
++		if grep -A6 "config swap" "$FSTAB" 2>/dev/null | grep -q "option uuid"; then
++			log "Секция swap в $FSTAB уже есть (с UUID)."
++			return 0
++		fi
++		log "Секция swap записана без UUID - переписываю (раздел мог перенумероваться)."
++		sed '/^[[:space:]]*config[[:space:]]*swap/,$d' "$FSTAB" > "$FSTAB.tmp" &&
++			mv "$FSTAB.tmp" "$FSTAB"
++	fi
++
+ 	{
+ 		echo ""
+ 		echo "config swap"
+@@ -355,16 +400,17 @@ do_swap() {
+ case "${1:-}" in
+ 	setup)   do_setup ;;
+ 	status)  show_status ;;
++	check)   do_check ;;
+ 	swap)    do_swap ;;
+ 	remove)  do_remove ;;
+ 	"")
+ 		show_status
+ 		log ""
+-		log "Команды: setup | status | swap | remove"
++		log "Команды: setup | status | check | swap | remove"
+ 		;;
+ 	*)
+ 		err "Неизвестная команда: $1"
+-		echo "Команды: setup | status | swap | remove" >&2
++		echo "Команды: setup | status | check | swap | remove" >&2
+ 		exit 1
+ 		;;
+ esac
