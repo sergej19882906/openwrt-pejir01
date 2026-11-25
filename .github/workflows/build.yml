@@ -138,6 +138,7 @@ jobs:
           sh tests/test-modem-family.sh
           sh tests/test-upgrade-purge.sh
           sh tests/test-zigbee-ncp.sh
+          sh tests/test-improvements.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый

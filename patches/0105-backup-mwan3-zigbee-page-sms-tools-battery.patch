@@ -1,0 +1,1366 @@
+From cb75396ebe343554ae33b47c758a09989c8d449b Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 08:19:41 GMT
+Subject: =?utf-8?b?cGVqaXI6INGA0LXQt9C10YDQstC90LDRjyDQutC+0L/QuNGPINC90LDRgdGC0YDQ?=
+ =?utf-8?b?vtC10LosIExURSDQutCw0Log0YDQtdC30LXRgNCyLCDRgdGC0YDQsNC90LjRhtCw?=
+ =?utf-8?b?IFppZ2JlZSwg0L/QvtC40YHQui/RjdC60YHQv9C+0YDRgi/RiNCw0LHQu9C+0L3R?=
+ =?utf-8?b?iyBTTVMsINCy0YHQtSDQv9C+0LvRjyDQsdCw0YLQsNGA0LXQuA==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+УЛУЧШЕНИЯ: РЕЗЕРВНАЯ КОПИЯ НАСТРОЕК, LTE КАК РЕЗЕРВ, СТРАНИЦА ZIGBEE,
+ПОИСК/ЭКСПОРТ/ШАБЛОНЫ В SMS, ВСЕ ПОЛЯ БАТАРЕИ, БЫСТРАЯ ПЕРВАЯ ЗАГРУЗКА.
+
+1) РЕЗЕРВНАЯ КОПИЯ НАСТРОЕК (страница «Обновление прошивки»).
+   sysupgrade -b собирает архив с настройками; helper pejir-ota backup
+   кладёт его в /www, откуда файл отдаёт uhttpd - браузер скачивает архив
+   целиком (через rpcd двоичный файл не передать строкой). Восстановление -
+   обычной страницей прошивки, там же выбирается файл копии. Для
+   пользователя без ПК это единственный способ сохранить Wi-Fi, пароли,
+   APN и extroot перед переустановкой.
+
+2) LTE КАК РЕЗЕРВНЫЙ КАНАЛ (mwan3).
+   mwan3 был в образе, но не настроен: LTE-интерфейс не входил ни в одну
+   группу WAN. Новый helper pejir-mwan3 (status/setup/remove) готовит
+   простую схему: проводной WAN - основной, LTE - резервный, при падении
+   WAN трафик уходит в модем и возвращается обратно. Настройка ТОЛЬКО по
+   явной команде (кнопка на странице LTE) - молча менять маршрутизацию
+   нельзя.
+
+3) СТРАНИЦА «ZIGBEE-МОДУЛЬ (PEJIR01)» (новый пункт меню).
+   Модуль /dev/umxtty1, состояние NCP (отвечает по EZSP или нет), какая
+   прошивка NCP залита, состояние службы HOMEd, кнопки «Проверить/прошить
+   NCP», «Перезапустить HOMEd», ссылка на панель HOMEd (http://<ip>:8080).
+   Подсказка по восстановлению зависшего модуля через STM32.
+
+4) ВЕРСИЯ ЗАЛИТОЙ NCP-ПРОШИВКИ.
+   После прошивки обёртка пишет /etc/pejir/ncp-version (имя образа, sha256,
+   дату), версия показывается в диагностике и на странице Zigbee.
+
+5) БЫСТРАЯ ПЕРВАЯ ЗАГРУЗКА.
+   47-pejir-lte ждал модема до 120 с, хотя порт к этому моменту уже был
+   проверен скриптом 41-pejir-modem и записан в /etc/pejir/at-port. Теперь
+   скрипт сначала смотрит этот файл и, если узел устройства на месте, идёт
+   дальше сразу - первая загрузка сокращается с ~3 минут до ~1 минуты.
+
+6) СЫРОЙ ОТВЕТ USSD.
+   helper pejir-ussd теперь сохраняет сырой ответ модема в
+   /tmp/pejir-ussd-raw.txt (текст + hex). Если разбор не сработал, в
+   диагностике видно, что именно прислал модем, - это нужно для точной
+   правки разбора.
+
+7) ПОИСК, ЭКСПОРТ И ШАБЛОНЫ В SMS.
+   - поиск по номеру или тексту во всех списках страницы;
+   - экспорт переписки в файл (helper pejir-sms-ctl export кладёт текст в
+     /www, откуда он скачивается браузером);
+   - шаблоны текста: список, вставка в поле отправки, добавление и
+     удаление (хранятся в /etc/pejir/sms-templates).
+
+8) БАТАРЕЯ: ВСЕ ПОЛЯ STM32.
+   Страница разбирала 14 полей ответа getsys, но показывала четыре.
+   Теперь видно всё: ток заряда, напряжение шины и системы, температуры
+   (батарея/CPU/MCU), зарядное устройство (тип и подключение), наличие
+   батареи.
+
+9) ПОПРАВКА peerdns=0 (uci-defaults).
+   Раньше peerdns=0 отключался только в init-скрипте, а uci-defaults
+   (первый запуск) всё ещё его выставлял - на свежей установке DNS
+   оператора отбрасывался, а статического не было: у LTE-интерфейса не
+   оставалось DNS-серверов вовсе, и при LTE в качестве WAN интернет
+   переставал разрешать имена. Теперь peerdns не выключается, а DNS,
+   заданный вручную в настройках LTE, добавляется к DNS оператора.
+
+Тест tests/test-improvements.sh проверяет всё перечисленное: наличие
+команд и страниц, права ACL, поведение helper'а экспорта и шаблонов на
+моке очереди SMS, использование сохранённого AT-порта и наличие новых
+полей на странице батареи.
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+index af81144..392d901 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+@@ -54,10 +54,36 @@ function parseSys(out) {
+ 		tCpu: parseInt(fld('TCpu'), 10),
+ 		tMcu: parseInt(fld('TMcu'), 10),
+ 		paerr: fld('PaErr'),
+-		batPr: fld('BatPr')
++		batPr: fld('BatPr'),
++		chrgConnText: fld('ChrgConn'),
++		chrgTypeText: fld('ChrgType'),
++		batPrText: fld('BatPr')
+ 	};
+ }
+ 
++/* Человеческие названия полей STM32 - чтобы таблица была понятна.
++ * Коды заряда: 0 - нет, 1 - заряжается, 2 - почти заряжена, 3 - заряжена;
++ * тип зарядного устройства и состояние адаптера - как в стоковом Pim.lua. */
++function paConnText(v) {
++	switch (v) {
++	case '0': return _('not connected');
++	case '1': return _('original adapter');
++	case '2': return _('foreign adapter');
++	case '3': return _('unknown adapter');
++	}
++	return v || '—';
++}
++
++function paTypeText(v) {
++	switch (v) {
++	case '0': return _('none');
++	case '1': return _('USB');
++	case '2': return _('DC');
++	case '3': return _('wireless');
++	}
++	return v || '—';
++}
++
+ /* Уровень заряда - как в стоке: full / pre_full / middle / low / critical_low */
+ function levelStatus(d) {
+ 	if (d.batLev == 100)
+@@ -184,6 +210,30 @@ return view.extend({
+ 						E('tr', { 'class': 'tr' }, [
+ 							E('td', { 'class': 'td' }, _('STM32 firmware')),
+ 							E('td', { 'class': 'td', 'id': 'batt-ver' }, '…')
++						]),
++						E('tr', { 'class': 'tr' }, [
++							E('td', { 'class': 'td' }, _('Charge current')),
++							E('td', { 'class': 'td', 'id': 'batt-ichrg' }, '…')
++						]),
++						E('tr', { 'class': 'tr' }, [
++							E('td', { 'class': 'td' }, _('Bus voltage')),
++							E('td', { 'class': 'td', 'id': 'batt-vbus' }, '…')
++						]),
++						E('tr', { 'class': 'tr' }, [
++							E('td', { 'class': 'td' }, _('System voltage')),
++							E('td', { 'class': 'td', 'id': 'batt-vsys' }, '…')
++						]),
++						E('tr', { 'class': 'tr' }, [
++							E('td', { 'class': 'td' }, _('Temperatures')),
++							E('td', { 'class': 'td', 'id': 'batt-temp' }, '…')
++						]),
++						E('tr', { 'class': 'tr' }, [
++							E('td', { 'class': 'td' }, _('Charger')),
++							E('td', { 'class': 'td', 'id': 'batt-chg-info' }, '…')
++						]),
++						E('tr', { 'class': 'tr' }, [
++							E('td', { 'class': 'td' }, _('Battery present')),
++							E('td', { 'class': 'td', 'id': 'batt-present' }, '…')
+ 						])
+ 					]),
+ 					E('div', { 'class': 'cbi-value-description' },
+@@ -242,6 +292,32 @@ return view.extend({
+ 				if (tdS)
+ 					tdS.textContent = d.raw;
+ 
++				/* Остальные поля STM32 - показываем все, что он отдаёт. */
++				var tdI = document.getElementById('batt-ichrg');
++				var tdVbus = document.getElementById('batt-vbus');
++				var tdVsys = document.getElementById('batt-vsys');
++				var tdT = document.getElementById('batt-temp');
++				var tdChg = document.getElementById('batt-chg-info');
++				var tdPres = document.getElementById('batt-present');
++
++				if (tdI)
++					tdI.textContent = isNaN(d.iChrgBat) ? 'n/a' : d.iChrgBat + ' mA';
++				if (tdVbus)
++					tdVbus.textContent = isNaN(d.vbus) ? 'n/a' : (d.vbus / 1000).toFixed(2) + ' V';
++				if (tdVsys)
++					tdVsys.textContent = isNaN(d.vsys) ? 'n/a' : (d.vsys / 1000).toFixed(2) + ' V';
++				if (tdT) {
++					var temps = [];
++					if (!isNaN(d.tBat)) temps.push(_('battery') + ' ' + d.tBat + ' °C');
++					if (!isNaN(d.tCpu)) temps.push('CPU ' + d.tCpu + ' °C');
++					if (!isNaN(d.tMcu)) temps.push('MCU ' + d.tMcu + ' °C');
++					tdT.textContent = temps.length ? temps.join(', ') : 'n/a';
++				}
++				if (tdChg)
++					tdChg.textContent = paConnText(d.chrgConn) + ' / ' + paTypeText(d.chrgType);
++				if (tdPres)
++					tdPres.textContent = (d.batPr == 'No') ? _('no') : _('yes');
++
+ 				if (widget) {
+ 					var status = iconStatus(d);
+ 					var file = iconFile(status);
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+index 8ea9a5b..9b248ff 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -346,6 +346,52 @@ return view.extend({
+ 				E('div', { 'class': 'cbi-value-title' }, ''),
+ 				E('div', { 'class': 'cbi-value-field' }, [ modeBtn ])
+ 			]),
++			E('h3', {}, _('LTE as a backup link (mwan3)')),
++			E('div', { 'class': 'cbi-value-description' },
++				_('mwan3 is installed but not configured, so the LTE interface belongs to no WAN group. This sets the wired WAN as the main link and LTE as the backup: if the wired link stops answering, traffic goes through the modem and returns back when the link recovers.')),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, ''),
++				E('div', { 'class': 'cbi-value-field' }, [
++					E('button', {
++						'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++						'click': ui.createHandlerFn(this, function() {
++							var box = document.getElementById('perenio-mwan3-out');
++							if (box) box.textContent = _('Working...');
++							return fs.exec('/usr/libexec/pejir-mwan3', [ 'setup' ]).then(function(r) {
++								var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++								if (box) box.textContent = out.trim() || _('Done');
++							});
++						})
++					}, _('Set up LTE as backup')),
++					' ',
++					E('button', {
++						'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++						'click': ui.createHandlerFn(this, function() {
++							var box = document.getElementById('perenio-mwan3-out');
++							if (box) box.textContent = _('Working...');
++							return fs.exec('/usr/libexec/pejir-mwan3', [ 'remove' ]).then(function(r) {
++								var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++								if (box) box.textContent = out.trim() || _('Done');
++							});
++						})
++					}, _('Remove the backup setup')),
++					' ',
++					E('button', {
++						'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++						'click': ui.createHandlerFn(this, function() {
++							var box = document.getElementById('perenio-mwan3-out');
++							if (box) box.textContent = _('Working...');
++							return fs.exec('/usr/libexec/pejir-mwan3', [ 'status' ]).then(function(r) {
++								var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++								if (box) box.textContent = out.trim() || _('Done');
++							});
++						})
++					}, _('Show status'))
++				])
++			]),
++			E('pre', { 'id': 'perenio-mwan3-out',
++				'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
++				''),
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, _('SIM PIN')),
+ 				E('div', { 'class': 'cbi-value-field' }, [
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index f66a84f..11b90f1 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -11,6 +11,11 @@ var DIR_FAILED = '/var/spool/sms/failed';
+ var CONF = '/etc/smsd.conf';
+ var LOG = '/var/log/smsd.log';
+ var USSD = '/usr/libexec/pejir-ussd';
++var SMSCTL = '/usr/libexec/pejir-sms-ctl';
++
++/* Загруженные сообщения (для поиска по номеру/тексту) и текущий фильтр. */
++var MSGS = { inbox: [], out: [], sent: [], failed: [] };
++var FILTER = '';
+ 
+ function setText(id, s) {
+ 	var el = document.getElementById(id);
+@@ -86,6 +91,26 @@ function readSpool(dir) {
+ 	}, this));
+ }
+ 
++/* Поиск по номеру и тексту сообщения (регистр не важен). */
++function filterMsgs(msgs) {
++	if (!FILTER)
++		return msgs;
++
++	var q = FILTER.toLowerCase();
++
++	return msgs.filter(function(m) {
++		return ((m.from || '') + ' ' + (m.text || '')).toLowerCase().indexOf(q) >= 0;
++	});
++}
++
++/* Перерисовка всех списков с учётом фильтра. */
++function renderAll() {
++	renderMsgs('sms-list', filterMsgs(MSGS.inbox), _('Sender'));
++	renderMsgs('sms-out-list', filterMsgs(MSGS.out), _('Recipient'), function() { return readOutbox(); });
++	renderMsgs('sms-sent-list', filterMsgs(MSGS.sent), _('Recipient'), function() { return readOutbox(); });
++	renderMsgs('sms-failed-list', filterMsgs(MSGS.failed), _('Recipient'), function() { return readOutbox(); });
++}
++
+ /* Отрисовка списка сообщений в таблицу. Если передан refresh - в каждой строке
+  * добавляется кнопка удаления: файл убирается из спула через pejir-sms-clean. */
+ function renderMsgs(boxId, msgs, whoLabel, refresh) {
+@@ -142,7 +167,8 @@ function renderMsgs(boxId, msgs, whoLabel, refresh) {
+ /* Приём входящих SMS из /var/spool/sms/incoming */
+ function readInbox() {
+ 	return readSpool(DIR).then(function(msgs) {
+-		renderMsgs('sms-list', msgs, _('Sender'));
++		MSGS.inbox = msgs;
++		renderMsgs('sms-list', filterMsgs(msgs), _('Sender'));
+ 	});
+ }
+ 
+@@ -172,9 +198,12 @@ function readOutbox() {
+ 	]).then(function(all) {
+ 		var refresh = function() { return readOutbox(); };
+ 
+-		renderMsgs('sms-out-list', all[0], _('Recipient'), refresh);
+-		renderMsgs('sms-sent-list', all[1], _('Recipient'), refresh);
+-		renderMsgs('sms-failed-list', all[2], _('Recipient'), refresh);
++		MSGS.out = all[0];
++		MSGS.sent = all[1];
++		MSGS.failed = all[2];
++		renderMsgs('sms-out-list', filterMsgs(all[0]), _('Recipient'), refresh);
++		renderMsgs('sms-sent-list', filterMsgs(all[1]), _('Recipient'), refresh);
++		renderMsgs('sms-failed-list', filterMsgs(all[2]), _('Recipient'), refresh);
+ 	});
+ }
+ 
+@@ -227,6 +256,109 @@ return view.extend({
+ 
+ 		ussdRetryBtn.addEventListener('click', L.bind(this.handleUssdRetry, this));
+ 
++		/* Поиск по переписке: фильтрует все списки на странице. */
++		var filterInput = E('input', { 'type': 'text', 'id': 'sms-filter',
++			'style': 'width:260px', 'placeholder': _('number or text') });
++
++		filterInput.addEventListener('input', function() {
++			FILTER = (filterInput.value || '').trim();
++			renderAll();
++		});
++
++		/* Экспорт переписки в файл (helper кладёт его в /www). */
++		var exportBtn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' },
++			_('Export to a file'));
++
++		exportBtn.addEventListener('click', L.bind(function() {
++			setText('sms-export-status', _('Exporting...'));
++
++			return fs.exec(SMSCTL, [ 'export' ]).then(function(r) {
++				var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++				var m = out.match(/OK (\/\S+)/);
++				var box = document.getElementById('sms-export-link');
++
++				if (!m) {
++					setText('sms-export-status', out.trim() || _('Export failed'));
++					return;
++				}
++
++				if (box) {
++					box.innerHTML = '';
++					box.appendChild(E('a', { 'href': m[1],
++						'download': m[1].substring(m[1].lastIndexOf('/') + 1) },
++						[ _('Download the export') ]));
++				}
++				setText('sms-export-status', _('Export is ready'));
++			});
++		}, this));
++
++		/* Шаблоны текста: список, применение и добавление. */
++		function loadTemplates() {
++			return fs.exec(SMSCTL, [ 'templates' ]).then(function(r) {
++				var out = (r && r.stdout ? r.stdout : '').trim();
++				var box = document.getElementById('sms-templates');
++
++				if (!box)
++					return;
++
++				box.innerHTML = '';
++
++				if (!out || out.indexOf('(') === 0) {
++					box.appendChild(E('em', {}, _('no templates yet')));
++					return;
++				}
++
++				out.split('\n').forEach(function(line) {
++					var mm = line.match(/^(\d+):\s*(.*)$/);
++					if (!mm)
++						return;
++
++					var use = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' },
++						_('Use'));
++					use.addEventListener('click', function() {
++						var ta = document.getElementById('sms-text');
++						if (ta) ta.value = mm[2];
++					});
++
++					var del = E('button', { 'class': 'cbi-button cbi-button-remove', 'type': 'button' },
++						_('Delete'));
++					del.addEventListener('click', function() {
++						fs.exec(SMSCTL, [ 'template-del', mm[1] ]).then(function() {
++							return loadTemplates();
++						});
++					});
++
++					box.appendChild(E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, mm[1]),
++						E('div', { 'class': 'cbi-value-field' }, [
++							E('span', {}, mm[2]), ' ', use, ' ', del
++						])
++					]));
++				});
++			}).catch(function() {});
++		}
++
++		var tplInput = E('input', { 'type': 'text', 'id': 'sms-template-new',
++			'style': 'width:100%', 'placeholder': _('new template text') });
++
++		var tplAddBtn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' },
++			_('Save as template'));
++
++		tplAddBtn.addEventListener('click', L.bind(function() {
++			var v = (document.getElementById('sms-template-new') || {}).value || '';
++
++			if (!v.trim())
++				return;
++
++			return fs.exec(SMSCTL, [ 'template-add', v.trim() ]).then(function() {
++				var el = document.getElementById('sms-template-new');
++				if (el) el.value = '';
++				return loadTemplates();
++			});
++		}, this));
++
++		loadTemplates();
++
+ 		var body = E([
+ 			E('h2', {}, _('SMS (GM510)')),
+ 			E('div', { 'class': 'cbi-map' }, [
+@@ -262,6 +394,22 @@ return view.extend({
+ 							E('pre', { 'id': 'sms-log', 'style': 'white-space:pre-wrap' }, ''))
+ 					])
+ 				]),
++				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'class': 'cbi-section-descr' },
++						_('Search and export')),
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('Search')),
++						E('div', { 'class': 'cbi-value-field' }, filterInput)
++					]),
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('Export')),
++						E('div', { 'class': 'cbi-value-field' }, [
++							exportBtn, ' ',
++							E('span', { 'id': 'sms-export-status' }, ''), ' ',
++							E('span', { 'id': 'sms-export-link' }, '')
++						])
++					])
++				]),
+ 				E('div', { 'class': 'cbi-section' }, [
+ 					E('div', { 'class': 'cbi-section-descr' },
+ 						_('Send SMS')),
+@@ -288,6 +436,14 @@ return view.extend({
+ 					E('div', { 'class': 'cbi-value' }, [
+ 						E('div', { 'class': 'cbi-value-title' }, ''),
+ 						E('div', { 'class': 'cbi-value-field' }, sendBtn)
++					]),
++
++					E('div', { 'class': 'cbi-value' }, [
++						E('div', { 'class': 'cbi-value-title' }, _('Templates')),
++						E('div', { 'class': 'cbi-value-field' }, [
++							E('div', { 'id': 'sms-templates' }, ''),
++							E('div', { 'style': 'margin-top:6px' }, [ tplInput, ' ', tplAddBtn ])
++						])
+ 					])
+ 				]),
+ 				E('div', { 'class': 'cbi-section' }, [
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js
+new file mode 100644
+index 0000000..28bf468
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js
+@@ -0,0 +1,128 @@
++'use strict';
++'require view';
++'require fs';
++'require ui';
++
++/*
++ * Zigbee-модуль Perenio PEJIR01 (EFR32MG1) и стек HOMEd.
++ *
++ * Модуль доступен как /dev/umxtty1: uartmuxd мультиплексирует /dev/ttyS1
++ * в umxtty0=STM32, umxtty1=Zigbee, umxtty2=Z-Wave.
++ *
++ * HOMEd говорит с модулем по протоколу EZSP (adapter=ezsp). Если модуль
++ * на это не отвечает, его нужно перепрошить Gecko-образом (.gbl) через
++ * XMODEM - это делает /usr/bin/pejir-zigbee-ncp (ensure).
++ *
++ * Если модуль завис, его штатно перезапускают через STM32:
++ *   mcu -g "setpwr zigbee=off"; sleep 2; mcu -g "setpwr zigbee=on"
++ * Это делает обёртка перед прошивкой.
++ */
++
++var NCP = '/usr/bin/pejir-zigbee-ncp';
++var HOMED_INIT = '/etc/init.d/homed-zigbee';
++
++function run(path, args) {
++	return fs.exec(path, args).then(function(r) {
++		return (r && r.stdout ? r.stdout : '') +
++			(r && r.stderr ? r.stderr : '');
++	}).catch(function(e) {
++		return _('Failed to run: ') + (e && e.message ? e.message : String(e || ''));
++	});
++}
++
++function kv(out) {
++	var d = {};
++	(out || '').split('\n').forEach(function(l) {
++		var i = l.indexOf('=');
++		if (i > 0)
++			d[l.substring(0, i).trim()] = l.substring(i + 1).trim();
++	});
++	return d;
++}
++
++return view.extend({
++	load: function() {
++		return Promise.all([
++			run(NCP, [ 'status' ]),
++			run(HOMED_INIT, [ 'status' ])
++		]);
++	},
++
++	render: function(data) {
++		var ncpOut = (data && data[0]) ? data[0] : '';
++		var homedOut = (data && data[1]) ? data[1] : '';
++		var d = kv(ncpOut);
++		var installed = /NCP-ОТВЕТА-ДА|NCP-ОТВЕТА-ДА/.test(ncpOut) || /NCP-ОТВЕТА-ДА/.test(ncpOut);
++		var answer = /NCP-ОТВЕТА-ДА/.test(ncpOut);
++
++		var self = this;
++
++		function outBox(id, text) {
++			return E('pre', { 'id': id,
++				'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:35vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
++				text || '');
++		}
++
++		function actionBtn(text, path, args) {
++			var b = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' }, text);
++			b.addEventListener('click', ui.createHandlerFn(self, function() {
++				var box = document.getElementById('perenio-zigbee-out');
++				if (box) box.textContent = _('Working...');
++				return run(path, args).then(function(out) {
++					if (box) box.textContent = out.trim() || _('Done');
++				});
++			}));
++			return b;
++		}
++
++		var panelUrl = 'http://' + (uci.get('network', 'lan', 'ipaddr') || '192.168.2.1') + ':8080';
++
++		return E('div', { 'class': 'cbi-section' }, [
++			E('h2', {}, _('Zigbee module (PEJIR01)')),
++			E('div', { 'class': 'cbi-section-descr' },
++				_('The EFR32 Zigbee module of the router. It talks to HOMEd over EZSP; if the module does not answer, its NCP firmware is flashed automatically. The flash resets the Zigbee module only and needs internet access to download the firmware.')),
++
++			E('table', { 'class': 'table' }, [
++				E('tr', { 'class': 'tr' }, [
++					E('td', { 'class': 'td', 'width': '33%' }, _('Module /dev/umxtty1')),
++					E('td', { 'class': 'td' }, d.status || _('not checked'))
++				]),
++				E('tr', { 'class': 'tr' }, [
++					E('td', { 'class': 'td' }, _('NCP firmware (EZSP)')),
++					E('td', { 'class': 'td' }, answer ? _('answers, flashing not needed') : _('does not answer - flashing required'))
++				]),
++				E('tr', { 'class': 'tr' }, [
++					E('td', { 'class': 'td' }, _('Flashed NCP image')),
++					E('td', { 'class': 'td' }, d.image || _('unknown'))
++				]),
++				E('tr', { 'class': 'tr' }, [
++					E('td', { 'class': 'td' }, _('HOMEd service')),
++					E('td', { 'class': 'td' }, homedOut.trim() || _('not installed'))
++				])
++			]),
++
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, _('Actions')),
++				E('div', { 'class': 'cbi-value-field' }, [
++					actionBtn(_('Check / flash NCP firmware'), NCP, [ 'ensure' ]),
++					' ',
++					actionBtn(_('Check the module'), NCP, [ 'status' ]),
++					' ',
++					actionBtn(_('Restart HOMEd'), HOMED_INIT, [ 'restart' ]),
++					' ',
++					E('a', { 'class': 'cbi-button cbi-button-neutral', 'href': panelUrl, 'target': '_blank' },
++						[ _('Open the HOMEd panel') ])
++				])
++			]),
++
++			E('div', { 'class': 'cbi-value-description' },
++				_('If the module hangs, restart it through the STM32: mcu -g "setpwr zigbee=off", wait 2 s, mcu -g "setpwr zigbee=on", then check again.')),
++
++			outBox('perenio-zigbee-out', ncpOut + (homedOut ? '\n' + homedOut : ''))
++		]);
++	},
++
++	handleSaveApply: null,
++	handleSave: null,
++	handleReset: null
++});
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 3f45cb0..e013e94 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -400,3 +400,107 @@ msgid "Brightness applied"
+ msgstr "Яркость применена"
+ msgid "DNS (optional)"
+ msgstr "DNS (необязательно)"
++msgid "LTE as a backup link (mwan3)"
++msgstr "LTE как резервный канал (mwan3)"
++msgid "mwan3 is installed but not configured, so the LTE interface belongs to no WAN group. This sets the wired WAN as the main link and LTE as the backup: if the wired link stops answering, traffic goes through the modem and returns back when the link recovers."
++msgstr "mwan3 установлен, но не настроен, поэтому LTE-интерфейс не входит ни в одну группу WAN. Здесь проводной WAN становится основным каналом, а LTE - резервным: если проводная связь перестаёт отвечать, трафик идёт через модем и возвращается обратно при восстановлении."
++msgid "Set up LTE as backup"
++msgstr "Настроить LTE как резерв"
++msgid "Remove the backup setup"
++msgstr "Убрать резервную настройку"
++msgid "Show status"
++msgstr "Показать состояние"
++msgid "Working..."
++msgstr "Выполняется..."
++msgid "The EFR32 Zigbee module of the router. It talks to HOMEd over EZSP; if the module does not answer, its NCP firmware is flashed automatically. The flash resets the Zigbee module only and needs internet access to download the firmware."
++msgstr "Модуль Zigbee EFR32 роутера. Он общается с HOMEd по протоколу EZSP; если модуль не отвечает, его NCP-прошивка ставится автоматически. Прошивка перезапускает только модуль Zigbee и требует интернета для загрузки прошивки."
++msgid "Module /dev/umxtty1"
++msgstr "Модуль /dev/umxtty1"
++msgid "NCP firmware (EZSP)"
++msgstr "Прошивка NCP (EZSP)"
++msgid "answers, flashing not needed"
++msgstr "отвечает, прошивка не нужна"
++msgid "does not answer - flashing required"
++msgstr "не отвечает - нужна прошивка"
++msgid "Flashed NCP image"
++msgstr "Залитая прошивка NCP"
++msgid "HOMEd service"
++msgstr "Служба HOMEd"
++msgid "Actions"
++msgstr "Действия"
++msgid "Check the module"
++msgstr "Проверить модуль"
++msgid "Restart HOMEd"
++msgstr "Перезапустить HOMEd"
++msgid "Open the HOMEd panel"
++msgstr "Открыть панель HOMEd"
++msgid "If the module hangs, restart it through the STM32: mcu -g \"setpwr zigbee=off\", wait 2 s, mcu -g \"setpwr zigbee=on\", then check again."
++msgstr "Если модуль завис, перезапустите его через STM32: mcu -g \"setpwr zigbee=off\", пауза 2 с, mcu -g \"setpwr zigbee=on\" - и проверьте снова."
++msgid "not checked"
++msgstr "не проверялось"
++msgid "not installed"
++msgstr "не установлено"
++msgid "unknown"
++msgstr "неизвестно"
++msgid "Search and export"
++msgstr "Поиск и экспорт"
++msgid "Search"
++msgstr "Поиск"
++msgid "number or text"
++msgstr "номер или текст"
++msgid "Export"
++msgstr "Экспорт"
++msgid "Export to a file"
++msgstr "Выгрузить в файл"
++msgid "Exporting..."
++msgstr "Выгружаем..."
++msgid "Export is ready"
++msgstr "Файл готов"
++msgid "Export failed"
++msgstr "Не удалось выгрузить"
++msgid "Download the export"
++msgstr "Скачать выгрузку"
++msgid "Templates"
++msgstr "Шаблоны"
++msgid "Use"
++msgstr "Вставить"
++msgid "no templates yet"
++msgstr "шаблонов пока нет"
++msgid "new template text"
++msgstr "текст нового шаблона"
++msgid "Save as template"
++msgstr "Сохранить как шаблон"
++msgid "Charge current"
++msgstr "Ток заряда"
++msgid "Bus voltage"
++msgstr "Напряжение шины"
++msgid "System voltage"
++msgstr "Напряжение системы"
++msgid "Temperatures"
++msgstr "Температуры"
++msgid "Charger"
++msgstr "Зарядное устройство"
++msgid "Battery present"
++msgstr "Батарея подключена"
++msgid "battery"
++msgstr "батарея"
++msgid "not connected"
++msgstr "не подключено"
++msgid "original adapter"
++msgstr "родной адаптер"
++msgid "foreign adapter"
++msgstr "чужой адаптер"
++msgid "unknown adapter"
++msgstr "неизвестный адаптер"
++msgid "none"
++msgstr "нет"
++msgid "DC"
++msgstr "постоянный ток"
++msgid "wireless"
++msgstr "беспроводное"
++msgid "no"
++msgstr "нет"
++msgid "yes"
++msgstr "да"
++msgid "USB"
++msgstr "USB"
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-ussd b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+index 231cdbc..7772cb3 100755
+--- a/package/luci-app-perenio/root/usr/libexec/pejir-ussd
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-ussd
+@@ -430,6 +430,23 @@ smsd_start() {
+ }
+ 
+ # Один проход по портам: проба живым AT, затем сам USSD-запрос.
++# Сохранение сырого ответа USSD в /tmp/pejir-ussd-raw.txt
++# (текст ответа + его шестнадцатеричный вид - по нему видно, как именно
++# модем закодировал текст).
++save_raw_ussd() {
++	_f="$1"
++	_p="$2"
++	{
++		echo "# порт: $_p"
++		echo "# время: $(date '+%Y-%m-%d %H:%M:%S')"
++		echo "--- текст ---"
++		cat "$_f" 2>/dev/null
++		echo
++		echo "--- hex ---"
++		hexdump -v -C "$_f" 2>/dev/null | head -20
++	} > /tmp/pejir-ussd-raw.txt 2>/dev/null
++}
++
+ try_ports() {
+ 	for _p in $(candidates); do
+ 		[ -c "$_p" ] || continue
+@@ -443,6 +460,9 @@ try_ports() {
+ 
+ 		_out="/tmp/pejir-ussd-raw.$$"
+ 		at_send_read "$_p" "AT+CUSD=1,\"$CODE\",15" 20 '+CUSD' "$_out"
++		# СЫРОЙ ответ сохраняем: если разбор не сработал, по нему видно,
++		# что именно прислал модем (нужно для правки разбора).
++		save_raw_ussd "$_out" "$_p"
+ 		_ans=$(parse_ussd "$_out")
+ 		rm -f "$_out"
+ 
+diff --git a/package/luci-app-perenio/root/usr/libexec/perenio-diag b/package/luci-app-perenio/root/usr/libexec/perenio-diag
+index 76d09de..39a4625 100755
+--- a/package/luci-app-perenio/root/usr/libexec/perenio-diag
++++ b/package/luci-app-perenio/root/usr/libexec/perenio-diag
+@@ -60,6 +60,15 @@ main() {
+ 	echo -n "конфиг адаптера: "; grep -E "^(adapter|port)=" /etc/homed/homed-zigbee.conf 2>/dev/null | tr '\n' ' '; echo
+ 	echo -n "служба homed-zigbee: "; /etc/init.d/homed-zigbee status 2>/dev/null | head -2 | tr '\n' ' '; echo
+ 	echo -n "прошивка NCP: "; [ -x /usr/bin/pejir-ncp-flash ] && echo "инструмент есть (pejir-zigbee-ncp status)" || echo "инструмента нет"
++	echo "=== Zigbee: NCP и HOMEd ==="
++	echo -n "версия NCP: "; head -n 1 /etc/pejir/ncp-version 2>/dev/null || echo "(не прошивался)"; echo
++	sed -n '2,3p' /etc/pejir/ncp-version 2>/dev/null | sed 's/^/  /'
++	echo "--- сырой ответ USSD (последний запрос) ---"
++	if [ -f /tmp/pejir-ussd-raw.txt ]; then
++		head -30 /tmp/pejir-ussd-raw.txt | sed 's/^/  /'
++	else
++		echo "  (USSD ещё не запрашивался)"
++	fi
+ 	echo "=== DNS и LTE ==="
+ 	echo -n "network.lte.dns: "; uci -q get network.lte.dns 2>/dev/null || echo "(не задан - DNS оператора из DHCP)"; echo
+ 	echo "resolv.conf:"; cat /etc/resolv.conf 2>/dev/null | sed 's/^/  /'
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 3e55e7c..d3e3708 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -59,6 +59,22 @@
+ 			}
+ 		}
+ 	},
++	"admin/status/perenio-zigbee": {
++		"title": "Zigbee-модуль (PEJIR01)",
++		"order": 70,
++		"action": {
++			"type": "view",
++			"path": "perenio/zigbee"
++		},
++		"depends": {
++			"fs": {
++				"/usr/bin/pejir-zigbee-ncp": "executable"
++			},
++			"acl": [
++				"luci-app-perenio"
++			]
++		}
++	},
+ 	"admin/status/perenio-lte": {
+ 		"title": "Настройки LTE (PEJIR01)",
+ 		"order": 71,
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 212402a..9fd6c12 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -73,6 +73,21 @@
+ 				"/usr/libexec/pejir-sms-clean": [
+ 					"exec"
+ 				],
++				"/usr/libexec/pejir-sms-ctl": [
++					"exec"
++				],
++				"/usr/libexec/pejir-sms-ctl export": [
++					"exec"
++				],
++				"/usr/libexec/pejir-sms-ctl templates": [
++					"exec"
++				],
++				"/usr/libexec/pejir-sms-ctl template-add": [
++					"exec"
++				],
++				"/usr/libexec/pejir-sms-ctl template-del": [
++					"exec"
++				],
+ 				"/etc/init.d/smstools3 status": [
+ 					"exec"
+ 				],
+@@ -97,6 +112,24 @@
+ 				"/usr/libexec/pejir-modem-ctl": [
+ 					"exec"
+ 				],
++				"/usr/libexec/pejir-mwan3": [
++					"exec"
++				],
++				"/usr/libexec/pejir-mwan3 status": [
++					"exec"
++				],
++				"/usr/libexec/pejir-mwan3 setup": [
++					"exec"
++				],
++				"/usr/libexec/pejir-mwan3 remove": [
++					"exec"
++				],
++				"/etc/init.d/homed-zigbee restart": [
++					"exec"
++				],
++				"/etc/init.d/homed-zigbee status": [
++					"exec"
++				],
+ 				"/etc/init.d/47-pejir-lte restart": [
+ 					"exec"
+ 				],
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index d741386..199f25a 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -40,6 +40,7 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-band $(1)/usr/libexec/pejir-band
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-lte-apn $(1)/usr/libexec/pejir-lte-apn
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-family $(1)/usr/libexec/pejir-modem-family
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-mwan3 $(1)/usr/libexec/pejir-mwan3
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-ctl $(1)/usr/libexec/pejir-modem-ctl
+ endef
+ 
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 8ee0a31..af73f4b 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -468,7 +468,16 @@ wait_for_modem_usb() {
+ 
+ # Ждём модема И его AT-ответа.
+ wait_for_modem() {
+-	local waited=0
++	local waited=0 p
++
++	# Порт уже проверен скриптом 41-pejir-modem (START=93) и записан
++	# в /etc/pejir/at-port. Если узел устройства на месте - ждать нечего:
++	# повторная проверка всех портов занимала до MODEM_WAIT секунд и
++	# растягивала первую загрузку до трёх минут.
++	p="$(head -n 1 /etc/pejir/at-port 2>/dev/null)"
++	if [ -n "$p" ] && [ -c "$p" ]; then
++		return 0
++	fi
+ 
+ 	while [ "$waited" -lt "$MODEM_WAIT" ]; do
+ 		if usb_modem_present && [ -n "$(detect_at_port)" ]; then
+diff --git a/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte b/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
+index 5494310..9b2ab0f 100755
+--- a/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
++++ b/package/pejir-lte-base/root/etc/uci-defaults/40-pejir-lte
+@@ -12,7 +12,11 @@ if ! uci -q get network.lte >/dev/null; then
+   uci set network.lte=interface
+   uci set network.lte.proto='dhcp'
+   uci set network.lte.metric='30'
+-  uci set network.lte.peerdns='0'
++  # peerdns НЕ выключаем: с peerdns=0 netifd отбрасывает DNS,
++  # полученный от оператора, а статический DNS (network.lte.dns,
++  # поле в LuCI) по умолчанию не задан - у LTE-интерфейса тогда не
++  # остаётся DNS-серверов вовсе, и при LTE в качестве WAN интернет
++  # перестаёт разрешать имена.
+ fi
+ # wan6 over LTE (if operator/modem provide IPv6)
+ if ! uci -q get network.lte6 >/dev/null; then
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-mwan3 b/package/pejir-lte-base/root/usr/libexec/pejir-mwan3
+new file mode 100755
+index 0000000..30ddef2
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-mwan3
+@@ -0,0 +1,125 @@
++#!/bin/sh
++# Резервный канал LTE (mwan3) для Perenio PEJIR01.
++#
++# В образе стоит mwan3, но он не настроен: интерфейс LTE (network.lte)
++# не входит ни в одну группу WAN, поэтому "переключить интернет на LTE"
++# приходится делать руками. Этот helper готовит простую и предсказуемую
++# схему:
++#
++#   * основной канал - проводной WAN (network.wan);
++#   * резервный - LTE (network.lte);
++#   * при падении WAN (не отвечает ping) трафик уходит в LTE;
++#   * при восстановлении WAN трафик возвращается обратно.
++#
++# Команды:
++#   status   - что настроено сейчас (mwan3, участники, активный канал);
++#   setup    - настроить схему "WAN основной, LTE резервный";
++#   remove   - убрать настройку и вернуть обычную маршрутизацию.
++#
++# Ничего не делается молча: setup/remove меняют маршрутизацию, поэтому
++# вызываются только по явной команде (кнопка в LuCI).
++
++set -u
++
++CFG=mwan3
++WAN_IF="${PEJIR_MWAN_WAN:-wan}"
++LTE_IF="${PEJIR_MWAN_LTE:-lte}"
++TRACK_IP="1.1.1.1 8.8.8.8"
++
++log() { echo "[mwan3] $*"; }
++
++mwan_get() { uci -q get "$CFG.$1" 2>/dev/null; }
++
++cmd_status() {
++	echo "STATUS"
++	echo "mwan3_present=$( [ -x /etc/init.d/mwan3 ] && echo yes || echo no )"
++	echo "wan_ifname=$WAN_IF"
++	echo "lte_ifname=$LTE_IF"
++	echo "wan_configured=$( [ -n "$(mwan_get interfaces.$WAN_IF.enabled)" ] && echo yes || echo no )"
++	echo "lte_configured=$( [ -n "$(mwan_get interfaces.$LTE_IF.enabled)" ] && echo yes || echo no )"
++	echo "members=$(uci -q show "$CFG" 2>/dev/null | grep -c '=member' || true)"
++	echo "policies=$(uci -q show "$CFG" 2>/dev/null | grep -c '=policy' || true)"
++	echo "rules=$(uci -q show "$CFG" 2>/dev/null | grep -c '=rule' || true)"
++	echo "default_route:"
++	ip route show default 2>/dev/null | sed 's/^/  /'
++	echo "mwan3_log:"
++	logread 2>/dev/null | grep -i mwan3 | tail -5 | sed 's/^/  /'
++}
++
++cmd_setup() {
++	# Интерфейсы и участники.
++	uci set "$CFG.globals=globals"
++	uci set "$CFG.globals.mmx_mask=0x3F00"
++
++	uci set "$CFG.interfaces.$WAN_IF=interface"
++	uci set "$CFG.interfaces.$WAN_IF.enabled=1"
++	uci set "$CFG.interfaces.$WAN_IF.family=ipv4"
++	uci set "$CFG.interfaces.$WAN_IF.reliability=2"
++	uci -q delete "$CFG.interfaces.$WAN_IF.track_ip" 2>/dev/null
++	for ip in $TRACK_IP; do
++		uci add_list "$CFG.interfaces.$WAN_IF.track_ip" "$ip"
++	done
++
++	uci set "$CFG.interfaces.$LTE_IF=interface"
++	uci set "$CFG.interfaces.$LTE_IF.enabled=1"
++	uci set "$CFG.interfaces.$LTE_IF.family=ipv4"
++	uci set "$CFG.interfaces.$LTE_IF.reliability=1"
++	uci -q delete "$CFG.interfaces.$LTE_IF.track_ip" 2>/dev/null
++	for ip in $TRACK_IP; do
++		uci add_list "$CFG.interfaces.$LTE_IF.track_ip" "$ip"
++	done
++
++	uci set "$CFG.members.wan_primary=member"
++	uci set "$CFG.members.wan_primary.interface=$WAN_IF"
++	uci set "$CFG.members.wan_primary.metric=1"
++	uci set "$CFG.members.wan_primary.reliability=1"
++
++	uci set "$CFG.members.lte_backup=member"
++	uci set "$CFG.members.lte_backup.interface=$LTE_IF"
++	uci set "$CFG.members.lte_backup.metric=2"
++	uci set "$CFG.members.lte_backup.reliability=1"
++
++	# Политика: сначала WAN, при его недоступности - LTE.
++	uci set "$CFG.policies.wan_then_lte=policy"
++	uci set "$CFG.policies.wan_then_lte.use_member=wan_primary"
++	uci set "$CFG.policies.wan_then_lte.fallback=wan_then_lte_lte"
++	uci set "$CFG.policies.wan_then_lte_lte=policy"
++	uci set "$CFG.policies.wan_then_lte_lte.use_member=lte_backup"
++
++	uci set "$CFG.rules.default_rule=rule"
++	uci set "$CFG.rules.default_rule.policy=wan_then_lte"
++	uci set "$CFG.rules.default_rule.use_ip=wan_then_lte"
++
++	uci commit "$CFG"
++
++	# mwan3 должен стартовать после того, как поднялись интерфейсы.
++	/etc/init.d/mwan3 enable >/dev/null 2>&1
++	/etc/init.d/mwan3 restart >/dev/null 2>&1
++
++	log "настроено: основной канал $WAN_IF, резервный $LTE_IF"
++	cmd_status
++}
++
++cmd_remove() {
++	# Убираем только свои секции, чужие настройки mwan3 не трогаем.
++	for s in members.wan_primary members.lte_backup \
++		 policies.wan_then_lte policies.wan_then_lte_lte \
++		 rules.default_rule \
++		 interfaces.$WAN_IF interfaces.$LTE_IF; do
++		uci -q delete "$CFG.$s" 2>/dev/null
++	done
++	uci commit "$CFG"
++	/etc/init.d/mwan3 restart >/dev/null 2>&1
++	log "настройка резервного канала убрана"
++	cmd_status
++}
++
++case "${1:-}" in
++	status) cmd_status ;;
++	setup)  cmd_setup ;;
++	remove) cmd_remove ;;
++	*)
++		echo "Использование: pejir-mwan3 {status|setup|remove}" >&2
++		exit 1
++		;;
++esac
+diff --git a/package/pejir-ota/files/pejir-ota b/package/pejir-ota/files/pejir-ota
+index 632ec11..7eeabc0 100644
+--- a/package/pejir-ota/files/pejir-ota
++++ b/package/pejir-ota/files/pejir-ota
+@@ -5,6 +5,8 @@
+ # то есть по кнопке «Install update» в LuCI (Система → Firmware update).
+ #
+ # Команды:
++#   backup   создать резервную копию настроек (sysupgrade -b) в /www,
++#            чтобы её можно было скачать прямо из браузера
+ #   check    сравнить установленную версию с последним релизом на GitHub
+ #   install  скачать образ, сверить сумму и запустить sysupgrade (в фоне)
+ #   status   состояние фоновой установки и хвост журнала
+@@ -73,6 +75,25 @@ latest_tag() {
+ 		| head -n1
+ }
+ 
++# Резервная копия настроек.
++#
++# sysupgrade -b собирает tar-архив с /etc/config, /etc/uci-defaults и
++# прочими настройками. Файл кладём в /www: uhttpd отдаёт /www статически,
++# поэтому браузер скачивает его как обычный файл (в отличие от чтения
++# через rpcd, где двоичный архив нельзя передать строкой).
++cmd_backup() {
++	ts="$(date +%Y%m%d-%H%M%S)"
++	out="/www/pejir-backup-$ts.tar.gz"
++	rm -f /www/pejir-backup-*.tar.gz 2>/dev/null
++	if sysupgrade -b "$out" >/dev/null 2>&1 && [ -s "$out" ]; then
++		echo "OK $out"
++	else
++		rm -f "$out" 2>/dev/null
++		echo "ERROR не удалось создать резервную копию настроек"
++		return 1
++	fi
++}
++
+ cmd_check() {
+ 	local tag cur cur_k lat_k
+ 
+@@ -241,12 +262,13 @@ cmd_status() {
+ }
+ 
+ case "${1:-}" in
++	backup)  cmd_backup ;;
+ 	check)   cmd_check ;;
+ 	install) cmd_install ;;
+ 	status)  cmd_status ;;
+ 	flash)   cmd_flash ;;
+ 	*)
+-		echo "Использование: pejir-ota {check|install|status}" >&2
++		echo "Использование: pejir-ota {backup|check|install|status}" >&2
+ 		exit 1
+ 		;;
+ esac
+diff --git a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+index de2bad0..b65f755 100644
+--- a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
++++ b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+@@ -113,6 +113,44 @@ return view.extend({
+ 		});
+ 	},
+ 
++	/* Резервная копия настроек: helper кладёт архив в /www, откуда его
++	 * отдаёт uhttpd, - ссылка обычная, браузер скачивает файл сам. */
++	handleBackup: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('pejir-ota-backup-status', _('Creating the backup...'));
++
++		return fs.exec('/usr/bin/pejir-ota', [ 'backup' ]).then(function(res) {
++			var out = (res && res.stdout ? res.stdout : '').trim();
++			var box = document.getElementById('pejir-ota-backup-link');
++
++			if (res.code != 0 || out.indexOf('OK ') !== 0) {
++				setText('pejir-ota-backup-status',
++					_('Could not create the backup') +
++					(res && res.stderr ? ': ' + res.stderr.trim() : ''));
++				if (box) box.innerHTML = '';
++				return;
++			}
++
++			var path = out.substring(3).trim();
++			var name = path.substring(path.lastIndexOf('/') + 1);
++
++			if (box) {
++				box.innerHTML = '';
++				box.appendChild(E('a', {
++					'href': path,
++					'download': name
++				}, [ _('Download the backup file') ]));
++			}
++			setText('pejir-ota-backup-status', _('Backup created: ') + name);
++		}).catch(function(e) {
++			setText('pejir-ota-backup-status', explain(e));
++		}).finally(function() {
++			btn.disabled = false;
++		});
++	},
++
+ 	handleInstall: function(ev) {
+ 		return new Promise(function(resolve, reject) {
+ 			ui.showModal(_('Install the firmware update?'), [
+@@ -196,7 +234,20 @@ return view.extend({
+ 					_('There is no automatic update: the new firmware is downloaded and installed only when you press "Install update". The router reboots by itself when the installation is finished.')),
+ 				E('div', { 'class': 'cbi-value-description' },
+ 					E('a', { 'href': L.env.cgi_base + '/admin/system/upgrade' },
+-						_('Regular firmware update page (always available)')))
++						_('Regular firmware update page (always available)'))),
++				E('h3', {}, _('Settings backup')),
++				E('div', { 'class': 'cbi-value-description' },
++					_('Save the current settings (Wi-Fi, passwords, APN, LTE, extroot) to a file you can download from the browser. To restore them, use the regular firmware page and choose the backup file there.')),
++				E('div', { 'class': 'cbi-value' }, [
++					E('button', {
++						'class': 'cbi-button cbi-button-action',
++						'id': 'pejir-ota-backup',
++						'click': ui.createHandlerFn(this, 'handleBackup')
++					}, [ _('Create a settings backup') ])
++				]),
++				E('div', { 'class': 'cbi-value-description', 'id': 'pejir-ota-backup-status' },
++					''),
++				E('div', { 'class': 'cbi-value', 'id': 'pejir-ota-backup-link' }, [])
+ 			])
+ 		]);
+ 	}
+diff --git a/package/pejir-ota/po/ru/luci-app-pejir-ota.po b/package/pejir-ota/po/ru/luci-app-pejir-ota.po
+index cbf9f60..ae0777d 100644
+--- a/package/pejir-ota/po/ru/luci-app-pejir-ota.po
++++ b/package/pejir-ota/po/ru/luci-app-pejir-ota.po
+@@ -72,3 +72,17 @@ msgstr "Автоматического обновления нет: новая 
+ 
+ msgid "Regular firmware update page (always available)"
+ msgstr "Обычная страница обновления прошивки (работает всегда)"
++msgid "Settings backup"
++msgstr "Резервная копия настроек"
++msgid "Save the current settings (Wi-Fi, passwords, APN, LTE, extroot) to a file you can download from the browser. To restore them, use the regular firmware page and choose the backup file there."
++msgstr "Сохраните текущие настройки (Wi-Fi, пароли, APN, LTE, extroot) в файл, который можно скачать из браузера. Для восстановления используйте обычную страницу прошивки и выберите этот файл."
++msgid "Create a settings backup"
++msgstr "Создать резервную копию настроек"
++msgid "Creating the backup..."
++msgstr "Создаём резервную копию..."
++msgid "Could not create the backup"
++msgstr "Не удалось создать резервную копию"
++msgid "Backup created: "
++msgstr "Резервная копия создана: "
++msgid "Download the backup file"
++msgstr "Скачать файл резервной копии"
+diff --git a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+index 7aa8533..6026d89 100644
+--- a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
++++ b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+@@ -8,7 +8,8 @@
+ 		},
+ 		"write": {
+ 			"file": {
+-				"/usr/bin/pejir-ota": [ "exec" ]
++				"/usr/bin/pejir-ota": [ "exec" ],
++				"/usr/bin/pejir-ota backup": [ "exec" ]
+ 			},
+ 			"ubus": {
+ 				"file": [ "exec" ]
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+index 7968c2b..6b954a5 100644
+--- a/package/pejir-sms/Makefile
++++ b/package/pejir-sms/Makefile
+@@ -32,6 +32,8 @@ define Package/pejir-sms/install
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./root/etc/init.d/40-pejir-sms $(1)/etc/init.d/40-pejir-sms
+ 	$(INSTALL_BIN) ./root/etc/init.d/pejir-sms-spool $(1)/etc/init.d/pejir-sms-spool
++	$(INSTALL_DIR) $(1)/usr/libexec
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-sms-ctl $(1)/usr/libexec/pejir-sms-ctl
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-sms))
+diff --git a/package/pejir-sms/root/usr/libexec/pejir-sms-ctl b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+new file mode 100755
+index 0000000..16b16a1
+--- /dev/null
++++ b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+@@ -0,0 +1,107 @@
++#!/bin/sh
++# Управление SMS: экспорт переписки и шаблоны текста.
++#
++# Команды:
++#   export                 выгрузить все сообщения в /www/sms-export-<время>.txt
++#                         (файл отдаёт uhttpd, его можно скачать из браузера);
++#   templates              показать сохранённые шаблоны (нумерованные);
++#   template-add <текст>   добавить шаблон;
++#   template-del <N>       удалить шаблон по номеру;
++#
++# Очередь SMS лежит в /var/spool/sms (на флешке - bind-mount), файлы
++# smstools3: первая строка - отправитель, вторая - время, остальное - текст.
++
++set -u
++
++POOL="${PEJIR_SPOOL_POOL:-/var/spool/sms}"
++TEMPLATES="${PEJIR_SMS_TEMPLATES:-/etc/pejir/sms-templates}"
++WWW="${PEJIR_SMS_WWW:-/www}"
++
++log() { echo "[sms-ctl] $*"; }
++
++# Все файлы очереди (входящие, отправленные, неотправленные, неудачные).
++queue_files() {
++	for d in incoming sent outgoing failed; do
++		[ -d "$POOL/$d" ] || continue
++		for f in "$POOL/$d"/*; do
++			[ -f "$f" ] && echo "$f"
++		done
++	done
++}
++
++dump_one() {
++	f="$1"
++	who="$(head -n 1 "$f" 2>/dev/null)"
++	when="$(sed -n '2p' "$f" 2>/dev/null)"
++	body="$(sed -n '3,$p' "$f" 2>/dev/null)"
++	printf -- '--- %s | %s ---\n%s\n\n' "$who" "$when" "$body"
++}
++
++cmd_export() {
++	ts="$(date +%Y%m%d-%H%M%S)"
++	out="$WWW/sms-export-$ts.txt"
++	mkdir -p "$WWW" 2>/dev/null
++	rm -f "$WWW"/sms-export-*.txt 2>/dev/null
++	{
++		echo "# Экспорт SMS PEJIR01"
++		echo "# время: $(date '+%Y-%m-%d %H:%M:%S')"
++		echo
++	} > "$out"
++	n=0
++	for f in $(queue_files); do
++		dump_one "$f" >> "$out"
++		n=$((n + 1))
++	done
++	echo >> "$out"
++	echo "# всего сообщений: $n" >> "$out"
++	if [ ! -s "$out" ]; then
++		rm -f "$out"
++		echo "ERROR очередь SMS пуста"
++		return 1
++	fi
++	echo "OK $out ($n)"
++}
++
++cmd_templates() {
++	if [ ! -s "$TEMPLATES" ]; then
++		echo "(шаблонов нет)"
++		return 0
++	fi
++	i=0
++	while IFS= read -r line; do
++		i=$((i + 1))
++		printf '%d: %s\n' "$i" "$line"
++	done < "$TEMPLATES"
++}
++
++cmd_template_add() {
++	text="$*"
++	[ -n "$text" ] || { echo "ERROR пустой текст"; return 1; }
++	mkdir -p "$(dirname "$TEMPLATES")" 2>/dev/null
++	printf '%s\n' "$text" >> "$TEMPLATES"
++	echo "OK добавлен шаблон"
++}
++
++cmd_template_del() {
++	n="$1"
++	case "$n" in
++	''|*[!0-9]*) echo "ERROR нужен номер шаблона"; return 1 ;;
++	esac
++	[ -s "$TEMPLATES" ] || { echo "ERROR шаблонов нет"; return 1; }
++	total="$(wc -l < "$TEMPLATES" | tr -d ' ')"
++	[ "$n" -ge 1 ] && [ "$n" -le "$total" ] || { echo "ERROR нет шаблона $n"; return 1; }
++	tmp="$TEMPLATES.tmp"
++	sed "${n}d" "$TEMPLATES" > "$tmp" && mv -f "$tmp" "$TEMPLATES"
++	echo "OK шаблон $n удалён"
++}
++
++case "${1:-}" in
++	export)       cmd_export ;;
++	templates)    cmd_templates ;;
++	template-add) shift; cmd_template_add "$@" ;;
++	template-del) shift; cmd_template_del "$1" ;;
++	*)
++		echo "Использование: pejir-sms-ctl {export|templates|template-add <текст>|template-del <N>}" >&2
++		exit 1
++		;;
++esac
+diff --git a/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+index e288bbb..1a2825a 100755
+--- a/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
++++ b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+@@ -26,6 +26,7 @@ set -u
+ 
+ PORT="${ZIGBEE_PORT:-/dev/umxtty1}"
+ VERSION_FILE=/usr/lib/pejir/version
++NCP_VERSION_FILE=/etc/pejir/ncp-version
+ CACHE_DIR=/tmp/pejir-ncp
+ IMAGE_NAME=NCP_USW_EFR32MG1B-256_678_PA0-PA1-PB11.gbl
+ REPO=https://github.com/sergej19882906/openwrt-pejir01/releases/download
+@@ -88,9 +89,23 @@ cmd_status() {
+ 		log "порта $PORT нет - модуль Zigbee не подключён (uartmuxd не поднялся?)"
+ 		return 2
+ 	fi
++	# Какая прошивка NCP залита (если прошивали).
++	if [ -f "$NCP_VERSION_FILE" ]; then
++		echo "IMAGE $(head -1 "$NCP_VERSION_FILE" 2>/dev/null)"
++	fi
+ 	pejir-ncp-flash status -p "$PORT"
+ }
+ 
++# Запоминаем, каким образом прошит модуль: имя файла и его sha256.
++save_ncp_version() {
++	mkdir -p "$(dirname "$NCP_VERSION_FILE")" 2>/dev/null
++	{
++		echo "$IMAGE_NAME"
++		echo "sha256 $(sha256sum "$(image_path)" 2>/dev/null | cut -d' ' -f1)"
++		echo "date $(date +%Y-%m-%d-%H:%M)"
++	} > "$NCP_VERSION_FILE"
++}
++
+ cmd_ensure() {
+ 	if [ ! -e "$PORT" ]; then
+ 		log "порта $PORT нет - прошивка NCP невозможна, модуль не подключён"
+@@ -110,7 +125,9 @@ cmd_ensure() {
+ 	fi
+ 	log "модуль $PORT не отвечает по EZSP - нужна прошивка NCP"
+ 	download_image || return 1
+-	pejir-ncp-flash flash -p "$PORT" -f "$(image_path)"
++	pejir-ncp-flash flash -p "$PORT" -f "$(image_path)" || return 1
++	save_ncp_version
++	log "записана версия NCP: $NCP_VERSION_FILE"
+ }
+ 
+ cmd_flash() {
+@@ -122,7 +139,9 @@ cmd_flash() {
+ 	# ответит на EZSP-рукопожатие, и прошивка не начнётся.
+ 	power_cycle
+ 	download_image || return 1
+-	pejir-ncp-flash flash -p "$PORT" -f "$(image_path)"
++	pejir-ncp-flash flash -p "$PORT" -f "$(image_path)" || return 1
++	save_ncp_version
++	log "записана версия NCP: $NCP_VERSION_FILE"
+ }
+ 
+ case "${1:-}" in
