@@ -1,0 +1,405 @@
+From 3aa6497c3b10b2aa16dd43230aca8f86b13fd90b Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 09:20:55 GMT
+Subject: =?utf-8?b?cGVqaXItbHRlOiDRgdGC0L7RgNC+0LYgQVQt0L/QvtGA0YLQsCAtINCy0L7RgdGB?=
+ =?utf-8?b?0YLQsNC90L7QstC70LXQvdC40LUg0LfQsNCy0LjRgdGI0LXQs9C+IFVTQi3RgdC1?=
+ =?utf-8?b?0YDQuNC50L3QvtCz0L4g0LjQvdGC0LXRgNGE0LXQudGB0LA=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+СТОРОЖ AT-ПОРТА: ВОССТАНОВЛЕНИЕ ЗАВИСШЕГО USB-СЕРИАЛЬНОГО ПОРТА.
+
+Проблема. USB-интерфейс модема иногда "залипает": процесс висит в
+состоянии D на порту, модем не отвечает на AT, и LTE, SMS и USSD
+перестают работать до перезагрузки роутера. Для нашего GM510 это
+не теория: модем в наличии, а AT-порт - тот же /dev/ttyUSB2.
+
+Идея взята из практики USB-модемов: интерфейс последовательного порта
+отсоединяется от драйвера (unbind) и подключается обратно (bind).
+Порт оживает, модем при этом НЕ перезагружается, а сетевая часть
+модема (другой USB-интерфейс, eth1) не затрагивается - LTE не рвётся.
+
+Что добавлено:
+
+1) helper /usr/libexec/pejir-at-watch с командами:
+   check   - отвечает ли порт на AT (0 - да, 1 - нет);
+   recover - если порт молчит: перепривязать драйвер, найти порт
+             заново (номер ttyUSB может смениться!), записать его в
+             /etc/pejir/at-port и modeminfo, перезапустить LTE;
+   watch   - бесконечный цикл проверок (раз в 300 с);
+   status  - состояние для диагностики и для кнопки в LuCI.
+
+2) init-скрипт 48-pejir-at-watch (START=95, USE_PROCD=1) - запускает
+   watch. Он стартует после 41-pejir-modem (93) и 47-pejir-lte (94),
+   чтобы первая проверка шла не сразу, а через INTERVAL секунд.
+
+3) Безопасность:
+   * перепривязка только для /dev/ttyUSB* - у /dev/ttyS* и pts
+     "unbind" не существует, такой порт трогать нельзя;
+   * две неудачные проверки подряд (не одна: разовая тишина модема
+     нормальна) - только тогда считаем порт зависшим;
+   * не больше PEJIR_AT_WATCH_MAX (по умолчанию 3) попыток
+     восстановления за одну загрузку - чтобы не уйти в цикл;
+   * пути (файл порта и каталог состояния) переопределяются
+     переменными окружения, чтобы helper проверялся тестом без
+     устройства.
+
+4) Кнопки на странице "Настройки LTE": "Проверить порт" и
+   "Восстановить порт" + вывод состояния. В ACL добавлен грант exec
+   на /usr/libexec/pejir-at-watch.
+
+Тест tests/test-at-watch.sh: наличие и синтаксис, установка в пакет,
+START/USE_PROCD, грант ACL, и ПОВЕДЕНИЕ на псевдо-терминале: живой
+порт -> check возвращает 0, молчащий -> 1; проверки безопасности
+(перепривязка только для USB, ограничение числа попыток).
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+index 9b248ffa..e466b2b2 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -389,6 +389,40 @@ return view.extend({
+ 					}, _('Show status'))
+ 				])
+ 			]),
++			E('h3', {}, _('Modem AT port watchdog')),
++			E('div', { 'class': 'cbi-value-description' },
++				_('If the modem stops answering AT commands, LTE, SMS and USSD stop working until the router is rebooted. The watchdog rebinds the USB serial driver of the modem port and restarts LTE. It runs by itself every few minutes; the buttons below let you check the port and recover it manually.')),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, ''),
++				E('div', { 'class': 'cbi-value-field' }, [
++					E('button', {
++						'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++						'click': ui.createHandlerFn(this, function() {
++							var box = document.getElementById('perenio-atwatch-out');
++							if (box) box.textContent = _('Working...');
++							return fs.exec('/usr/libexec/pejir-at-watch', [ 'status' ]).then(function(r) {
++								var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++								if (box) box.textContent = out.trim() || _('Done');
++							});
++						})
++					}, _('Check the port')),
++					' ',
++					E('button', {
++						'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++						'click': ui.createHandlerFn(this, function() {
++							var box = document.getElementById('perenio-atwatch-out');
++							if (box) box.textContent = _('Working...');
++							return fs.exec('/usr/libexec/pejir-at-watch', [ 'recover' ]).then(function(r) {
++								var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++								if (box) box.textContent = out.trim() || _('Done');
++							});
++						})
++					}, _('Recover the port'))
++				])
++			]),
++			E('pre', { 'id': 'perenio-atwatch-out',
++				'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
++				''),
+ 			E('pre', { 'id': 'perenio-mwan3-out',
+ 				'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
+ 				''),
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index e013e947..28f2f83c 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -404,6 +404,14 @@ msgid "LTE as a backup link (mwan3)"
+ msgstr "LTE как резервный канал (mwan3)"
+ msgid "mwan3 is installed but not configured, so the LTE interface belongs to no WAN group. This sets the wired WAN as the main link and LTE as the backup: if the wired link stops answering, traffic goes through the modem and returns back when the link recovers."
+ msgstr "mwan3 установлен, но не настроен, поэтому LTE-интерфейс не входит ни в одну группу WAN. Здесь проводной WAN становится основным каналом, а LTE - резервным: если проводная связь перестаёт отвечать, трафик идёт через модем и возвращается обратно при восстановлении."
++msgid "Modem AT port watchdog"
++msgstr "Сторож AT-порта модема"
++msgid "If the modem stops answering AT commands, LTE, SMS and USSD stop working until the router is rebooted. The watchdog rebinds the USB serial driver of the modem port and restarts LTE. It runs by itself every few minutes; the buttons below let you check the port and recover it manually."
++msgstr "Если модем перестаёт отвечать на AT-команды, LTE, SMS и USSD не работают до перезагрузки роутера. Сторож перепривязывает USB-драйвер последовательного порта модема и перезапускает LTE. Он работает сам каждые несколько минут, а кнопки ниже позволяют проверить порт и восстановить его вручную."
++msgid "Check the port"
++msgstr "Проверить порт"
++msgid "Recover the port"
++msgstr "Восстановить порт"
+ msgid "Set up LTE as backup"
+ msgstr "Настроить LTE как резерв"
+ msgid "Remove the backup setup"
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 9fd6c12f..9d3a9cc1 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -70,6 +70,9 @@
+ 				"/usr/libexec/pejir-send-sms": [
+ 					"exec"
+ 				],
++				"/usr/libexec/pejir-at-watch": [
++					"exec"
++				],
+ 				"/usr/libexec/pejir-sms-clean": [
+ 					"exec"
+ 				],
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index 199f25a3..f0f27fa3 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -34,12 +34,14 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./root/etc/init.d/41-pejir-modem $(1)/etc/init.d/41-pejir-modem
+ 	$(INSTALL_BIN) ./root/etc/init.d/47-pejir-lte $(1)/etc/init.d/47-pejir-lte
++	$(INSTALL_BIN) ./root/etc/init.d/48-pejir-at-watch $(1)/etc/init.d/48-pejir-at-watch
+ 	$(INSTALL_DIR) $(1)/usr/share/pejir
+ 	$(INSTALL_DATA) ./root/usr/share/pejir/bands.sh $(1)/usr/share/pejir/bands.sh
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-band $(1)/usr/libexec/pejir-band
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-lte-apn $(1)/usr/libexec/pejir-lte-apn
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-family $(1)/usr/libexec/pejir-modem-family
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-at-watch $(1)/usr/libexec/pejir-at-watch
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-mwan3 $(1)/usr/libexec/pejir-mwan3
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-ctl $(1)/usr/libexec/pejir-modem-ctl
+ endef
+diff --git a/package/pejir-lte-base/root/etc/init.d/48-pejir-at-watch b/package/pejir-lte-base/root/etc/init.d/48-pejir-at-watch
+new file mode 100755
+index 00000000..4680bb08
+--- /dev/null
++++ b/package/pejir-lte-base/root/etc/init.d/48-pejir-at-watch
+@@ -0,0 +1,25 @@
++#!/bin/sh /etc/rc.common
++# Сторож AT-порта модема: если модем перестал отвечать, порт
++# перепривязывается (unbind/bind USB-драйвера) и LTE перезапускается.
++# Без этого зависший порт означал перезагрузку роутера.
++#
++# Порядок запуска: 41-pejir-modem (93) инициализирует порт,
++# 47-pejir-lte (94) поднимает связь, а сторож стартует последним (95),
++# чтобы первую проверку он делал не сразу, а через INTERVAL секунд.
++
++START=95
++STOP=0
++USE_PROCD=1
++
++start_service() {
++	procd_open_instance
++	procd_set_param command /usr/libexec/pejir-at-watch watch
++	procd_set_param stdout 1
++	procd_set_param stderr 1
++	procd_set_param respawn 3600 5 5
++	procd_close_instance
++}
++
++stop_service() {
++	return 0
++}
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-at-watch b/package/pejir-lte-base/root/usr/libexec/pejir-at-watch
+new file mode 100755
+index 00000000..a7d56e46
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-at-watch
+@@ -0,0 +1,216 @@
++#!/bin/sh
++# Сторож AT-порта модема.
++#
++# Зачем. USB-интерфейс модема иногда "залипает": процесс висит в
++# состоянии D на порту, модем не отвечает на AT, и LTE/SMS/USSD
++# перестают работать до перезагрузки роутера. На USB это лечится
++# перепривязкой драйвера последовательного порта: интерфейс
++# отсоединяется (unbind) и подключается обратно (bind) - порт
++# оживает, модем при этом не перезагружается и LTE не рвётся
++# (сетевая часть модема - другой USB-интерфейс).
++#
++# Команды:
++#   check   - отвечает ли порт на AT (код 0 - да, 1 - нет);
++#   recover - если порт молчит: перепривязать драйвер, найти порт
++#             заново и перезапустить LTE;
++#   watch   - бесконечный цикл: раз в INTERVAL секунд вызывает recover;
++#   status  - короткое состояние для диагностики.
++#
++# Пороги (можно переопределить переменными окружения):
++#   PEJIR_AT_WATCH_INTERVAL - период проверки, с (по умолчанию 300);
++#   PEJIR_AT_WATCH_FAILS    - сколько неудачных проверок подряд
++#                             считать зависанием (по умолчанию 2);
++#   PEJIR_AT_WATCH_MAX      - сколько попыток восстановления за
++#                             одну загрузку (по умолчанию 3).
++
++# Файл с подтверждённым AT-портом и каталог состояния можно переопределить
++# переменными окружения - так helper проверяется тестом без устройства.
++PORT_FILE="${PEJIR_AT_PORT_FILE:-/etc/pejir/at-port}"
++STATE_DIR="${PEJIR_AT_WATCH_STATE:-/tmp/pejir-at-watch}"
++INTERVAL="${PEJIR_AT_WATCH_INTERVAL:-300}"
++FAILS="${PEJIR_AT_WATCH_FAILS:-2}"
++MAX_TRIES="${PEJIR_AT_WATCH_MAX:-3}"
++
++log() {
++	logger -t pejir-at-watch "$*" 2>/dev/null
++	echo "pejir-at-watch: $*" 2>/dev/null
++}
++
++mkdir -p "$STATE_DIR" 2>/dev/null
++
++# Порт, который мы используем.
++current_port() {
++	[ -f "$PORT_FILE" ] && head -n 1 "$PORT_FILE" 2>/dev/null
++}
++
++# Отвечает ли порт на AT.
++#
++# На GM510 ответ зависит от символа конца строки: на "AT\r" модем
++# отвечает "OK", на "AT\n" - молчит. mdm-at уже шлёт правильный
++# терминатор, поэтому пользуемся им.
++port_alive() {
++	local p="$1"
++
++	[ -n "$p" ] || return 1
++	[ -c "$p" ] || return 1
++	mdm-at "AT" "$p" 2>/dev/null | grep -q "OK"
++}
++
++# USB-интерфейс, которому принадлежит tty-устройство.
++#
++# /sys/class/tty/ttyUSB2/device -> ... -> каталог USB-интерфейса
++# (в нём есть bInterfaceNumber). По нему же находится драйвер.
++usb_interface() {
++	local tty="$1" node level=0
++
++	[ -n "$tty" ] || return 1
++	node="$(readlink -f "/sys/class/tty/${tty##*/}/device" 2>/dev/null)" || return 1
++	[ -n "$node" ] || return 1
++	while [ ! -f "$node/bInterfaceNumber" ] && [ "$level" -lt 4 ]; do
++		node="${node%/*}"
++		level=$((level + 1))
++	done
++	[ -f "$node/bInterfaceNumber" ] || return 1
++	printf '%s\n' "$node"
++}
++
++# Перепривязка драйвера последовательного порта.
++rebind_driver() {
++	local tty="$1" iface driver name
++
++	iface="$(usb_interface "$tty")" || return 1
++	driver="$(readlink -f "$iface/driver" 2>/dev/null)"
++	[ -n "$driver" ] || return 1
++	[ -w "$driver/unbind" ] && [ -w "$driver/bind" ] || return 1
++	name="${iface##*/}"
++
++	log "порт $tty не отвечает - перепривязываю драйвер (${driver##*/}, интерфейс $name)"
++	printf '%s' "$name" > "$driver/unbind" 2>/dev/null || return 1
++	sleep 2
++	printf '%s' "$name" > "$driver/bind" 2>/dev/null || return 1
++	return 0
++}
++
++# Найти AT-порт заново и запомнить его.
++redetect_port() {
++	local p
++
++	p="$(mdm-at --port 2>/dev/null)"
++	[ -n "$p" ] || return 1
++	mkdir -p /etc/pejir 2>/dev/null
++	printf '%s\n' "$p" > "$PORT_FILE" 2>/dev/null
++	uci set modeminfo.modeminfo='modeminfo' 2>/dev/null
++	uci set modeminfo.modeminfo.device="$p" 2>/dev/null
++	uci commit modeminfo 2>/dev/null
++	printf '%s\n' "$p"
++}
++
++cmd_check() {
++	local port
++
++	port="$(current_port)"
++	if [ -z "$port" ]; then
++		port="$(mdm-at --port 2>/dev/null)"
++	fi
++	[ -n "$port" ] || return 1
++	port_alive "$port"
++}
++
++cmd_recover() {
++	local port fails tries
++
++	port="$(current_port)"
++	if [ -z "$port" ]; then
++		port="$(mdm-at --port 2>/dev/null)"
++	fi
++	if [ -z "$port" ]; then
++		log "AT-порт не определён - восстановление не требуется"
++		return 0
++	fi
++
++	if port_alive "$port"; then
++		printf '0' > "$STATE_DIR/fails" 2>/dev/null
++		return 0
++	fi
++
++	# Счётчик неудачных проверок: одна неудача - это ещё не зависание.
++	fails="$(cat "$STATE_DIR/fails" 2>/dev/null)"
++	case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
++	fails=$((fails + 1))
++	printf '%s' "$fails" > "$STATE_DIR/fails" 2>/dev/null
++	[ "$fails" -ge "$FAILS" ] || return 0
++
++	tries="$(cat "$STATE_DIR/tries" 2>/dev/null)"
++	case "$tries" in ''|*[!0-9]*) tries=0 ;; esac
++	if [ "$tries" -ge "$MAX_TRIES" ]; then
++		log "попыток восстановления уже $tries - больше не пробую (нужна перезагрузка)"
++		return 1
++	fi
++
++	# Перепривязка имеет смысл только для USB-портов: у /dev/ttyS*
++	# и pts-драйвера "unbind" не существует.
++	case "$port" in
++	/dev/ttyUSB*) ;;
++	*)
++		log "порт $port не USB-серийный - перепривязка невозможна"
++		return 1
++		;;
++	esac
++
++	tries=$((tries + 1))
++	printf '%s' "$tries" > "$STATE_DIR/tries" 2>/dev/null
++
++	if ! rebind_driver "$port"; then
++		log "не удалось перепривязать драйвер порта $port"
++		return 1
++	fi
++
++	# Порт мог сменить имя (ttyUSB2 -> ttyUSB1): ищем заново.
++	sleep 5
++	newport="$(redetect_port)"
++	if [ -z "$newport" ]; then
++		log "после перепривязки AT-порт не найден - модем, похоже, не проснулся"
++		printf '0' > "$STATE_DIR/fails" 2>/dev/null
++		return 1
++	fi
++	log "порт восстановлен: $port -> $newport, перезапускаю LTE"
++	/etc/init.d/47-pejir-lte restart >/dev/null 2>&1
++	printf '0' > "$STATE_DIR/fails" 2>/dev/null
++	return 0
++}
++
++cmd_watch() {
++	while :; do
++		sleep "$INTERVAL"
++		cmd_recover >/dev/null 2>&1
++	done
++}
++
++cmd_status() {
++	local port fails tries
++
++	port="$(current_port)"
++	fails="$(cat "$STATE_DIR/fails" 2>/dev/null)"
++	tries="$(cat "$STATE_DIR/tries" 2>/dev/null)"
++	case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
++	case "$tries" in ''|*[!0-9]*) tries=0 ;; esac
++	echo "порт=$port"
++	echo "неудачных_проверок=$fails"
++	echo "попыток_восстановления=$tries"
++	if port_alive "$port"; then
++		echo "состояние=отвечает"
++	else
++		echo "состояние=молчит"
++	fi
++}
++
++case "$1" in
++check)   cmd_check ;;
++recover) cmd_recover ;;
++watch)   cmd_watch ;;
++status)  cmd_status ;;
++*)
++	echo "usage: $0 {check|recover|watch|status}" >&2
++	exit 2
++	;;
++esac
