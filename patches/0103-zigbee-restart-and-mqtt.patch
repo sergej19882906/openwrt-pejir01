@@ -1,0 +1,118 @@
+From 84fdaf2a66fea138e7828ff517f119e99a135e80 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 06:47:05 GMT
+Subject: =?utf-8?b?cGVqaXItemlnYmVlLW5jcDog0L/QtdGA0LXQt9Cw0L/Rg9GB0Log0LzQvtC00YPQ?=
+ =?utf-8?b?u9GPINGH0LXRgNC10LcgU1RNMzIg0LggTVFUVC3QsdGA0L7QutC10YAg0LTQu9GP?=
+ =?utf-8?b?IEhPTUVk?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ZIGBEE: ПЕРЕЗАПУСК МОДУЛЯ ЧЕРЕЗ STM32 И MQTT-БРОКЕР ДЛЯ HOMEd.
+
+По фактам из практики (прошивка Zigbee-чипа на Perenio PEJIR01):
+
+  1) ШТАТНЫЙ СПОСОБ ПЕРЕЗАПУСТИТЬ ЗАВИСШИЙ МОДУЛЬ EFR32 - ЧЕРЕЗ STM32:
+         mcu -g "setpwr zigbee=off"; sleep 2; mcu -g "setpwr zigbee=on"
+     Без этого шага прошивка NCP невозможна: зависший модуль не отвечает
+     на EZSP-рукопожатие, и загрузчик не запускается. Поэтому перед
+     прошивкой модуль перезапускается, а если модуль не отвечает по EZSP,
+     выполняется перезапуск и повторная проверка - возможно, прошивка
+     вообще не нужна, модуль просто «заснул».
+
+  2) HOMEd - MQTT-КЛИЕНТ: его конфиг по умолчанию говорит с брокером на
+     localhost:1883, а веб-панель homed-web раздаёт данные через тот же
+     брокер. Без mosquitto панель откроется, но устройств не покажет.
+     Пакеты mosquitto-nossl и mosquitto-client-nossl - из фида OpenWrt
+     (не из фида HOMEd), поэтому ставятся отдельным шагом: их отсутствие
+     не должно ломать установку самого HOMEd.
+
+Конфиг HOMEd не меняем - он совпадает с рабочим конфигом PEJIR01:
+adapter=ezsp, port=/dev/umxtty1, baudrate=115200, panid=0xb7f7,
+channel=11, reset=soft, write=true. PAN ID привязывает уже спаренные
+устройства, его смена отвяжет их.
+
+Закреплено тестом tests/test-zigbee-ncp.sh: наличие перезапуска через
+STM32, его выполнение ДО прошивки, установка mosquitto и значения
+по умолчанию конфига HOMEd.
+
+diff --git a/package/pejir-autosetup/files/zigbee-setup.sh b/package/pejir-autosetup/files/zigbee-setup.sh
+index be18e36..bf140dd 100644
+--- a/package/pejir-autosetup/files/zigbee-setup.sh
++++ b/package/pejir-autosetup/files/zigbee-setup.sh
+@@ -116,6 +116,22 @@ else
+ 	exit 1
+ fi
+ 
++# --- 2a) MQTT-брокер для HOMEd -------------------------------------------
++# HOMEd - MQTT-клиент: его конфиг по умолчанию говорит с брокером на
++# localhost:1883, а веб-панель (homed-web) раздаёт данные через тот же
++# брокер. Без mosquitto панель откроется, но устройств не покажет.
++# Пакеты из фида OpenWrt (не из фида HOMEd), поэтому ставим отдельно:
++# их отсутствие не должно ломать установку самого HOMEd.
++log "ставлю mosquitto (MQTT-брокер для HOMEd)..."
++if apk add mosquitto-nossl mosquitto-client-nossl; then
++	/etc/init.d/mosquitto enable 2>/dev/null
++	/etc/init.d/mosquitto restart 2>/dev/null
++	log "mosquitto установлен и запущен."
++else
++	log "предупреждение: mosquitto не установился - веб-панель HOMEd может быть пустой."
++	log "поставить вручную: apk add mosquitto-nossl mosquitto-client-nossl"
++fi
++
+ # --- 3) конфиг -------------------------------------------------------------
+ # ВАЖНО: конфиг вендора лежит в overlay и переживает OTA. В нём уже
+ # правильные значения (adapter=ezsp, port=/dev/umxtty1, panid и ключ
+diff --git a/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+index ca98e3d..e288bbb 100755
+--- a/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
++++ b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+@@ -65,6 +65,24 @@ download_image() {
+ 	return 0
+ }
+ 
++# Перезапуск модуля Zigbee через STM32.
++#
++# В стоковой прошивке STM32 умеет обесточивать модуль EFR32:
++#   mcu -g "setpwr zigbee=off"; sleep 2; mcu -g "setpwr zigbee=on"
++# Это штатный способ перезапустить зависший модуль перед прошивкой NCP
++# (документированный способ восстановления, если прошивка не удалась).
++power_cycle() {
++	if [ ! -x /usr/bin/mcu ]; then
++		return 1
++	fi
++	log "перезапускаю модуль Zigbee через STM32 (setpwr zigbee=off/on)..."
++	/usr/bin/mcu -g "setpwr zigbee=off" >/dev/null 2>&1
++	sleep 2
++	/usr/bin/mcu -g "setpwr zigbee=on" >/dev/null 2>&1
++	sleep 3
++	return 0
++}
++
+ cmd_status() {
+ 	if [ ! -e "$PORT" ]; then
+ 		log "порта $PORT нет - модуль Zigbee не подключён (uartmuxd не поднялся?)"
+@@ -82,6 +100,14 @@ cmd_ensure() {
+ 		log "модуль $PORT отвечает по EZSP - прошивка NCP не нужна"
+ 		return 0
+ 	fi
++	# Модуль может просто «заснуть» или зависнуть. Штатный способ
++	# перезапустить его - обесточить и включить через STM32.
++	if power_cycle; then
++		if pejir-ncp-flash status -p "$PORT" >/dev/null 2>&1; then
++			log "после перезапуска модуль $PORT отвечает по EZSP - прошивка NCP не нужна"
++			return 0
++		fi
++	fi
+ 	log "модуль $PORT не отвечает по EZSP - нужна прошивка NCP"
+ 	download_image || return 1
+ 	pejir-ncp-flash flash -p "$PORT" -f "$(image_path)"
+@@ -92,6 +118,9 @@ cmd_flash() {
+ 		log "порта $PORT нет - прошивка NCP невозможна, модуль не подключён"
+ 		return 2
+ 	fi
++	# Перед прошивкой модуль лучше перезапустить: зависший модуль не
++	# ответит на EZSP-рукопожатие, и прошивка не начнётся.
++	power_cycle
+ 	download_image || return 1
+ 	pejir-ncp-flash flash -p "$PORT" -f "$(image_path)"
+ }

@@ -202,6 +202,55 @@ else
 	echo "$out" | sed 's/^/     /'
 fi
 
+# --- 5) перезапуск модуля через STM32 --------------------------------------
+# Штатный способ разбудить/перезапустить зависший модуль EFR32:
+#   mcu -g "setpwr zigbee=off"; sleep 2; mcu -g "setpwr zigbee=on"
+# Без него прошивка невозможна, если модуль не отвечает по EZSP.
+WRAP="$OW/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp"
+if [ ! -f "$WRAP" ]; then
+	fail "нет обёртки $WRAP"
+else
+	if grep -q 'setpwr zigbee=off' "$WRAP" && grep -q 'setpwr zigbee=on' "$WRAP"; then
+		ok "обёртка умеет перезапускать модуль через STM32 (setpwr zigbee=off/on)"
+	else
+		fail "обёртка не перезапускает модуль через STM32"
+	fi
+	i_cycle="$(grep -n 'power_cycle' "$WRAP" | head -1 | cut -d: -f1)"
+	i_flash="$(grep -n 'pejir-ncp-flash flash' "$WRAP" | head -1 | cut -d: -f1)"
+	if [ -n "$i_cycle" ] && [ -n "$i_flash" ] && [ "$i_cycle" -lt "$i_flash" ]; then
+		ok "перезапуск модуля выполняется ДО прошивки"
+	else
+		fail "перезапуск модуля не выполняется перед прошивкой"
+	fi
+fi
+
+# --- 6) MQTT-брокер для HOMEd ---------------------------------------------
+# HOMEd - MQTT-клиент (localhost:1883); без брокера веб-панель пустая.
+ZSETUP="$OW/package/pejir-autosetup/files/zigbee-setup.sh"
+if [ ! -f "$ZSETUP" ]; then
+	fail "нет $ZSETUP"
+else
+	if grep -q "mosquitto-nossl" "$ZSETUP"; then
+		ok "установщик HOMEd ставит mosquitto (MQTT-брокер)"
+	else
+		fail "установщик HOMEd не ставит mosquitto - веб-панель будет пустой"
+	fi
+	if grep -q "adapter=ezsp" "$ZSETUP" && grep -q "port=\$PORT" "$ZSETUP"; then
+		ok "конфиг HOMEd: адаптер ezsp и порт из переменной"
+	else
+		fail "конфиг HOMEd: нет adapter=ezsp / port=$PORT"
+	fi
+	# Значения по умолчанию совпадают с рабочим конфигом PEJIR01:
+	# PAN ID привязывает уже спаренные устройства, смена = отвязка.
+	for kv in "ZIGBEE_PANID:-0xb7f7" "ZIGBEE_CHANNEL:-11" "reset=soft" "baudrate=115200"; do
+		if grep -q "$kv" "$ZSETUP"; then
+			ok "в конфиге HOMEd есть $kv"
+		else
+			fail "в конфиге HOMEd нет $kv"
+		fi
+	done
+fi
+
 rm -rf "$WORK"
 
 echo ""
