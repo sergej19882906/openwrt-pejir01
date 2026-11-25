@@ -240,6 +240,63 @@ else
 	fail "пользовательский /etc/config/system удалён"
 fi
 
+# --- 9) общая чистка остатков СТОКА (переход со стоковой прошивки) --------
+#
+# Сток ставил пакеты через opkg, поэтому в верхнем слое лежат их списки
+# файлов (/usr/lib/opkg/info/<pkg>.list). Ни одного такого пакета в нашем
+# образе нет, значит его файлы - мусор. Хуже всего init-скрипты стока:
+# modem (шлёт свои AT-команды и забирает AT-порт), pmwan (управляет тем
+# же LTE-интерфейсом), lxc-*. Удаляем их, но БЕРЕЖЁМ пользовательские
+# настройки (/etc/config/*) - пароль, Wi-Fi и параметры LTE должны
+# пережить переход со стока.
+mkdir -p "$UPPER/etc/init.d" "$UPPER/usr/bin"
+printf '#!/bin/sh\n# стоковый демон модема\n' > "$UPPER/etc/init.d/modem"
+printf '#!/bin/sh\n# стоковый multi-WAN\n' > "$UPPER/etc/init.d/pmwan"
+printf '#!/bin/sh\n# стоковый lxc\n' > "$UPPER/etc/init.d/lxc-autostart"
+printf "config system\n\toption hostname 'OldRouter'\n" > "$UPPER/etc/config/system"
+printf "config interface 'lan'\n" > "$UPPER/etc/config/network"
+
+cat > "$UPPER/usr/lib/opkg/info/modem.list" <<'LISTEOF'
+/etc/init.d/modem
+/usr/bin/stock-modem-tool
+LISTEOF
+cat > "$UPPER/usr/lib/opkg/info/pmwan.list" <<'LISTEOF'
+/etc/init.d/pmwan
+LISTEOF
+cat > "$UPPER/usr/lib/opkg/info/lxc-tools.list" <<'LISTEOF'
+/etc/init.d/lxc-autostart
+LISTEOF
+cat > "$UPPER/usr/lib/opkg/info/base-files.list" <<'LISTEOF'
+/etc/config/network
+/etc/config/system
+LISTEOF
+
+PEJIR_PURGE_UPPER_DIR="$UPPER" \
+PEJIR_PURGE_PKG_DIR="$PKG" \
+PEJIR_PURGE_PKGS="pejir-sms luci-app-perenio pejir-ota" \
+PEJIR_PURGE_STOCK_INFO_DIR="$UPPER/usr/lib/opkg/info" \
+	sh "$PURGE" >/dev/null 2>&1
+
+for f in etc/init.d/modem etc/init.d/pmwan etc/init.d/lxc-autostart; do
+	if [ ! -e "$UPPER/$f" ]; then
+		ok "стоковый $f удалён из верхнего слоя"
+	else
+		fail "стоковый $f остался - будет конфликтовать с нашими скриптами"
+	fi
+done
+
+if [ -f "$UPPER/usr/lib/opkg/info/modem.list" ]; then
+	fail "служебные файлы стокового пакета modem остались"
+else
+	ok "служебные файлы стоковых пакетов удалены (пакеты не выглядят установленными)"
+fi
+
+if [ -f "$UPPER/etc/config/network" ] && [ -f "$UPPER/etc/config/system" ]; then
+	ok "пользовательские настройки (/etc/config/*) пережили чистку стока"
+else
+	fail "пользовательские настройки удалены - этого быть не должно"
+fi
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
 	echo "Все тесты очистки overlay пройдены"

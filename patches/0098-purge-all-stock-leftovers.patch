@@ -1,0 +1,110 @@
+From 228502d60c8870b272b318995d2a0afe9e5f6bb6 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 05:22:47 GMT
+Subject: =?utf-8?b?cGVqaXItb3RhOiDQstGL0YfQuNGJ0LDRgtGMINC+0YHRgtCw0YLQutC4INC70Y7Q?=
+ =?utf-8?b?sdGL0YUg0YHRgtC+0LrQvtCy0YvRhSDQv9Cw0LrQtdGC0L7Qsiwg0LAg0L3QtSDR?=
+ =?utf-8?b?gtC+0LvRjNC60L4gTFhD?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ЧИСТКА ОСТАТКОВ СТОКА ПРИ ПЕРВОЙ УСТАНОВКЕ НАШЕЙ ПРОШИВКИ.
+
+ФАКТ. sysupgrade не пересоздаёт верхний слой overlay (rootfs_data), поэтому
+все файлы СТОКА в /overlay/upper переживают прошивку и перекрывают наш
+образ. Сток ставил пакеты через opkg, значит в верхнем слое лежат списки
+установленных им файлов: /usr/lib/opkg/info/<pkg>.list. Ни одного такого
+пакета в нашем образе нет, значит все его файлы - мусор. Хуже всего
+init-скрипты стока:
+  /etc/init.d/modem  - демон модема стока: шлёт свои AT-команды и забирает
+                       AT-порт (конфликтует с 47-pejir-lte и pejir-ussd);
+  /etc/init.d/pmwan  - менеджер multi-WAN стока: управляет тем же
+                       LTE-интерфейсом, что и мы;
+  /etc/init.d/lxc-*  - установка и запуск LXC-контейнеров, которых в
+                       нашем образе нет;
+  bulkdatad, easycwmpd, mini_snmpd, mas, lighttpd, samba, avahi-daemon,
+  racoon... - лишние демоны стока: на 128 МБ RAM они сами по себе мешают.
+
+Раньше pejir-ovl-purge вычищал только остатки LXC (жёсткий список пакетов).
+Теперь он вычищает остатки ЛЮБЫХ стоковых пакетов по их спискам файлов, но
+пользовательские настройки (/etc/config/*, /etc/uci-defaults/*,
+/etc/sysupgrade.conf) защищает - пароль, Wi-Fi, параметры LTE и заводские
+данные должны пережить переход со стока.
+
+Служебные файлы пакетов (.list/.control/.prerm/...) тоже удаляются, иначе
+пакет выглядит установленным и его init-скрипт может снова появиться.
+
+Чистка идёт перед каждым OTA-обновлением (pejir-ota вызывает
+pejir-ovl-purge), поэтому первый переход со стока чистится автоматически.
+Если прошивка ставится через системное меню LuCI, чистку надо запустить
+вручную: /usr/bin/pejir-ovl-purge.
+
+Закреплено тестом tests/test-ovl-purge.sh: стоковые init-скрипты (modem,
+pmwan, lxc-autostart) удаляются, служебные файлы пакетов - тоже, а
+/etc/config/network и /etc/config/system остаются нетронутыми.
+
+diff --git a/package/pejir-ota/files/pejir-ovl-purge b/package/pejir-ota/files/pejir-ovl-purge
+index 0df6b0b..cf362a4 100755
+--- a/package/pejir-ota/files/pejir-ovl-purge
++++ b/package/pejir-ota/files/pejir-ovl-purge
+@@ -183,5 +183,61 @@ for pkg in $STOCK_PKGS; do
+ 	done
+ done
+ 
++# --- общая чистка остатков СТОКА (переход со стоковой прошивки) ---------
++#
++# ФАКТ: сток ставил пакеты через opkg, поэтому в верхнем слое лежат
++# списки установленных им файлов: /usr/lib/opkg/info/<pkg>.list. Ни
++# одного из этих пакетов в нашем образе нет, значит все их файлы -
++# мусор. Хуже всего то, что среди них init-скрипты СТОКА:
++#
++#   /etc/init.d/modem        - демон модема стока: шлёт свои AT-команды
++#                              и забирает AT-порт (конфликтует с нашим
++#                              47-pejir-lte и pejir-ussd);
++#   /etc/init.d/pmwan        - менеджер multi-WAN стока: управляет тем же
++#                              LTE-интерфейсом, что и мы;
++#   /etc/init.d/lxc-*        - установка и запуск LXC-контейнеров,
++#                              которых в нашем образе нет;
++#   bulkdatad, easycwmpd, mini_snmpd, mas, lighttpd, samba,
++#   avahi-daemon, racoon...  - лишние демоны стока: на 128 МБ RAM они
++#                              сами по себе мешают работать.
++#
++# Удаляем файлы этих пакетов из верхнего слоя, но БЕРЕЖЁМ пользовательские
++# настройки (/etc/config/* и т. п.) - пароль, Wi-Fi, параметры LTE и
++# заводские данные должны пережить переход со стока.
++if [ "${PEJIR_PURGE_STOCK_ALL:-1}" = "1" ] && [ -d "$STOCK_INFO_DIR" ]; then
++	for list in "$STOCK_INFO_DIR"/*.list; do
++		[ -f "$list" ] || continue
++		pkg="$(basename "$list" .list)"
++
++		# Наши пакеты не трогаем (у нас apk, но подстрахуемся).
++		case " $PKGS " in
++		*" $pkg "*) continue ;;
++		esac
++
++		while IFS= read -r rel; do
++			case "$rel" in
++			/*) ;;
++			*) continue ;;
++			esac
++
++			# Пользовательские настройки не удаляем.
++			if is_protected "$rel"; then
++				SKIPPED=$((SKIPPED + 1))
++				continue
++			fi
++
++			if [ -e "$UPPER$rel" ] || [ -L "$UPPER$rel" ]; then
++				rm -f "$UPPER$rel" 2>/dev/null && STOCK_REMOVED=$((STOCK_REMOVED + 1))
++			fi
++		done < "$list"
++
++		# Служебные файлы пакета - тоже, иначе пакет выглядит
++		# установленным (и его init-скрипт может снова появиться).
++		for meta in .list .control .prerm .postinst .conffiles; do
++			rm -f "$STOCK_INFO_DIR/$pkg$meta" 2>/dev/null
++		done
++	done
++fi
++
+ echo "pejir-ovl-purge: удалено протухших копий из верхнего слоя: $REMOVED, защищено: $SKIPPED, остатков стоковых пакетов: $STOCK_REMOVED"
+ exit 0

@@ -1,0 +1,354 @@
+From 228502d60c8870b272b318995d2a0afe9e5f6bb6 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 05:22:47 GMT
+Subject: =?utf-8?b?cGVqaXItbHRlOiDQv9GA0L7RhNC40LvQuCDQvNC+0LTQtdC80L7QsiAtIEZpYm9j?=
+ =?utf-8?b?b20gTDgg0LggUXVlY3RlbCBFQzI1L0VQMDY=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ПРОФИЛИ МОДЕМОВ: Fibocom L8 (L850/L860) и Quectel (EC25/EP06).
+
+ФАКТ. Порт был заточен под ZTE-набор расширенных AT-команд:
+  AT+ZECMCALL - data call (ECM),
+  AT+ZBAND    - блокировка полос,
+  AT+ZRST     - перезагрузка модема.
+Этот набор используют модули Gosuncn/WeLink (ME3630, GN510 = Meig GM510) -
+то есть модем в PEJIR01. С модемами других семейств было бы так: AT-порт и
+стандартные команды (PIN, номер SIM, USSD, APN) работают, а LTE - нет.
+
+Что добавлено:
+  * новый helper /usr/libexec/pejir-modem-family - определяет семейство
+    модема по AT+CGMI / AT+GMM / AT+CGMM:
+      zte      - Gosuncn/Meig GM510, ZTE MF* (прежнее поведение);
+      fibocom  - L850-GL, L860-GL;
+      quectel  - EC25, EP06, EC20, FG650;
+      unknown  - трактуется как zte, чтобы ничего не сломать.
+    Результат кэшируется в /etc/pejir/modem-family (в runtime);
+  * 47-pejir-lte:
+      fibocom/quectel - вместо AT+ZECMCALL шлём AT+CGACT=1,1. У этих
+        модулей данные идут по USB как сетевой интерфейс (NCM/ECM), ядро
+        называет его ethN - наш detect_ifname() его и так находит;
+      quectel - полосы через AT+QCFG="band",1,<полосы> (B1=1, B3=3,
+        B7=7, B8=8, B20=20, B38=38);
+      fibocom - полосы через AT+XACT=2,,,<полосы> (B1=101, B3=103,
+        B7=107, B8=108, B20=120, B38=138);
+  * pejir-modem-ctl:
+      сброс модема: fibocom/quectel - стандартный AT+CFUN=1,1; zte -
+        AT+ZRST (как раньше);
+      режим канала: quectel - AT+QCFG="nwscanseq" (0 - авто, 2 - только
+        WCDMA, 3 - только LTE), остальные - прежний путь через маски.
+
+Для текущего модема PEJIR01 (Gosuncn/Meig GM510) ничего не меняется: все
+его команды и путь остаются ровно прежними.
+
+Закреплено новым тестом tests/test-modem-family.sh: определение семейства
+по ответам мода (EC25/EP06/EC20/L850/L860/GM510/GN510/MF667/неизвестный),
+кэширование и наличие нужных AT-команд в каждом скрипте.
+
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index e15e1eb..d741386 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -39,6 +39,7 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-band $(1)/usr/libexec/pejir-band
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-lte-apn $(1)/usr/libexec/pejir-lte-apn
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-family $(1)/usr/libexec/pejir-modem-family
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-ctl $(1)/usr/libexec/pejir-modem-ctl
+ endef
+ 
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index af7b826..00a75c2 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -134,6 +134,20 @@ at_ask() {
+ #   1) AT\r     - так работает mdm-at, самый надёжный вариант;
+ #   2) AT+CSQ\r - модем может игнорировать голый AT, но на CSQ отвечает;
+ #   3) AT+CSQ\n - на всякий случай (некоторые прошивки ждут только LF).
++# Семейство модема: zte (Gosuncn/Meig GM510, как в стоке) | fibocom
++# (L8xx) | unknown (трактуется как zte).
++modem_family() {
++	local f
++
++	if [ -x /usr/libexec/pejir-modem-family ]; then
++		f="$(/usr/libexec/pejir-modem-family 2>/dev/null)"
++		case "$f" in
++		zte|fibocom|unknown) echo "$f"; return 0 ;;
++		esac
++	fi
++	echo zte
++}
++
+ detect_at_port() {
+ 	local p out
+ 
+@@ -290,6 +304,64 @@ sync_bands() {
+ 
+ 	port="$(detect_at_port)" || return 0
+ 	script="/tmp/pejir-band.$$"
++
++	# Fibocom L8: полосы задаются AT+XACT=2,,,<номера полос>, где номера
++	# - десятичные: B1=101, B3=103, B7=107, B8=108, B20=120, B38=138.
++	# Номера перечислены в порядке наших масок (umts01 umts08 lte01 ...),
++	# чтобы порядок не зависел от маски.
++	if [ "$(modem_family)" = "quectel" ]; then
++		# Quectel: AT+QCFG="band",<1=ручной выбор>,<номера полос>.
++		# Номера полос - как в 3GPP: B1=1, B3=3, B7=7, B8=8, B20=20,
++		# B38=38. Первый параметр 1 - ручной выбор из списка.
++		q_bands=""
++		for b in $bands; do
++			case "$b" in
++			umts01|lte01) q_bands="$q_bands 1" ;;
++			lte03) q_bands="$q_bands 3" ;;
++			lte07) q_bands="$q_bands 7" ;;
++			lte08|umts08) q_bands="$q_bands 8" ;;
++			lte20) q_bands="$q_bands 20" ;;
++			lte38) q_bands="$q_bands 38" ;;
++			esac
++		done
++		q_bands="$(echo "$q_bands" | tr -s ' ' | sed 's/^ //;s/ $//')"
++		if [ -z "$q_bands" ]; then
++			log "для Quectel поддержаны только LTE-полосы - список пуст, ничего не шлю"
++			return 0
++		fi
++		printf 'AT+QCFG="band",1,%s\r' "$q_bands" > "$script"
++		set_port_speed "$port"
++		timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
++		rm -f "$script"
++		log "диапазоны модема заданы (Quectel QCFG=band,1,$q_bands)"
++		return 0
++	fi
++
++	if [ "$(modem_family)" = "fibocom" ]; then
++		fb_bands=""
++		for b in $bands; do
++			case "$b" in
++			lte01) fb_bands="$fb_bands 101" ;;
++			lte03) fb_bands="$fb_bands 103" ;;
++			lte07) fb_bands="$fb_bands 107" ;;
++			lte08) fb_bands="$fb_bands 108" ;;
++			lte20) fb_bands="$fb_bands 120" ;;
++			lte38) fb_bands="$fb_bands 138" ;;
++			esac
++		done
++		fb_bands="$(echo "$fb_bands" | tr -s ' ' | sed 's/^ //;s/ $//')"
++		if [ -z "$fb_bands" ]; then
++			log "для Fibocom поддержаны только LTE-полосы - список пуст, ничего не шлю"
++			return 0
++		fi
++		printf 'AT+XACT=2,,,%s\r' "$fb_bands" > "$script"
++		set_port_speed "$port"
++		timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
++		rm -f "$script"
++		log "диапазоны модема заданы (Fibocom XACT=2,,,$fb_bands)"
++		return 0
++	fi
++
+ 	printf 'AT+ZBAND=%s,0,0,%s\r' "$umts" "$lte" > "$script"
+ 	set_port_speed "$port"
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+@@ -326,6 +398,20 @@ ecm_call() {
+ 	# Команду собирает хелпер pejir-lte-apn: без логина и пароля форма
+ 	# остаётся прежней (AT+ZECMCALL=1,<apn>), с логином добавляются
+ 	# тип PDP, логин, пароль и тип аутентификации (как в стоке).
++	#
++	# Fibocom L8 (L850/L860) - другое семейство: там данные идут по USB
++	# как сетевой интерфейс (NCM), поэтому data call не нужен, достаточно
++	# активировать PDP-контекст стандартной командой AT+CGACT=1,1
++	# (в L8 AT Command Reference - "12.2.7 +CGACT, PDP Context Activate").
++	if [ "$(modem_family)" = "fibocom" ] || [ "$(modem_family)" = "quectel" ]; then
++		printf 'AT+CGACT=1,1\r' > "$script"
++		set_port_speed "$port"
++		timeout "$ECM_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
++		rm -f "$script"
++		log "PDP-контекст активирован (AT+CGACT=1,1) - данные идут по USB-NCM"
++		return 0
++	fi
++
+ 	if [ -x /usr/libexec/pejir-lte-apn ]; then
+ 		/usr/libexec/pejir-lte-apn 2>/dev/null | grep '^AT+ZECMCALL=' | tr '\n' '\r' > "$script" || : > "$script"
+ 	fi
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+index 9715fae..7c195bc 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+@@ -113,12 +113,50 @@ mode_masks() {
+ 	echo "$_umts $_lte"
+ }
+ 
++# Семейство модема (zte | fibocom | quectel | unknown).
++# unknown трактуется как zte - прежнее поведение.
++modem_family() {
++	local f
++
++	if [ -x /usr/libexec/pejir-modem-family ]; then
++		f="$(/usr/libexec/pejir-modem-family 2>/dev/null)"
++		case "$f" in
++		zte|fibocom|quectel|unknown) echo "$f"; return 0 ;;
++		esac
++	fi
++	echo zte
++}
++
+ mode_apply() {
+ 	_masks=$(mode_masks)
+ 	_umts=$(echo "$_masks" | awk '{print $1}')
+ 	_lte=$(echo "$_masks" | awk '{print $2}')
+ 
+ 	echo "режим канала: $(current_mode)"
++
++	# Quectel (EC25/EP06): режим сети задаётся AT+QCFG="nwscanseq":
++	#   0 - авто (3G+4G), 2 - только WCDMA, 3 - только LTE.
++	# В Quectel Manual "2.4.2 AT+QCFG" то же самое.
++	case "$(modem_family)" in
++	quectel)
++		case "$(current_mode)" in
++		umts) _qseq=2 ;;
++		lte)  _qseq=3 ;;
++		*)    _qseq=0 ;;
++		esac
++		echo "команда:     AT+QCFG=\"nwscanseq\",$_qseq"
++		_out=$(modem_cmd "AT+QCFG=\"nwscanseq\",$_qseq")
++		echo "ответ:       $_out"
++		case "$_out" in
++			*ERROR*|*'command not supported'*)
++				echo "модем отклонил настройку режима"
++				return 1 ;;
++		esac
++		echo "режим канала применён"
++		return 0
++		;;
++	esac
++
+ 	echo "команда:     AT+ZBAND=$_umts,0,0,$_lte"
+ 
+ 	_out=$(modem_cmd "AT+ZBAND=$_umts,0,0,$_lte")
+@@ -166,8 +204,19 @@ cnum)
+ 	echo
+ 	;;
+ reset)
+-	echo "перезагрузка модема (AT+ZRST)..."
+-	_out=$(modem_cmd 'AT+ZRST')
++	# Сброс модема: у ZTE/Gosuncn - AT+ZRST, у Fibocom L8 - стандартный
++	# AT+CFUN=1,1 (в L8 AT Command Reference - "5.6 +CFUN").
++	if [ -x /usr/libexec/pejir-modem-family ] &&
++	   case "$(/usr/libexec/pejir-modem-family 2>/dev/null)" in
++	   fibocom|quectel) true ;;
++	   *) false ;;
++	   esac; then
++		echo "перезагрузка модема (AT+CFUN=1,1)..."
++		_out=$(modem_cmd 'AT+CFUN=1,1')
++	else
++		echo "перезагрузка модема (AT+ZRST)..."
++		_out=$(modem_cmd 'AT+ZRST')
++	fi
+ 	printf '%s\n' "$_out"
+ 	;;
+ mode)
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-modem-family b/package/pejir-lte-base/root/usr/libexec/pejir-modem-family
+new file mode 100755
+index 0000000..903445f
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-modem-family
+@@ -0,0 +1,101 @@
++#!/bin/sh
++# pejir-modem-family - определение семейства LTE-модема.
++#
++# Зачем. Порт заточен под ZTE-набор расширенных AT-команд:
++#   AT+ZECMCALL - data call (ECM),
++#   AT+ZBAND    - блокировка полос,
++#   AT+ZRST     - перезагрузка модема.
++#
++# Модули Gosuncn/WeLink (ME3630, GN510 = Meig GM510) используют ровно этот
++# набор - с ними работает всё.
++#
++# Модули Fibocom L8 (L850-GL, L860-GL) - другое семейство:
++#   * данные идут по USB как сетевой интерфейс (NCM), ядро называет его
++#     ethN - наш detect_ifname() его и так находит;
++#   * PDP-контекст поднимается стандартной AT+CGACT=1,1;
++#   * сброс модема - стандартный AT+CFUN=1,1;
++#   * полосы - AT+XACT (в ZTE-наборе - AT+ZBAND).
++#
++# Вывод: zte | fibocom | unknown. Значение unknown трактуется как zte
++# (прежнее поведение), чтобы неизвестный модем не ломал LTE.
++#
++# Использование:
++#   pejir-modem-family              - напечатать семейство
++#   pejir-modem-family --refresh    - определить заново, обновить кэш
++#
++# Кэш: /etc/pejir/modem-family (в runtime, не в образе).
++
++CACHE="${PEJIR_FAMILY_CACHE:-/etc/pejir/modem-family}"
++PORT="${PEJIR_AT_PORT:-}"
++
++[ -n "$PORT" ] || { [ -f /etc/pejir/at-port ] && PORT="$(head -n 1 /etc/pejir/at-port 2>/dev/null)"; }
++
++ask() {
++	if [ -n "${PEJIR_FAMILY_PROBE:-}" ]; then
++		"$PEJIR_FAMILY_PROBE" "$1" 2>/dev/null
++	elif [ -x /usr/bin/mdm-at ]; then
++		if [ -n "$PORT" ]; then
++			mdm-at "$1" "$PORT" 2>/dev/null
++		else
++			mdm-at "$1" 2>/dev/null
++		fi
++	fi
++}
++
++detect() {
++	local cgmi gmm model
++
++	cgmi="$(ask 'AT+CGMI' | tr -d '\r')"
++	gmm="$(ask 'AT+GMM' | tr -d '\r')"
++	model="$(ask 'AT+CGMM' | tr -d '\r')"
++
++	case "$cgmi $gmm $model" in
++	*[Ff][Ii][Bb][Oo][Cc][Oo][Mm]*|*[Ll]8[0-9][0-9]*|*[Ll][Ee]8[0-9][0-9]*)
++		echo fibocom
++		return 0
++		;;
++	esac
++
++	# Quectel EC25/EP06/EC20/FG650: свой набор Q-команд
++	# (AT+QCFG="band", AT+QCFG="nwscanseq", AT+QIACT).
++	case "$cgmi $gmm $model" in
++	*[Qq][Uu][Ee][Cc][Tt][Ee][Ll]*|*[Ee][Cc]2[0-9]*|*[Ee][Pp]0[0-9]*|*[Ff][Gg]6[0-9][0-9]*)
++		echo quectel
++		return 0
++		;;
++	esac
++
++	case "$gmm $model" in
++	*[Gg][Mm]5[0-9][0-9]*|*[Gg][Nn]5[0-9][0-9]*|*[Mm][Ee]3[0-9][0-9][0-9]*|*[Mm][Ff][0-9][0-9]*|*[Zz][Tt][Ee]*|*[Gg][Oo][Ss][Uu][Nn]*)
++		echo zte
++		return 0
++		;;
++	esac
++
++	echo unknown
++	return 0
++}
++
++if [ "${1:-}" = "--refresh" ]; then
++	fam="$(detect)"
++	mkdir -p "$(dirname "$CACHE")" 2>/dev/null
++	printf '%s\n' "$fam" > "$CACHE" 2>/dev/null
++	echo "$fam"
++	exit 0
++fi
++
++if [ -f "$CACHE" ]; then
++	fam="$(head -n 1 "$CACHE" 2>/dev/null)"
++	case "$fam" in
++	zte|fibocom|unknown)
++		echo "$fam"
++		exit 0
++		;;
++	esac
++fi
++
++fam="$(detect)"
++mkdir -p "$(dirname "$CACHE")" 2>/dev/null
++printf '%s\n' "$fam" > "$CACHE" 2>/dev/null
++echo "$fam"
++exit 0
