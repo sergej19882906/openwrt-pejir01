@@ -547,6 +547,23 @@ if [ -n "$SU" ]; then
           fi
         fi
 
+        # Прошивка NCP-прошивки Zigbee-модуля (пакет pejir-zigbee-ncp)
+        # обязана попасть в образ: без неё Zigbee не заработает, если
+        # модуль не отвечает по EZSP. Отсутствие этих файлов - тихий
+        # дефект, поэтому проверяем явно.
+        NCP_MISSING=""
+        for f in usr/bin/pejir-ncp-flash usr/bin/pejir-zigbee-ncp \
+                 usr/share/pejir/zigbee-setup.sh; do
+            echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || NCP_MISSING="$NCP_MISSING $f"
+        done
+        if [ -n "$NCP_MISSING" ]; then
+            ann error "build.sh: Zigbee NCP" "В образе нет файлов прошивки NCP:$NCP_MISSING"
+            echo "ОШИБКА: пакет pejir-zigbee-ncp не попал в образ ($NCP_MISSING)"
+            exit 1
+        else
+            echo "  прошивка NCP (pejir-zigbee-ncp) в образе: OK"
+        fi
+
         # 40-pejir-sms обязан содержать ensure_charset_options(): без него
         # опции кодировки пишутся только после успешного AT-ответа, а
         # модем не отвечает, пока активен LTE-вызов (патч 0083).
