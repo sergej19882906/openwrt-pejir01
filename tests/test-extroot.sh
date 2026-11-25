@@ -38,6 +38,7 @@ info)
         # /dev/sdX1; разбираем только имя устройства
         case "$(basename "$2")" in
         sda1) echo "$2: UUID=\"1111-2222\" LABEL=\"pejir-overlay\" TYPE=\"ext4\"" ;;
+        sda2) echo "$2: UUID=\"5555-6666\" LABEL=\"pejir-swap\" TYPE=\"swap\"" ;;
         sdb1) echo "$2: UUID=\"3333-4444\" LABEL=\"OTHER\" TYPE=\"vfat\"" ;;
         esac
     else
@@ -85,6 +86,7 @@ export PATH="/tmp/extroot-test/bin:$PATH"
 # каталог через DEVDIR.
 mkdir -p /tmp/extroot-test/dev
 : > /tmp/extroot-test/dev/sda1
+: > /tmp/extroot-test/dev/sda2
 : > /tmp/extroot-test/dev/sdb1
 export DEVDIR=/tmp/extroot-test/dev
 export FSTAB_ENV=/tmp/extroot-test/fstab
@@ -150,6 +152,32 @@ if grep -q "delay_root '15'" /tmp/extroot-test/fstab 2>/dev/null; then
 	ok "setup: задан delay_root (USB успевает появиться)"
 else
 	fail "setup: нет delay_root"
+fi
+
+# --- тест 2b: раздел swap подключается по UUID, а не по пути ---------------
+# Раздел может перенумероваться (sda2 -> sdb2), если флешку вставить в
+# другой порт или после перезагрузки USB. fstools сопоставляет секцию
+# "config swap" по UUID/label/device (libfstools/block.c, find_swap), и
+# UUID переживает перенумерацию, а путь - нет. Поэтому в fstab пишем
+# UUID (путь оставляем как запасной вариант - по нему совпадение тоже
+# возможно, если UUID у swap-раздела пуст).
+if grep -q "config swap" /tmp/extroot-test/fstab 2>/dev/null; then
+	ok "setup: есть секция swap"
+else
+	fail "setup: нет секции swap"
+fi
+
+if grep -q "option uuid '5555-6666'" /tmp/extroot-test/fstab 2>/dev/null; then
+	ok "setup: swap подключается по UUID (переживает перенумерацию разделов)"
+else
+	fail "setup: в секции swap нет UUID - раздел перестанет подключаться после перенумерации"
+	cat /tmp/extroot-test/fstab 2>/dev/null
+fi
+
+if grep -A4 "config swap" /tmp/extroot-test/fstab 2>/dev/null | grep -q "option device 'sda2'"; then
+	ok "setup: в секции swap есть и путь к разделу (запасной вариант)"
+else
+	fail "setup: в секции swap нет пути к разделу"
 fi
 
 # --- тест 2a: в fstab нет посторонних строк --------------------------------

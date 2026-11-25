@@ -1,0 +1,80 @@
+From 03b5125dc68f99e70462a91b328a4bb62469daf2 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 04:23:27 GMT
+Subject: =?utf-8?b?cGVqaXItZXh0cm9vdDog0YDQsNC30LTQtdC7IHN3YXAg0L/QvtC00LrQu9GO0YfQ?=
+ =?utf-8?b?sNGC0Ywg0L/QviBVVUlELCDQsCDQvdC1INC/0L4g0L/Rg9GC0Lgg0Log0YDQsNC3?=
+ =?utf-8?b?0LTQtdC70YM=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ФАКТ: секция "config swap" в fstab записывалась ПУТЁМ к разделу
+(option device '/dev/sda2'). Путь перестаёт работать, если раздел
+перенумеруется: например, флешка была вставлена в один порт (sda), а
+потом - в другой (sdb), и раздел swap стал /dev/sdb2. fstools тогда
+не находит раздел для swapon, swap не включается, и это видно только
+по ошибке в журнале.
+
+Проверено по исходникам fstools (project/fstools, libfstools/block.c):
+секция "config swap" сопоставляется с разделом функцией find_swap(),
+которая ищет совпадение ПО UUID, ПО label ИЛИ ПО имени устройства
+(первое попавшее). Имя раздела перенумеровывается, UUID - нет.
+
+Исправление: в секции swap пишем UUID раздела (option uuid), а путь
+оставляем запасным вариантом (сработает, если UUID пуст). То же самое
+в отдельной команде "pejir-extroot swap".
+
+Раздел extroot уже подключается по UUID - эта часть не менялась.
+
+Закреплено тестом tests/test-extroot.sh: в мок block добавлен раздел
+swap, проверяется, что в fstab есть "option uuid" и оставлен путь к
+разделу. До правки тест падал с двумя ошибками.
+
+diff --git a/package/pejir-extroot/files/pejir-extroot b/package/pejir-extroot/files/pejir-extroot
+index 71e8fc9..87e34cf 100755
+--- a/package/pejir-extroot/files/pejir-extroot
++++ b/package/pejir-extroot/files/pejir-extroot
+@@ -227,10 +227,21 @@ do_setup() {
+ 	# line 20"). Из-за этого extroot и swap не включались вообще: fstab
+ 	# отбрасывался целиком. Поэтому log вызывается ПОСЛЕ блока.
+ 	SWAPDEV="$(find_swap_part || true)"
++	SWAPUUID=""
++	if [ -n "$SWAPDEV" ]; then
++		SWAPUUID="$(dev_uuid "$SWAPDEV")"
++	fi
+ 		if [ -n "$SWAPDEV" ]; then
+ 			echo ""
+ 			echo "config swap"
+-			echo "	option device '$SWAPDEV'"
++			# UUID - обязателен: раздел может перенумероваться
++			# (sda2 -> sdb2), если флешку вставить в другой порт.
++			# fstools сопоставляет секцию "config swap" по
++			# UUID/label/device (libfstools/block.c, find_swap), и
++			# только UUID переживает перенумерацию. Путь оставляем
++			# запасным вариантом (сработает, если UUID пуст).
++			[ -n "$SWAPUUID" ] && echo "	option uuid '$SWAPUUID'"
++			echo "	option device '$(basename "$SWAPDEV")'"
+ 			echo "	option enabled '1'"
+ 		fi
+ 	} > "$FSTAB"
+@@ -320,15 +331,20 @@ do_swap() {
+ 	fi
+ 
+ 	dev="$(find_swap_part || true)"
++	swapuuid=""
++
+ 	if [ -z "$dev" ]; then
+ 		log "Раздел swap на USB-накопителе не найден."
+ 		return 1
+ 	fi
+ 
++	swapuuid="$(dev_uuid "$dev")"
++
+ 	{
+ 		echo ""
+ 		echo "config swap"
+-		echo "	option device '$dev'"
++		[ -n "$swapuuid" ] && echo "	option uuid '$swapuuid'"
++		echo "	option device '$(basename "$dev")'"
+ 		echo "	option enabled '1'"
+ 	} >> "$FSTAB"
+ 
