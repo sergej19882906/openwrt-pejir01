@@ -1,0 +1,173 @@
+From 06f78c17d6a13ab61effdb4a24a13a1f2e11a7ec Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 05:49:31 GMT
+Subject: =?utf-8?b?cGVqaXItb3RhOiDRh9C40YHRgtC40YLRjCDQstC10YDRhdC90LjQuSDRgdC70L7Q?=
+ =?utf-8?b?uSDQsNCy0YLQvtC80LDRgtC40YfQtdGB0LrQuCDQv9GA0Lgg0LvRjtCx0L7QvCBz?=
+ =?utf-8?b?eXN1cGdyYWRl?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ЧИСТКА ОСТАТКОВ СТАРОЙ ПРОШИВКИ ПРИ ЛЮБОМ SYSUPGRADE (автоматически).
+
+ФАКТ. Чистка верхнего слоя выполнялась только перед OTA-обновлением через
+нашу страницу (pejir-ota вызывает pejir-ovl-purge). Если прошивка ставится
+через СИСТЕМНОЕ меню LuCI, верхний слой не чистится - и остатки старой
+прошивки (а при переходе со стока - остатки стоковых пакетов) остаются:
+  * /etc/init.d/modem стока забирает AT-порт и шлёт свои AT-команды -
+    конфликтует с 47-pejir-lte и pejir-ussd;
+  * /etc/init.d/pmwan стока управляет тем же LTE-интерфейсом;
+  * lxc-* пытаются поднять контейнеры, которых в образе нет;
+  * плюс лишние демоны стока на 128 МБ RAM.
+
+Теперь чистка выполняется САМА при первой загрузке после любого sysupgrade.
+
+Как это работает:
+  * в образе лежит версия (/usr/lib/pejir/version), в верхнем слое -
+    метка последней чистки (/overlay/pejir/purge-version). Версии разошлись
+    - значит образ новый, и верхний слой надо почистить;
+  * helper /usr/bin/pejir-upgrade-purge сверяет версии, запускает
+    pejir-ovl-purge и записывает новую метку;
+  * init-скрипт 42-pejir-upgrade-purge (START=91) вызывает helper.
+    START=91 - после pejir-sync (START=90, он возвращает в верхний слой
+    свежие файлы пакетов из образа) и ДО скриптов модема (93) и LTE (94);
+  * если ДО чистки в верхнем слое были чужие init-скрипты, значит procd
+    уже запустил их на этой загрузке - удаление файлов их не остановит,
+    поэтому делается ещё один перезапуск (через 20 секунд). Повторных
+    перезагрузок не будет: метка версии не даёт чистить второй раз.
+
+У пользователя после прошивки через любое меню: остатки стока уходят
+сами, лишние демоны стока не запускаются, а при первом переходе со
+стока система сделает один дополнительный перезапуск.
+
+Закреплено новым тестом tests/test-upgrade-purge.sh: чистка выполняется
+при смене версии образа, не выполняется повторно при той же версии,
+остатки чужих init-скриптов удаляются, метка пишется в верхний слой.
+
+diff --git a/package/pejir-ota/Makefile b/package/pejir-ota/Makefile
+index 76d143c..3628175 100644
+--- a/package/pejir-ota/Makefile
++++ b/package/pejir-ota/Makefile
+@@ -38,8 +38,11 @@ define Package/pejir-ota/install
+ 	$(INSTALL_DIR) $(1)/usr/bin
+ 	$(INSTALL_BIN) ./files/pejir-ota $(1)/usr/bin/pejir-ota
+ 	$(INSTALL_BIN) ./files/pejir-ovl-purge $(1)/usr/bin/pejir-ovl-purge
++	$(INSTALL_BIN) ./files/pejir-upgrade-purge $(1)/usr/bin/pejir-upgrade-purge
+ 	$(INSTALL_DIR) $(1)/usr/lib/pejir
+ 	$(INSTALL_DATA) ./files/version $(1)/usr/lib/pejir/version
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/42-pejir-upgrade-purge $(1)/etc/init.d/42-pejir-upgrade-purge
+ 	$(INSTALL_DIR) $(1)/etc/config
+ 	$(INSTALL_CONF) ./root/etc/config/pejir_ota $(1)/etc/config/pejir_ota
+ 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/perenio
+diff --git a/package/pejir-ota/files/pejir-upgrade-purge b/package/pejir-ota/files/pejir-upgrade-purge
+new file mode 100755
+index 0000000..d178412
+--- /dev/null
++++ b/package/pejir-ota/files/pejir-upgrade-purge
+@@ -0,0 +1,66 @@
++#!/bin/sh
++# pejir-upgrade-purge - очистка верхнего слоя overlay после sysupgrade.
++#
++# Зачем. sysupgrade не пересоздаёт верхний слой (rootfs_data), поэтому
++# файлы ПРЕДЫДУЩЕЙ прошивки (а при переходе со стока - файлы стоковых
++# пакетов) переживают обновление и перекрывают новый образ:
++#   * /etc/init.d/modem стока забирает AT-порт и шлёт свои команды;
++#   * /etc/init.d/pmwan стока управляет тем же LTE-интерфейсом;
++#   * lxc-* пытаются поднять контейнеры, которых в образе нет.
++#
++# Раньше чистка выполнялась только перед OTA-обновлением через нашу
++# страницу (pejir-ota вызывает pejir-ovl-purge). Теперь она выполняется
++# САМА при первой загрузке после ЛЮБОГО sysupgrade - в том числе если
++# прошивка ставилась через системное меню LuCI.
++#
++# Как понять, что прошивка обновилась: в образе лежит версия
++# (/usr/lib/pejir/version), а в верхнем слое - метка последней чистки
++# (/overlay/pejir/purge-version). Версии разошлись - значит образ новый.
++#
++# Переменные (для тестов): PEJIR_PURGE_VERSION_FILE, PEJIR_PURGE_MARKER,
++# PEJIR_PURGE_CMD, PEJIR_PURGE_UPPER_DIR.
++
++VERSION_FILE="${PEJIR_PURGE_VERSION_FILE:-/usr/lib/pejir/version}"
++MARKER="${PEJIR_PURGE_MARKER:-/overlay/pejir/purge-version}"
++PURGE_CMD="${PEJIR_PURGE_CMD:-/usr/bin/pejir-ovl-purge}"
++UPPER="${PEJIR_PURGE_UPPER_DIR:-/overlay/upper}"
++
++version="$(cat "$VERSION_FILE" 2>/dev/null | tr -d '\r\n')"
++if [ -z "$version" ]; then
++	echo "pejir-upgrade-purge: нет файла версии $VERSION_FILE - чистка пропущена"
++	exit 0
++fi
++
++last="$(cat "$MARKER" 2>/dev/null | tr -d '\r\n')"
++if [ "$version" = "$last" ]; then
++	echo "pejir-upgrade-purge: чистка для версии $version уже выполнялась"
++	exit 0
++fi
++
++echo "pejir-upgrade-purge: версия образа $version (в верхнем слое: ${last:-нет}) - чищу верхний слой"
++
++# Остались ли чужие init-скрипты в верхнем слое? Проверяем ДО чистки:
++# если они там были, значит procd уже запустил их на этой загрузке -
++# удаление файлов их уже не остановит, нужен ещё один перезапуск.
++stale=""
++for f in etc/init.d/modem etc/init.d/pmwan etc/init.d/lxc-autostart \
++	 etc/init.d/lxc-autoinstall etc/init.d/lxc_cfg_sync; do
++	[ -e "$UPPER/$f" ] && stale="$stale $f"
++done
++
++if [ -x "$PURGE_CMD" ]; then
++	"$PURGE_CMD" 2>&1 | sed 's/^/  /'
++else
++	echo "  pejir-ovl-purge не найден ($PURGE_CMD) - остатки стока могут остаться"
++fi
++
++mkdir -p "$(dirname "$MARKER")" 2>/dev/null
++printf '%s\n' "$version" > "$MARKER" 2>/dev/null
++
++echo "pejir-upgrade-purge: чистка выполнена"
++if [ -n "$stale" ]; then
++	echo "нужна перезагрузка: остались чужие скрипты:$stale"
++else
++	echo "перезагрузка не требуется"
++fi
++exit 0
+diff --git a/package/pejir-ota/root/etc/init.d/42-pejir-upgrade-purge b/package/pejir-ota/root/etc/init.d/42-pejir-upgrade-purge
+new file mode 100755
+index 0000000..661e46e
+--- /dev/null
++++ b/package/pejir-ota/root/etc/init.d/42-pejir-upgrade-purge
+@@ -0,0 +1,34 @@
++#!/bin/sh /etc/rc.common
++# Очистка верхнего слоя overlay после sysupgrade.
++#
++# Скрипт разовый: выполняет чистку один раз после обновления прошивки и
++# выходит. Запуск при загрузке - единственный способ поймать обновление,
++# сделанное через системное меню LuCI (наша OTA-страница чистит верхний
++# слой сама, но прошивку можно поставить и через LuCI).
++#
++# Порядок запуска: START=91 - после pejir-sync (START=90), который
++# возвращает в верхний слой свежие файлы пакетов из образа, и ДО
++# скриптов модема (93) и LTE (94).
++#
++# Если после чистки остались чужие init-скрипты (значит они уже стартовали
++# на этой загрузке), делаем ещё один перезапуск - чтобы стоковые демоны
++# модема и multi-WAN не мешали работе.
++
++START=91
++STOP=0
++
++REBOOT_DELAY="${PEJIR_PURGE_REBOOT_DELAY:-20}"
++
++start() {
++	local out
++
++	out="$(/usr/bin/pejir-upgrade-purge 2>&1)"
++	echo "$out" | logger -t pejir-upgrade-purge
++
++	case "$out" in
++	*"нужна перезагрузка"*)
++		logger -t pejir-upgrade-purge "остатки чужих скриптов удалены, перезагружаю через $REBOOT_DELAY с"
++		( sleep "$REBOOT_DELAY"; reboot -f ) >/dev/null 2>&1 &
++		;;
++	esac
++}

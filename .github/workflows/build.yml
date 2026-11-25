@@ -136,6 +136,7 @@ jobs:
           sh tests/test-modem-ctl.sh
           sh tests/test-menu-json.sh
           sh tests/test-modem-family.sh
+          sh tests/test-upgrade-purge.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый
