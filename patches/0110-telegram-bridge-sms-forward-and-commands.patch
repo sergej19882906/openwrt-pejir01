@@ -1,0 +1,837 @@
+From 0e0a6407586fe49e50b09447a0c066566ab5556b Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 11:48:17 GMT
+Subject: =?utf-8?b?cGVqaXItdGVsZWdyYW06INC80L7RgdGCIFRlbGVncmFtIC0g0L/QtdGA0LXRgdGL?=
+ =?utf-8?b?0LvQutCwINCy0YHQtdGFINCy0YXQvtC00Y/RidC40YUgU01TINC4INC60L7QvNCw?=
+ =?utf-8?b?0L3QtNGLINC40Lcg0YfQsNGC0LA=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Роутер стоит у пользователя без ПК, а телефон всегда под рукой. Telegram
+даёт самый простой способ управлять модемом удалённо: принятые SMS
+прилетают в чат, а отправка SMS делается из того же чата.
+
+Что сделано:
+
+1) НОВЫЙ ПАКЕТ pejir-telegram.
+   - /usr/libexec/pejir-tg - основной helper. Команды: forward, commands,
+     watch, status, chatid, test.
+   - /etc/init.d/49-pejir-tg - свой init-скрипт (START=98, USE_PROCD=1),
+     запускает helper в режиме watch. Порядок: после модема (93), LTE (94),
+     автонастройки (96) и подсветки (97). Сервис крутится всегда, но при
+     выключенном enabled ничего не делает - включение в LuCI начинает
+     работать без перезапуска сервиса.
+   - /etc/config/pejir_telegram - настройки (в conffiles, переживают
+     sysupgrade): enabled, token, chat, interval, commands, protect,
+     whitelist.
+
+2) ПЕРЕСЫЛКА ВСЕХ ВХОДЯЩИХ SMS. Helper смотрит спул /var/spool/sms/incoming
+   и отправляет в чат отправителя, дату и текст. Список уже отправленных
+   лежит в /etc/pejir/tg-seen, поэтому одно и то же сообщение не уходит
+   дважды. Белый список отправителей пустой по умолчанию - пересылаются
+   ВСЕ входящие SMS.
+
+3) КОМАНДЫ ИЗ ЧАТА: /sms <номер> <текст>, /status, /reboot, /chatid,
+   /help. Защита: выполняются только команды из настроенного чата; команды
+   старше 10 минут игнорируются (иначе после возврата связи выполнились бы
+   разом все накопившиеся /reboot); /reboot требует защитного кода; сами
+   команды по умолчанию выключены (option commands).
+
+4) HTTP БЕЗ curl. В образе curl нет, зато есть wget-ssl (uclient-fetch с
+   TLS) - запросы идут через него. Ответ getUpdates разбирает собственный
+   awk-парсер: он не зависит от лишних пакетов и корректно читает текст
+   с переводами строк. Смещение update_id хранится в /etc/pejir/tg-offset,
+   поэтому команда не исполняется дважды.
+
+5) СТРАНИЦА LuCI. В карточку «SMS» добавлен блок «Мост Telegram»:
+   включение, токен бота, ID чата, интервал опроса, разрешение команд и
+   защитный код; кнопки «Сохранить», «Отправить тестовое сообщение»,
+   «Показать ID чата». Настройки пишутся через uci (секция
+   pejir_telegram.main). В ACL добавлены гранты на запись этой секции и
+   на exec /usr/libexec/pejir-tg. Добавлены 14 переводов в ru.
+
+6) ТЕСТ tests/test-telegram.sh: подставной wget отвечает как Telegram
+   API - проверяется пересылка SMS, отсутствие повторной отправки,
+   исполнение /sms из своего чата и игнорирование команд из чужого чата и
+   старше 10 минут, защитный код для /reboot, молчание при enabled=0.
+---
+ .../luci-static/resources/view/perenio/sms.js | 112 +++++
+ .../po/ru/luci-app-perenio.po                 |  28 ++
+ .../share/rpcd/acl.d/luci-app-perenio.json    |   6 +-
+ package/pejir-telegram/Makefile               |  45 ++
+ .../root/etc/config/pejir_telegram            |  11 +
+ .../root/etc/init.d/49-pejir-tg               |  24 +
+ .../pejir-telegram/root/usr/libexec/pejir-tg  | 448 ++++++++++++++++++
+ 7 files changed, 673 insertions(+), 1 deletion(-)
+ create mode 100644 package/pejir-telegram/Makefile
+ create mode 100644 package/pejir-telegram/root/etc/config/pejir_telegram
+ create mode 100755 package/pejir-telegram/root/etc/init.d/49-pejir-tg
+ create mode 100755 package/pejir-telegram/root/usr/libexec/pejir-tg
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 7c83ef7f..e219b529 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -3,6 +3,7 @@
+ 'require fs';
+ 'require ui';
+ 'require poll';
++'require uci';
+ 
+ var DIR = '/var/spool/sms/incoming';
+ var DIR_OUT = '/var/spool/sms/outgoing';
+@@ -12,6 +13,7 @@ var CONF = '/etc/smsd.conf';
+ var LOG = '/var/log/smsd.log';
+ var USSD = '/usr/libexec/pejir-ussd';
+ var SMSCTL = '/usr/libexec/pejir-sms-ctl';
++var TG = '/usr/libexec/pejir-tg';
+ 
+ /* Загруженные сообщения (для поиска по номеру/тексту) и текущий фильтр. */
+ var MSGS = { inbox: [], out: [], sent: [], failed: [] };
+@@ -527,6 +529,19 @@ return view.extend({
+ 			});
+ 		}, this));
+ 
++		/* Telegram: сохранить настройки, тестовое сообщение, показать ID чата. */
++		var tgSaveBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
++			_('Save'));
++		tgSaveBtn.addEventListener('click', L.bind(this.handleTgSave, this));
++
++		var tgTestBtn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' },
++			_('Send a test message'));
++		tgTestBtn.addEventListener('click', L.bind(this.handleTgTest, this));
++
++		var tgChatBtn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' },
++			_('Show the chat ID'));
++		tgChatBtn.addEventListener('click', L.bind(this.handleTgChatId, this));
++
+ 		loadTemplates();
+ 
+ 		loadCss();
+@@ -598,6 +613,57 @@ return view.extend({
+ 					_('The request is sent to the modem directly (AT+CUSD). While the LTE data call is active, the modem does not answer AT commands - in that case use the retry button.'))
+ 			]),
+ 
++			E('div', { 'class': 'pejir-sms-card', 'id': 'tg-card' }, [
++				E('h3', {}, _('Telegram bridge')),
++				E('div', { 'class': 'pejir-sms-note' },
++					_('All incoming SMS are forwarded to the chat. Commands: /sms <number> <text>, /status, /reboot, /chatid, /help.')),
++				E('div', { 'class': 'pejir-sms-kv' }, [
++					E('div', { 'class': 'k' }, _('Enable forwarding of incoming SMS to Telegram')),
++					E('div', { 'class': 'v' }, [
++						E('input', { 'type': 'checkbox', 'id': 'tg-enabled' })
++					])
++				]),
++				E('div', { 'class': 'pejir-sms-kv' }, [
++					E('div', { 'class': 'k' }, _('Bot token')),
++					E('div', { 'class': 'v' }, [
++						E('input', { 'type': 'text', 'id': 'tg-token', 'class': 'pejir-sms-input',
++							'placeholder': '1234567890:AA...' })
++					])
++				]),
++				E('div', { 'class': 'pejir-sms-kv' }, [
++					E('div', { 'class': 'k' }, _('Chat ID')),
++					E('div', { 'class': 'v' }, [
++						E('input', { 'type': 'text', 'id': 'tg-chat', 'class': 'pejir-sms-input',
++							'placeholder': '123456789' })
++					])
++				]),
++				E('div', { 'class': 'pejir-sms-kv' }, [
++					E('div', { 'class': 'k' }, _('Polling interval, s')),
++					E('div', { 'class': 'v' }, [
++						E('input', { 'type': 'text', 'id': 'tg-interval', 'class': 'pejir-sms-input',
++							'value': '60' })
++					])
++				]),
++				E('div', { 'class': 'pejir-sms-kv' }, [
++					E('div', { 'class': 'k' }, _('Allow commands from the chat')),
++					E('div', { 'class': 'v' }, [
++						E('input', { 'type': 'checkbox', 'id': 'tg-commands' })
++					])
++				]),
++				E('div', { 'class': 'pejir-sms-kv' }, [
++					E('div', { 'class': 'k' }, _('Protection code for /reboot')),
++					E('div', { 'class': 'v' }, [
++						E('input', { 'type': 'text', 'id': 'tg-protect', 'class': 'pejir-sms-input' })
++					])
++				]),
++				E('div', { 'class': 'pejir-sms-actions' }, [
++					tgSaveBtn, ' ', tgTestBtn, ' ', tgChatBtn
++				]),
++				E('div', { 'style': 'margin-top:8px' }, [
++					E('span', { 'id': 'tg-status', 'class': 'pejir-sms-note' }, '')
++				])
++			]),
++
+ 			E('div', { 'class': 'pejir-sms-card' }, [
+ 				E('h3', {}, _('Service state')),
+ 				E('div', { 'class': 'pejir-sms-kv' }, [
+@@ -649,6 +715,52 @@ return view.extend({
+ 		});
+ 	},
+ 
++	handleTgSave: function() {
++		var en = document.getElementById('tg-enabled');
++		var cm = document.getElementById('tg-commands');
++
++		uci.set('pejir_telegram', 'main', 'enabled', (en && en.checked) ? '1' : '0');
++		uci.set('pejir_telegram', 'main', 'commands', (cm && cm.checked) ? '1' : '0');
++		uci.set('pejir_telegram', 'main', 'token',
++			((document.getElementById('tg-token') || {}).value || '').trim());
++		uci.set('pejir_telegram', 'main', 'chat',
++			((document.getElementById('tg-chat') || {}).value || '').trim());
++		uci.set('pejir_telegram', 'main', 'interval',
++			((document.getElementById('tg-interval') || {}).value || '60').trim() || '60');
++		uci.set('pejir_telegram', 'main', 'protect',
++			((document.getElementById('tg-protect') || {}).value || '').trim());
++
++		return uci.save().then(function() {
++			return uci.apply();
++		}).then(function() {
++			setText('tg-status', _('Saved'));
++		}).catch(function(e) {
++			setText('tg-status', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++		});
++	},
++
++	handleTgTest: function() {
++		setText('tg-status', _('Sending...'));
++
++		return fs.exec(TG, [ 'test' ]).then(function(r) {
++			var out = ((r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '')).trim();
++
++			setText('tg-status', (r && r.code == 0) ? _('Test message sent') : out);
++		}).catch(function(e) {
++			setText('tg-status', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++		});
++	},
++
++	handleTgChatId: function() {
++		return fs.exec(TG, [ 'chatid' ]).then(function(r) {
++			var out = ((r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '')).trim();
++
++			setText('tg-status', out || _('Chat ID is not set'));
++		}).catch(function(e) {
++			setText('tg-status', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++		});
++	},
++
+ 	handleSaveApply: null,
+ 	handleSave: null,
+ 	handleReset: null
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index b4e6165a..73df969a 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -530,3 +530,31 @@ msgid "Unknown recipient"
+ msgstr "Неизвестный получатель"
+ msgid "Nothing found"
+ msgstr "Ничего не найдено"
++msgid "Telegram bridge"
++msgstr "Мост Telegram"
++msgid "All incoming SMS are forwarded to the chat. Commands: /sms <number> <text>, /status, /reboot, /chatid, /help."
++msgstr "Все входящие SMS пересылаются в чат. Команды: /sms <номер> <текст>, /status, /reboot, /chatid, /help."
++msgid "Enable forwarding of incoming SMS to Telegram"
++msgstr "Включить пересылку входящих SMS в Telegram"
++msgid "Bot token"
++msgstr "Токен бота"
++msgid "Chat ID"
++msgstr "ID чата"
++msgid "Polling interval, s"
++msgstr "Интервал опроса, с"
++msgid "Allow commands from the chat"
++msgstr "Разрешить команды из чата"
++msgid "Protection code for /reboot"
++msgstr "Защитный код для /reboot"
++msgid "Send a test message"
++msgstr "Отправить тестовое сообщение"
++msgid "Show the chat ID"
++msgstr "Показать ID чата"
++msgid "Saved"
++msgstr "Сохранено"
++msgid "Sending..."
++msgstr "Отправка..."
++msgid "Test message sent"
++msgstr "Тестовое сообщение отправлено"
++msgid "Chat ID is not set"
++msgstr "ID чата не задан"
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 9d3a9cc1..f0d95b7f 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -144,6 +144,9 @@
+ 				],
+ 				"/usr/bin/pejir-zigbee-ncp ensure": [
+ 					"exec"
++				],
++				"/usr/libexec/pejir-tg": [
++					"exec"
+ 				]
+ 			},
+ 			"ubus": {
+@@ -152,7 +155,8 @@
+ 				]
+ 			},
+ 			"uci": [
+-				"network.lte"
++				"network.lte",
++				"pejir_telegram.main"
+ 			]
+ 		}
+ 	}
+diff --git a/package/pejir-telegram/Makefile b/package/pejir-telegram/Makefile
+new file mode 100644
+index 00000000..dae9f570
+--- /dev/null
++++ b/package/pejir-telegram/Makefile
+@@ -0,0 +1,45 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-telegram
++PKG_VERSION:=1
++PKG_RELEASE:=1
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-telegram
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=PEJIR01 Telegram bridge: forward incoming SMS to a chat and accept commands
++  DEPENDS:=+luci-app-perenio +wget-ssl
++endef
++
++define Package/pejir-telegram/description
++  Forwards every incoming SMS to a Telegram chat (sender, date, text) and
++  accepts commands from that chat: /sms <number> <text>, /status, /reboot,
++  /chatid, /help. The chat ID and the bot token are stored in the uci
++  config pejir_telegram and can be filled in from the LuCI SMS page.
++  Only commands from the configured chat are executed, and commands older
++  than 10 minutes are ignored (otherwise a whole offline queue of /reboot
++  would fire at once when the link comes back).
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-telegram/install
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/49-pejir-tg $(1)/etc/init.d/49-pejir-tg
++	$(INSTALL_DIR) $(1)/usr/libexec
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-tg $(1)/usr/libexec/pejir-tg
++	$(INSTALL_DIR) $(1)/etc/config
++	$(INSTALL_CONF) ./root/etc/config/pejir_telegram $(1)/etc/config/pejir_telegram
++endef
++
++define Package/pejir-telegram/conffiles
++/etc/config/pejir_telegram
++endef
++
++$(eval $(call BuildPackage,pejir-telegram))
+diff --git a/package/pejir-telegram/root/etc/config/pejir_telegram b/package/pejir-telegram/root/etc/config/pejir_telegram
+new file mode 100644
+index 00000000..3471058d
+--- /dev/null
++++ b/package/pejir-telegram/root/etc/config/pejir_telegram
+@@ -0,0 +1,11 @@
++# Мост Telegram для PEJIR01.
++# Настройки заполняются на странице "SMS" в LuCI.
++
++config telegram 'main'
++	option enabled '0'
++	option token ''
++	option chat ''
++	option interval '60'
++	option commands '0'
++	option protect ''
++	option whitelist ''
+diff --git a/package/pejir-telegram/root/etc/init.d/49-pejir-tg b/package/pejir-telegram/root/etc/init.d/49-pejir-tg
+new file mode 100755
+index 00000000..2b0c1c6d
+--- /dev/null
++++ b/package/pejir-telegram/root/etc/init.d/49-pejir-tg
+@@ -0,0 +1,24 @@
++#!/bin/sh /etc/rc.common
++# Мост Telegram: пересылает входящие SMS в чат и выполняет команды из чата.
++#
++# Запускается последним (START=98), после pejir-autosetup (96) и pejir-led
++# (97), чтобы модем и LTE уже были подняты. Цикл крутится всегда, но при
++# выключенном "enabled" ничего не делает - тогда включение в LuCI
++# начинает работать без перезапуска сервиса.
++
++START=98
++STOP=0
++USE_PROCD=1
++
++start_service() {
++	procd_open_instance
++	procd_set_param command /usr/libexec/pejir-tg watch
++	procd_set_param stdout 1
++	procd_set_param stderr 1
++	procd_set_param respawn 3600 5 5
++	procd_close_instance
++}
++
++stop_service() {
++	return 0
++}
+diff --git a/package/pejir-telegram/root/usr/libexec/pejir-tg b/package/pejir-telegram/root/usr/libexec/pejir-tg
+new file mode 100755
+index 00000000..38f2184f
+--- /dev/null
++++ b/package/pejir-telegram/root/usr/libexec/pejir-tg
+@@ -0,0 +1,448 @@
++#!/bin/sh
++# Telegram-мост PEJIR01.
++#
++# Две роли:
++#   1) пересылать ВХОДЯЩИЕ SMS в чат Telegram (номер, отправитель, время,
++#      текст);
++#   2) принимать КОМАНДЫ из чата: /sms <номер> <текст>, /status, /reboot,
++#      /help, /chatid.
++#
++# Настройки - в uci, секция pejir_telegram.main:
++#   enabled    0|1        - включено ли;
++#   token      токен бота от @BotFather;
++#   chat       ID чата (число, может быть отрицательным - группа);
++#   interval   период опроса, с (по умолчанию 60);
++#   commands   0|1        - разрешены ли команды из чата;
++#   protect    защитный код для опасных команд (/reboot);
++#   whitelist  номера отправителей через запятую - если задан, пересылаются
++#              только SMS от них; пусто - пересылаются все.
++#
++# В образе нет curl, но есть wget-ssl (uclient-fetch с TLS) - поэтому
++# HTTP-запросы идут через wget. JSON разбирает�� наш awk-парсер (в образе
++# jsonfilter есть, но парсер на awk не зависит от лишних пакетов и умеет
++# читать текст с переводами строк).
++
++CFG=pejir_telegram
++SEC=main
++
++# Пути переопределяются переменными окружения - только для тестов
++# (tests/test-telegram.sh). На устройстве берутся обычные значения.
++STATE_DIR="${PEJIR_TG_STATE:-/etc/pejir}"
++SEEN_FILE="$STATE_DIR/tg-seen"
++OFFSET_FILE="$STATE_DIR/tg-offset"
++LAST_FILE="${PEJIR_TG_LAST:-/tmp/pejir-tg-last}"
++SPOOL="${PEJIR_TG_SPOOL:-/var/spool/sms/incoming}"
++SENDSMS="${PEJIR_TG_SENDSMS:-/usr/libexec/pejir-send-sms}"
++API="${PEJIR_TG_API:-https://api.telegram.org}"
++CONF_FILE="${PEJIR_TG_CONF:-}"
++# В образе /usr/bin/wget - это wget-ssl (с TLS). Путь берём из переменной,
++# чтобы тест мог подставить своего wget.
++WGET="${PEJIR_TG_WGET:-wget}"
++
++cfg() {
++	if [ -n "$CONF_FILE" ]; then
++		sed -n "s/^$1=//p" "$CONF_FILE" 2>/dev/null | head -1
++		return 0
++	fi
++	uci -q get "$CFG.$SEC.$1" 2>/dev/null
++}
++
++log() {
++	logger -t pejir-tg "$*" 2>/dev/null
++	echo "pejir-tg: $*" >&2
++}
++
++# --- HTTP ------------------------------------------------------------------
++
++# GET без разбора ответа: печатает тело.
++http_get() {
++	"$WGET" -qO- -T 20 "$1" 2>/dev/null
++}
++
++# POST с готовыми (уже url-encoded) данными.
++http_post() {
++	"$WGET" -qO- -T 20 --post-data "$2" "$1" 2>/dev/null
++}
++
++# Кодирование строки для POST (application/x-www-form-urlencoded).
++# Переводы строк кодируются как %0A, поэтому перед awk меняем их на
++# служебный байт, который awk кодирует правильно.
++urlencode() {
++	printf '%s' "$1" | tr '\n' '\001' | LC_ALL=C awk '
++BEGIN {
++	for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i
++	nl = sprintf("%c", 1)
++}
++{
++	for (i = 1; i <= length($0); i++) {
++		c = substr($0, i, 1)
++		if (c == nl) { printf "%%0A"; continue }
++		if (c ~ /[A-Za-z0-9]/) { printf "%s", c; continue }
++		if (index("-_.~", c) > 0) { printf "%s", c; continue }
++		printf "%%%02X", ord[c]
++	}
++}'
++}
++
++# --- разбор ответа Telegram ------------------------------------------------
++#
++# Ответ getUpdates - один JSON. Нам нужны по каждому обновлению:
++# update_id, chat.id и text (текст может содержать переводы строк, поэтому
++# разбираем посимвольно до неэкранированной кавычки).
++#
++# Печатает строки: update_id <TAB> chat_id <TAB> текст
++parse_updates() {
++	tr -d '\r\n' | LC_ALL=C awk '
++function unesc(s,   out, i, c, n) {
++	out = ""
++	for (i = 1; i <= length(s); i++) {
++		c = substr(s, i, 1)
++		if (c != "\\") { out = out c; continue }
++		n = substr(s, i + 1, 1)
++		i++
++		if (n == "n") out = out "\n"
++		else if (n == "r") out = out "\r"
++		else if (n == "t") out = out "\t"
++		else if (n == "\\") out = out "\\"
++		else if (n == "\"") out = out "\""
++		else if (n == "u") { out = out "\\u" substr(s, i, 4); i += 4 }
++		else out = out n
++	}
++	return out
++}
++{
++	line = $0
++	n = split(line, part, "\"update_id\":")
++	for (i = 2; i <= n; i++) {
++		chunk = part[i]
++		uid = chunk
++		sub(/[^0-9].*$/, "", uid)
++
++		cid = ""
++		t = chunk
++		if (sub(/.*"chat":\{[\"a-z]*"id":/, "", t)) {
++			sub(/[^0-9-].*$/, "", t)
++			cid = t
++		}
++
++		txt = ""
++		t = chunk
++		if (sub(/.*"text":"/, "", t)) {
++			out = ""
++			for (k = 1; k <= length(t); k++) {
++				c = substr(t, k, 1)
++				if (c == "\\") { out = out c substr(t, k + 1, 1); k++; continue }
++				if (c == "\"") break
++				out = out c
++			}
++			txt = unesc(out)
++		}
++
++		if (uid != "") print uid "\t" cid "\t" txt
++	}
++}'
++}
++
++# --- отправка в чат --------------------------------------------------------
++
++# Отправить текст в чат. $1 - текст. Возвращает 0 при успехе.
++tg_send() {
++	_text="$1"
++	_chat="$(cfg chat)"
++	_token="$(cfg token)"
++
++	[ -n "$_chat" ] || { log "не задан chat ID"; return 1; }
++	[ -n "$_token" ] || { log "не задан токен бота"; return 1; }
++
++	# Telegram не принимает больше 4096 символов в одном сообщении.
++	_len="${#_text}"
++	if [ "$_len" -gt 4000 ]; then
++		_text="$(printf '%s' "$_text" | cut -c1-4000)..."
++	fi
++
++	_data="chat_id=$(urlencode "$_chat")&text=$(urlencode "$_text")"
++	_out="$(http_post "$API/bot$_token/sendMessage" "$_data")"
++
++	case "$_out" in
++	*'"ok":true'*) return 0 ;;
++	esac
++
++	log "отправка не удалась: $(printf '%s' "$_out" | cut -c1-160)"
++	return 1
++}
++
++# --- пересылка входящих SMS ------------------------------------------------
++
++# Уже пересланные сообщения (по имени файла в спуле).
++seen_has() {
++	grep -qxF "$1" "$SEEN_FILE" 2>/dev/null
++}
++
++seen_add() {
++	mkdir -p "$STATE_DIR" 2>/dev/null
++	printf '%s\n' "$1" >> "$SEEN_FILE" 2>/dev/null
++
++	# Список растёт по мере прихода SMS - оставляем только последние
++	# записи, иначе файл на флеше со временем станет большим.
++	_n="$(wc -l < "$SEEN_FILE" 2>/dev/null)"
++	case "$_n" in ''|*[!0-9]*) return 0 ;; esac
++	if [ "$_n" -gt 1000 ]; then
++		tail -500 "$SEEN_FILE" > "$SEEN_FILE.tmp" 2>/dev/null \
++			&& mv -f "$SEEN_FILE.tmp" "$SEEN_FILE" 2>/dev/null
++	fi
++}
++
++# Отправителю разрешено? Пустой whitelist - пересылаем всё.
++sender_allowed() {
++	_wl="$(cfg whitelist)"
++	[ -n "$_wl" ] || return 0
++	_s="$(printf '%s' "$1" | tr -d ' +()-' | tr 'A-Z' 'a-z')"
++	printf '%s' "$_wl" | tr ',' '\n' | while read -r one; do
++		one="$(printf '%s' "$one" | tr -d ' +()-' | tr 'A-Z' 'a-z')"
++		[ -n "$one" ] || continue
++		case "$_s" in
++		*"$one"*) echo yes; break ;;
++		esac
++	done | grep -q yes
++}
++
++cmd_forward() {
++	[ "$(cfg enabled)" = "1" ] || return 0
++	[ -d "$SPOOL" ] || return 0
++
++	_n=0
++	for f in "$SPOOL"/*; do
++		[ -f "$f" ] || continue
++		_name="${f##*/}"
++		seen_has "$_name" && continue
++
++		_from="$(sed -n '1p' "$f" 2>/dev/null | tr -d '\r')"
++		_date="$(sed -n '2p' "$f" 2>/dev/null | tr -d '\r')"
++		_text="$(sed -n '3,$p' "$f" 2>/dev/null | tr -d '\r')"
++
++		sender_allowed "$_from" || { seen_add "$_name"; continue; }
++
++		_msg="SMS от $_from
++$_date
++
++$_text"
++		if tg_send "$_msg"; then
++			seen_add "$_name"
++			_n=$((_n + 1))
++		else
++			# не отмечено - попробуем в следующий раз
++			break
++		fi
++	done
++
++	[ "$_n" -gt 0 ] && log "переслано новых SMS: $_n"
++	return 0
++}
++
++# --- команды из чата -------------------------------------------------------
++
++# Краткая сводка о модеме и LTE.
++status_text() {
++	_port="$(cat /etc/pejir/at-port 2>/dev/null | head -1)"
++	_fam="$(cat /etc/pejir/modem-family 2>/dev/null | tr -d '\r\n')"
++	_ver="$(cat /usr/lib/pejir/version 2>/dev/null | tr -d '\r\n')"
++	_lte="$(uci -q get network.lte.ifname)"
++	[ -n "$_lte" ] || _lte="$(uci -q get network.lte.device)"
++	_up="нет"
++	[ -n "$_lte" ] && [ -d "/sys/class/net/$_lte" ] && _up="да"
++
++	printf 'PEJIR01 %s\n' "${_ver:-версия неизвестна}"
++	printf 'модем: AT-порт %s, семейство %s\n' "${_port:-не определён}" "${_fam:-не определено}"
++	printf 'LTE: интерфейс %s, поднят: %s\n' "${_lte:-не задан}" "$_up"
++	printf 'SMS: входящих %s, неудачных %s\n' \
++		"$(ls -1 "$SPOOL" 2>/dev/null | wc -l | tr -d ' ')" \
++		"$(ls -1 /var/spool/sms/failed 2>/dev/null | wc -l | tr -d ' ')"
++}
++
++help_text() {
++	printf 'Команды:\n/sms <номер> <текст> - отправить SMS\n/status - состояние модема\n/reboot - перезагрузить роутер (нужен защитный код)\n/chatid - показать ID этого чата\n/help - эта справка'
++}
++
++# Выполнить команду из чата. $1 - текст команды, $2 - chat id.
++exec_command() {
++	_cmd="$1"
++	_chat="$2"
++
++	case "$_cmd" in
++	/help*|/start*)
++		tg_send "$(help_text)"
++		;;
++	/chatid*)
++		tg_send "ID этого чата: $_chat"
++		;;
++	/status*)
++		tg_send "$(status_text)"
++		;;
++	/sms\ *|/sms@*)
++		_rest="${_cmd#* }"
++		_to="${_rest%% *}"
++		_body="${_rest#* }"
++		if [ -z "$_to" ] || [ "$_body" = "$_rest" ] || [ -z "$_body" ]; then
++			tg_send "Формат: /sms <номер> <текст>"
++			return 0
++		fi
++		if [ "$(cfg commands)" != "1" ]; then
++			tg_send "Команды выключены - включите их на странице SMS."
++			return 0
++		fi
++		if [ -x "$SENDSMS" ]; then
++			_out="$("$SENDSMS" "$_to" "$_body" 2>&1)"
++			case "$_out" in
++			*[Ss]ent*|*success*|*uccess*|*queued*|*Queued*)
++				tg_send "SMS отправлена на $_to" ;;
++			*)
++				tg_send "Не удалось отправить на $_to: ${_out:-нет ответа}" ;;
++			esac
++		else
++			tg_send "Нет помощника отправки SMS"
++		fi
++		;;
++	/reboot*)
++		if [ "$(cfg commands)" != "1" ]; then
++			tg_send "Команды выключены - включите их на странице SMS."
++			return 0
++		fi
++		_prot="$(cfg protect)"
++		if [ -z "$_prot" ]; then
++			tg_send "Для перезагрузки задан защитный код."
++			return 0
++		fi
++		case "$_cmd" in
++		*"$_prot"*)
++			tg_send "Перезагружаюсь."
++			sleep 2
++			reboot
++			;;
++		*)
++			tg_send "Неверный защитный код."
++			;;
++		esac
++		;;
++	*)
++		tg_send "Не понимаю команду. /help - список команд."
++		;;
++	esac
++}
++
++cmd_commands() {
++	[ "$(cfg enabled)" = "1" ] || return 0
++	_token="$(cfg token)"
++	_chat_cfg="$(cfg chat)"
++	[ -n "$_token" ] || return 0
++
++	_offset="$(cat "$OFFSET_FILE" 2>/dev/null)"
++	case "$_offset" in ''|*[!0-9]*) _offset=0 ;; esac
++
++	_url="$API/bot$_token/getUpdates?timeout=0&limit=10"
++	[ "$_offset" -gt 0 ] && _url="$_url&offset=$_offset"
++
++	_json="$(http_get "$_url")"
++	case "$_json" in
++	*'"ok":true'*) ;;
++	*) return 0 ;;
++	esac
++
++	_max="$_offset"
++	printf '%s' "$_json" | parse_updates | while IFS="$(printf '\t')" read -r _uid _cid _txt; do
++		[ -n "$_uid" ] || continue
++		[ -n "$_cid" ] || continue
++		[ -n "$_txt" ] || continue
++
++		# только из разрешённого чата
++		[ "$_cid" = "$_chat_cfg" ] || continue
++
++		# команды старше 10 минут не выполняем: после обесточивания
++		# Telegram отдаёт всю очередь сразу, иначе выполнились бы
++		# все накопившиеся /reboot разом.
++		_now="$(date +%s 2>/dev/null)"
++		case "$_now" in ''|*[!0-9]*) _now=0 ;; esac
++		if [ "$_now" -gt 1700000000 ]; then
++			_mdate="$(printf '%s' "$_json" | LC_ALL=C awk -v n="$_uid" '
++			{ line = $0 }
++			END {
++				split(line, a, "\"update_id\":")
++				for (i = 2; i <= length(a); i++) {
++					u = a[i]; sub(/[^0-9].*$/, "", u)
++					if (u != n) continue
++					t = a[i]; sub(/.*"date":/, "", t); sub(/[^0-9].*$/, "", t)
++					print t; exit
++				}
++			}')"
++			case "$_mdate" in ''|*[!0-9]*) _mdate=0 ;; esac
++			if [ "$_mdate" -gt 0 ] && [ $((_now - _mdate)) -gt 600 ]; then
++				continue
++			fi
++		fi
++
++		log "команда из чата: $_txt"
++		exec_command "$_txt" "$_cid"
++	done
++
++	# сохраняем новое смещение (последний update_id + 1)
++	_last="$(printf '%s' "$_json" | parse_updates | cut -f1 | sort -n | tail -1)"
++	case "$_last" in ''|*[!0-9]*) _last="$_offset" ;; esac
++	_newoff=$((_last + 1))
++	mkdir -p "$STATE_DIR" 2>/dev/null
++	printf '%s' "$_newoff" > "$OFFSET_FILE.tmp" 2>/dev/null && mv -f "$OFFSET_FILE.tmp" "$OFFSET_FILE" 2>/dev/null
++	return 0
++}
++
++# --- команды CLI -----------------------------------------------------------
++
++cmd_status() {
++	printf 'включено: %s\n' "$(cfg enabled)"
++	printf 'токен: %s\n' "$([ -n "$(cfg token)" ] && echo задан || echo не задан)"
++	printf 'chat ID: %s\n' "$(cfg chat)"
++	printf 'интервал: %s с\n' "$(cfg interval)"
++	printf 'команды из чата: %s\n' "$(cfg commands)"
++	printf 'белый список отправителей: %s\n' "$(cfg whitelist)"
++	printf 'последняя ошибка: %s\n' "$(tail -1 "$LAST_FILE" 2>/dev/null)"
++}
++
++cmd_chatid() {
++	_chat="$(cfg chat)"
++	if [ -n "$_chat" ]; then
++		printf 'chat ID: %s\n' "$_chat"
++		return 0
++	fi
++	printf 'Chat ID не задан.\n'
++	printf 'Как узнать: добавьте бота в чат и напишите ему /chatid - бот ответит тут же.\n'
++}
++
++cmd_test() {
++	if tg_send "Тест PEJIR01: связь с роутером работает."; then
++		printf 'OK: сообщение отправлено\n'
++		return 0
++	fi
++	printf 'НЕ ОТПРАВЛЕНО (см. журнал)\n'
++	return 1
++}
++
++cmd_watch() {
++	_interval="$(cfg interval)"
++	case "$_interval" in ''|*[!0-9]*) _interval=60 ;; esac
++
++	while :; do
++		cmd_forward >/dev/null 2>&1
++		cmd_commands >/dev/null 2>&1
++		sleep "$_interval"
++	done
++}
++
++case "$1" in
++forward)  cmd_forward ;;
++commands) cmd_commands ;;
++watch)    cmd_watch ;;
++status)   cmd_status ;;
++chatid)   cmd_chatid ;;
++test)     cmd_test ;;
++*)
++	echo "usage: $0 {forward|commands|watch|status|chatid|test}" >&2
++	exit 2
++	;;
++esac
+-- 
+2.39.5
+

@@ -140,6 +140,7 @@ jobs:
           sh tests/test-zigbee-ncp.sh
           sh tests/test-improvements.sh
           sh tests/test-at-watch.sh
+          sh tests/test-telegram.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый

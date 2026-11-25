@@ -371,6 +371,9 @@ CONFIG_PACKAGE_pejir-sms=y
 CONFIG_PACKAGE_pejir-sync=y
 CONFIG_PACKAGE_pejir-homed-feed=y
 CONFIG_PACKAGE_pejir-zigbee-ncp=y
+# Мост Telegram: пересылка всех входящих SMS в чат и команды из чата.
+# Зависит от wget-ssl (TLS), который в образе уже есть.
+CONFIG_PACKAGE_pejir-telegram=y
 # stock migration: Wi-Fi SSID/keys, country, root password from idata
 CONFIG_PACKAGE_pejir-idata=y
 # LuCI: battery/power status and SMS pages for PEJIR01

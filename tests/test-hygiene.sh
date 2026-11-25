@@ -1,7 +1,7 @@
 #!/bin/sh
 # Тест гигиены релиза .48 (F15-F26 без F17):
 #   - SMS-отправка через обёртку /usr/libexec/pejir-send-sms (грант без wildcard),
-#     ACL write.uci сужён до network.lte;
+#     ACL write.uci сужён до network.lte и pejir_telegram.main;
 #   - удаление сообщений из спула через /usr/libexec/pejir-sms-clean;
 #   - верифицированный AT-порт (/etc/pejir/at-port): uci-defaults modeminfo
 #     и сканер портов atinout (включая ACL-грант на чтение файла);
@@ -98,17 +98,19 @@ else
 fi
 
 # --- F16: write.uci сужён -------------------------------------------------
+# Разрешены ровно две секции: network.lte (настройки LTE) и
+# pejir_telegram.main (настройки моста Telegram). Больше - нельзя.
 if python3 - "$ACL" <<'PYEOF'
 import json,sys
 a=json.load(open(sys.argv[1]))
-w=a['luci-app-perenio']['write']['uci']
+w=sorted(a['luci-app-perenio']['write']['uci'])
 r=a['luci-app-perenio']['read']['uci']
-sys.exit(0 if w==['network.lte'] and r==['network'] else 1)
+sys.exit(0 if w==['network.lte','pejir_telegram.main'] and r==['network'] else 1)
 PYEOF
 then
-	ok "ACL: write.uci = network.lte, read.uci = network"
+	ok "ACL: write.uci = network.lte + pejir_telegram.main, read.uci = network"
 else
-	fail "ACL: write.uci не сужён до network.lte (или сломан read.uci)"
+	fail "ACL: write.uci не сужён до network.lte и pejir_telegram.main (или сломан read.uci)"
 fi
 
 # --- F24: modeminfo device из /etc/pejir/at-port --------------------------
