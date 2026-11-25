@@ -122,13 +122,43 @@ if python3 - "$ACL" <<'PYEOF'
 import json,sys
 a=json.load(open(sys.argv[1]))
 w=sorted(a['luci-app-perenio']['write']['uci'])
-r=a['luci-app-perenio']['read']['uci']
-sys.exit(0 if w==['network','pejir_telegram'] and r==['network'] else 1)
+sys.exit(0 if w==['network','pejir_telegram'] else 1)
 PYEOF
 then
-	ok "ACL: write.uci = network + pejir_telegram (имена конфигов), read.uci = network"
+	ok "ACL: write.uci = network + pejir_telegram (имена конфигов)"
 else
-	fail "ACL: write.uci не равен именам конфигов network и pejir_telegram (или сломан read.uci)"
+	fail "ACL: write.uci не равен именам конфигов network и pejir_telegram"
+fi
+
+# --- F16a: read.uci покрывает все конфиги, которые читают страницы ---------
+# Дефект, который закрывает этот тест: блок "Мост Telegram" на странице SMS
+# читает конфиг pejir_telegram (uci.load), но грант на его ЧТЕНИЕ не был
+# выдан - грант был только на запись. rpcd отвечал "Permission denied"
+# (ubus code 6), и страница показывала "RPC call to uci/get failed".
+#
+# Список нужных конфигов берём из самих страниц, чтобы такой случай нельзя
+# было пропустить снова.
+if python3 - "$ACL" "$LUCI_PKG/htdocs/luci-static/resources/view/perenio" <<'PYEOF'
+import json,os,re,sys
+acl=json.load(open(sys.argv[1]))['luci-app-perenio']
+read=acl['read']['uci']
+need=set()
+d=sys.argv[2]
+for fn in sorted(os.listdir(d)):
+	if not fn.endswith('.js'):
+		continue
+	s=open(os.path.join(d,fn),encoding='utf-8').read()
+	for m in re.finditer(r"uci\.(?:get|load)\('([a-z_0-9]+)'", s):
+		need.add(m.group(1))
+missing=sorted(c for c in need if c not in read)
+for c in missing:
+	print("  нет гранта на чтение конфига: %s" % c)
+sys.exit(1 if missing else 0)
+PYEOF
+then
+	ok "ACL: read.uci покрывает все конфиги, которые читают страницы"
+else
+	fail "ACL: read.uci не покрывает конфиги, которые читают страницы"
 fi
 
 # --- F24: modeminfo device из /etc/pejir/at-port --------------------------

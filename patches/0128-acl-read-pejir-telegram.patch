@@ -1,0 +1,41 @@
+From 9f09c515c56dd78dcb48f3b043ad4555826c5626 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 18:57:08 GMT
+Subject: =?utf-8?b?bHVjaTogQUNMIC0g0LPRgNCw0L3RgiDQvdCwINCn0KLQldCd0JjQlSDQutC+0L3R?=
+ =?utf-8?b?hNC40LPQsCBwZWppcl90ZWxlZ3JhbQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Блок "Мост Telegram" на странице SMS падал с ошибкой:
+
+    RPC call to uci/get failed with ubus code 6: Access denied
+
+Страница читает конфиг моста (uci.load('pejir_telegram')), а в ACL
+был грант только на ЗАПИСЬ этого конфига. rpcd сверяет в scope "uci"
+имя конфига, поэтому чтение отклонялось, и страница показывала
+ошибку вместо полей настройки.
+
+Теперь в read.uci добавлен pejir_telegram (вместе с network).
+
+Заодно в tests/test-hygiene.sh добавлена автопроверка: список
+конфигов, которые читают страницы, сверяется с read.uci - такой
+случай больше нельзя пропустить молча.
+---
+ .../root/usr/share/rpcd/acl.d/luci-app-perenio.json            | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 0942c822..467daa14 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -56,7 +56,8 @@
+ 				]
+ 			},
+ 			"uci": [
+-				"network"
++				"network",
++				"pejir_telegram"
+ 			]
+ 		},
+ 		"write": {
