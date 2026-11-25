@@ -128,7 +128,10 @@ if [ -f "$OTA_VER_FILE" ] && [ -f "$OTA_DST" ]; then
   else
     BUILD_TAG="$(git describe --exact-match --tags HEAD 2>/dev/null || true)"
   fi
-  if [ -n "$BUILD_TAG" ]; then
+  # Сверяем ТОЛЬКО с тегом релиза: сборки ветки main версию не несут
+  # (там VERSION ещё не поднят под следующий релиз).
+  case "$BUILD_TAG" in
+  v*pejir01.*)
     TAG_VER="${BUILD_TAG#v}"
     if [ "$TAG_VER" != "$OTA_VER" ]; then
       echo "ОШИБКА: тег сборки $BUILD_TAG, а в VERSION — $OTA_VER"
@@ -136,7 +139,11 @@ if [ -f "$OTA_VER_FILE" ] && [ -f "$OTA_DST" ]; then
       exit 1
     fi
     echo "    OTA: версия совпадает с тегом сборки ($BUILD_TAG)"
-  fi
+    ;;
+  *)
+    echo "    OTA: сборка не по тегу релиза ($BUILD_TAG) - сверка версии пропущена"
+    ;;
+  esac
 else
   echo "    OTA: VERSION не найден, версия в образе останется 0.0.0-dev"
 fi
