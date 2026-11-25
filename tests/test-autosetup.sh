@@ -219,6 +219,78 @@ else
 	fail "init-скрипт не перезагружает устройство"
 fi
 
+# --- Zigbee: драйвер ставится ВСЕГДА, даже если модуль недоступен ---------
+# Требование: HOMEd-драйвер Zigbee должен быть установлен независимо от
+# того, виден ли сейчас /dev/umxtty1. Модуль может появиться позже
+# (uartmuxd не поднялся, EFR32 не инициализирован, переподключение) -
+# драйвер к этому моменту должен быть уже готов.
+FUNCS="$WORK/funcs.sh"
+sed -n '/^zigbee_port()/,/^}/p;/^zigbee_present()/,/^}/p;/^zigbee_report()/,/^}/p;/^do_homed()/,/^}/p' "$AUTOINIT" > "$FUNCS"
+if [ -s "$FUNCS" ]; then
+	ok "из init-скрипта извлечены функции Zigbee/HOMEd"
+else
+	fail "не удалось извлечь функции Zigbee/HOMEd из init-скрипта"
+fi
+
+REC="$WORK/rec.txt"
+: > "$REC"
+cat > "$WORK/harness.sh" <<'EOF'
+#!/bin/sh
+# Стенд: вызываем do_homed с ОТСУТСТВУЮЩИМ модулем Zigbee.
+REC="$1"
+FUNCS="$2"
+log() { echo "LOG: $*"; }
+wait_network() { return 0; }
+. "$FUNCS"
+# перекрываем проверку модуля: модуля нет
+zigbee_present() { return 1; }
+# перехватываем установку драйвера
+sh() { echo "INSTALL: $*" >> "$REC"; return 0; }
+do_homed
+EOF
+
+out="$(sh "$WORK/harness.sh" "$REC" "$FUNCS" 2>&1)"
+if grep -q "INSTALL:" "$REC"; then
+	ok "драйвер HOMEd ставится, даже если модуль Zigbee недоступен"
+else
+	fail "драйвер HOMEd НЕ ставится без модуля Zigbee (надо ставить всегда)"
+	echo "$out" | sed 's/^/     /'
+fi
+
+if printf '%s' "$out" | grep -q "не найден"; then
+	ok "в журнал пишется, что модуль Zigbee не найден"
+else
+	fail "в журнал не пишется состояние модуля Zigbee"
+	echo "$out" | sed 's/^/     /'
+fi
+
+# Стенад: если бы реализация пропускала установку (ошибка), тест должен
+# это увидеть. Проверяем чувствительность теста на мутированной копии.
+sed 's|^\tsh /usr/share/pejir/zigbee-setup.sh|\treturn 0\n\t# sh /usr/share/pejir/zigbee-setup.sh|' "$AUTOINIT" > "$WORK/mutant.init"
+sed -n '/^zigbee_port()/,/^}/p;/^zigbee_present()/,/^}/p;/^zigbee_report()/,/^}/p;/^do_homed()/,/^}/p' "$WORK/mutant.init" > "$WORK/mutant.funcs.sh"
+: > "$REC"
+sh "$WORK/harness.sh" "$REC" "$WORK/mutant.funcs.sh" >/dev/null 2>&1
+if grep -q "INSTALL:" "$REC"; then
+	fail "тест нечувствителен: мутация (пропуск установки) не обнаружена"
+else
+	ok "тест чувствителен: мутация с пропуском установки обнаружена"
+fi
+
+# --- установщик HOMEd: отсутствие порта не мешает установке ---------------
+out="$(ZIGBEE_PORT=/nonexistent/umxtty1 sh "$ZIGBEE" 2>&1)"
+if printf '%s' "$out" | grep -q "установку не прерываем"; then
+	ok "zigbee-setup.sh: без модуля установка не прерывается"
+else
+	fail "zigbee-setup.sh: установка прерывается, когда модуля нет"
+	echo "$out" | sed 's/^/     /'
+fi
+
+if printf '%s' "$out" | grep -q "пропущена"; then
+	fail "zigbee-setup.sh: установка помечена как пропущенная"
+else
+	ok "zigbee-setup.sh: установка не помечена как пропущенная"
+fi
+
 rm -rf "$WORK"
 
 echo ""

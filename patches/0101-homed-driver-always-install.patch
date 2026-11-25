@@ -1,0 +1,93 @@
+From 2d650751cf15ea8cc59b0e1c37eb5b14e6074b0d Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 06:10:04 GMT
+Subject: =?utf-8?b?cGVqaXItYXV0b3NldHVwOiDQtNGA0LDQudCy0LXRgCBaaWdiZWUgKEhPTUVkKSDR?=
+ =?utf-8?b?gdGC0LDQstC40YLRgdGPINCy0YHQtdCz0LTQsCwg0LTQsNC20LUg0LXRgdC70Lgg?=
+ =?utf-8?b?0LzQvtC00YPQu9GMINC90LXQtNC+0YHRgtGD0L/QtdC9?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+ДРАЙВЕР ZIGBEE (HOMEd) СТАВИТСЯ ВСЕГДА, ДАЖЕ ЕСЛИ МОДУЛЬ НЕДОСТУПЕН.
+
+Требование: установка драйвера Zigbee не должна зависеть от того, виден ли
+прямо сейчас /dev/umxtty1 (модуль EFR32). Модуль появляется не мгновенно:
+uartmuxd поднимается на START=14, EFR32 инициализируется не сразу, модуль
+может переподключаться. Драйвер HOMEd к этому моменту должен быть УЖЕ
+установлен - иначе Zigbee не заработает без перезагрузки.
+
+Что изменено:
+
+  * pejir-autosetup (do_homed): проверка модуля вынесена в отдельную
+    функцию zigbee_report() и даёт только ИНФОРМАЦИЮ в журнал
+    ("модуль Zigbee на месте" / "модуль не найден - uartmuxd не поднялся
+    или модуля нет" + подсказка ps w | grep uartmuxd; ls -l /dev/umxtty*).
+    Установка HOMEd выполняется в любом случае.
+
+  * zigbee-setup.sh: отсутствие порта больше не прерывает установку.
+    Раньше скрипт только предупреждал и продолжал; теперь явно сказано,
+    что установка не прерывается и HOMEd будет ждать адаптер.
+
+Тест tests/test-autosetup.sh проверяет это ПОВЕДЕНЧЕСКИ: функции
+do_homed/zigbee_report выносятся из init-скрипта и вызываются в стенде
+с подменёнными log/wait_network/sh и проверкой модуля, которая всегда
+возвращает "нет". Тест требует, чтобы установка была выполнена
+(фактический вызов zigbee-setup.sh), и отдельно проверяет чувствительность
+теста мутацией (если установка пропущена - тест это видит).
+
+diff --git a/package/pejir-autosetup/files/pejir-autosetup.init b/package/pejir-autosetup/files/pejir-autosetup.init
+index 05c63ba..9494179 100644
+--- a/package/pejir-autosetup/files/pejir-autosetup.init
++++ b/package/pejir-autosetup/files/pejir-autosetup.init
+@@ -122,13 +122,25 @@ zigbee_present() {
+ 	[ -c "$p" ]
+ }
+ 
+-do_homed() {
++# Состояние Zigbee-модуля - только для журнала (установка от него не
++# зависит: драйвер HOMEd ставится в любом случае).
++zigbee_report() {
+ 	if zigbee_present; then
+ 		log "модуль Zigbee на месте: $(zigbee_port)"
+ 	else
+ 		log "модуль Zigbee ($(zigbee_port)) не найден - uartmuxd не поднялся или модуля нет."
+ 		log "проверьте: ps w | grep uartmuxd; ls -l /dev/umxtty*"
++		log "драйвер HOMEd всё равно ставим - он заработает, когда модуль появится."
+ 	fi
++}
++
++do_homed() {
++	# Драйвер Zigbee (HOMEd) ставим ВСЕГДА - независимо от того, виден ли
++	# сейчас модуль. Причина: модуль может появиться позже (uartmuxd не
++	# успел подняться, EFR32 ещё не инициализирован, модуль переподключён),
++	# а HOMEd должен быть уже готов к работе. Наличие модуля - это
++	# ИНФОРМАЦИЯ в журнале, а не условие установки.
++	zigbee_report
+ 
+ 	if [ -x /usr/bin/homed-zigbee ]; then
+ 		log "HOMEd Zigbee уже установлен."
+diff --git a/package/pejir-autosetup/files/zigbee-setup.sh b/package/pejir-autosetup/files/zigbee-setup.sh
+index 055d7b9..6154736 100644
+--- a/package/pejir-autosetup/files/zigbee-setup.sh
++++ b/package/pejir-autosetup/files/zigbee-setup.sh
+@@ -50,11 +50,20 @@ PIN_AUTOMATION="${HOMED_PV_AUTOMATION:-2.9.0}"
+ log() { echo "[zigbee] $*"; }
+ err() { echo "[zigbee] ОШИБКА: $*" >&2; }
+ 
+-# --- проверка порта --------------------------------------------------------
++# --- проверка доступности Zigbee ------------------------------------------
++# Модуль создаёт uartmuxd (/dev/ttyS1 -> umxtty0=STM32, umxtty1=Zigbee,
++# umxtty2=Z-Wave). Если модуля нет, драйвер ставить бессмысленно: HOMEd
++# без адаптера не поднимется. Автоматическая установка (pejir-autosetup) в
++# этом случае пропускается. Ручной запуск можно форсировать: ZIGBEE_FORCE=1.
+ if [ ! -e "$PORT" ]; then
++	# Модуля может не быть прямо сейчас (uartmuxd не поднялся, EFR32 не
++	# инициализирован, модуль переподключён). Установку НЕ прерываем:
++	# HOMEd должен быть установлен и готов запуститься, как только
++	# модуль появится.
+ 	log "порта $PORT нет - значит не запущен uartmuxd (он мультиплексирует"
+ 	log "/dev/ttyS1 в umxtty0=STM32, umxtty1=Zigbee, umxtty2=Z-Wave)."
+ 	log "проверьте: ps w | grep uartmuxd"
++	log "установку не прерываем - HOMEd будет ждать адаптер."
+ fi
+ 
+ # --- 1) фид ----------------------------------------------------------------
