@@ -1,0 +1,67 @@
+From 08ea3debbb41be828c2597f262337115f6051363 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 18:39:11 GMT
+Subject: =?utf-8?b?cGVqaXItdXBncmFkZS1wdXJnZTog0YHRgtC+0YDQvtC2IEFULdC/0L7RgNGC0LAg?=
+ =?utf-8?b?0LLQutC70Y7Rh9Cw0LXQvCDQvtCx0YDQsNGC0L3Qviwgc3dhcCAtINC/0L4gVVVJ?=
+ =?utf-8?b?RA==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Два приведения конфигурации после обновления (чистка выполняется один
+раз на версию, так что ручные решения пользователя не перетираются):
+
+  * сторож AT-порта (48-pejir-at-watch) в прежних версиях приходилось
+    выключать руками - он рвал модем, занятый LTE-вызовом, и SMS
+    переставали работать. Начиная с этой версии сторож исправлен, так
+    что включаем его обратно в автозапуск;
+  * секция swap в /etc/config/fstab прописывалась по пути устройства
+    (/dev/sda2). Если флешку вставить в другой порт, раздел станет
+    sdb2 и swap молча перестанет включаться. Переводим секцию на UUID.
+---
+ package/pejir-ota/files/pejir-upgrade-purge | 31 +++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/package/pejir-ota/files/pejir-upgrade-purge b/package/pejir-ota/files/pejir-upgrade-purge
+index e6c99dda..03831b2a 100755
+--- a/package/pejir-ota/files/pejir-upgrade-purge
++++ b/package/pejir-ota/files/pejir-upgrade-purge
+@@ -71,6 +71,37 @@ else
+ 	echo "чужих init-скриптов не было"
+ fi
+ 
++# Сторож AT-порта: в прежних версиях его приходилось выключать руками
++# (он рвал модем, занятый LTE-вызовом, и SMS переставали работать).
++# Начиная с этой версии сторож исправлен и безопасен, поэтому включаем
++# его обратно - чистка выполняется один раз на версию, так что ручное
++# решение пользователя потом не перетирается.
++AT_WATCH_INIT="${PEJIR_AT_WATCH_INIT:-}"
++if [ -z "$AT_WATCH_INIT" ]; then
++	for w in /etc/init.d/48-pejir-at-watch /rom/etc/init.d/48-pejir-at-watch; do
++		if [ -x "$w" ]; then
++			AT_WATCH_INIT="$w"
++			break
++		fi
++	done
++fi
++if [ -n "$AT_WATCH_INIT" ] && [ -x "$AT_WATCH_INIT" ]; then
++	"$AT_WATCH_INIT" enable >/dev/null 2>&1 && echo "сторож AT-порта включён в автозапуск"
++fi
++
++# Раздел swap в fstab: путь устройства (/dev/sda2) ломается, если
++# флешка окажется в другом порту (sda2 -> sdb2). Переводим секцию
++# swap на UUID - так она переживает перенумерацию разделов.
++for s in $(uci show fstab 2>/dev/null | grep -E "^fstab\..*=swap$" | sed 's/^fstab\.//; s/=swap$//'); do
++	[ -n "$(uci -q get "fstab.$s.uuid")" ] && continue
++	dev="$(uci -q get "fstab.$s.device")"
++	[ -n "$dev" ] || continue
++	uuid="$(block info "$dev" 2>/dev/null | sed -n 's/.*UUID="\([^"]*\)".*/\1/p' | head -1)"
++	[ -n "$uuid" ] || continue
++	uci set "fstab.$s.uuid=$uuid" && uci commit fstab &&
++		echo "swap $dev прописан по UUID ($uuid)"
++done
++
+ # Проверка Zigbee: модуль EFR32 виден как /dev/umxtty1 - его создаёт
+ # uartmuxd (START=14), мультиплексирующий /dev/ttyS1. Стоковый mcud
+ # делал то же самое и удалён выше, поэтому устройство теперь наше.
+

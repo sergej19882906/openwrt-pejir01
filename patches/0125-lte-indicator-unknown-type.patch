@@ -1,0 +1,39 @@
+From 7fb453372def452c922f7e5225d0fa9a17c714cb Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 18:39:11 GMT
+Subject: =?utf-8?b?bHVjaTog0LfQvdCw0YfQvtC6INGB0LXRgtC4IC0g0L/RgNC4INC90LXQuNC30LLQ?=
+ =?utf-8?b?tdGB0YLQvdC+0Lwg0YLQuNC/0LUg0YHQtdGC0Lgg0L/QvtC60LDQt9GL0LLQsNC1?=
+ =?utf-8?b?0LwgIj8iLCDQsCDQvdC1INC/0YPRgdGC0YPRjiDQv9C70LDRiNC60YM=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Если модем не отдал код активности (net= пусто), плашка значка была
+пустой: значок в шапке выглядел как ничего, и непонятно было, работает
+он или нет. Теперь в этом случае видно "?" серым цветом, а в
+подсказке - "тип сети: неизвестно".
+---
+ .../htdocs/luci-static/resources/lte-indicator.js      | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
+index 464d7b89..112d35f6 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
+@@ -105,8 +105,14 @@ function render(el, st) {
+ 	if (isNaN(pct))
+ 		pct = NaN;
+ 
+-	label = (net === 'none') ? '—' : net;
+-	title = _('Network type') + ': ' + label;
++	/* net может быть пустым (модем не отдал код активности) - тогда
++	 * показываем "?" вместо пустой плашки: иначе непонятно, что
++	 * значок есть, но тип сети не определён. */
++	if (!net || net === 'none')
++		label = (net === 'none') ? '—' : '?';
++	else
++		label = net;
++	title = _('Network type') + ': ' + ((!net || net === 'none') ? _('unknown') : net);
+ 
+ 	if (op)
+ 		title += ', ' + _('Operator') + ': ' + op;

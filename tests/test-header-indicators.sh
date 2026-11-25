@@ -92,6 +92,36 @@ else
 	fail "в ACL нет /tmp/pejir-signal"
 fi
 
+# --- 3a) браузер не запускает процессы на каждый опрос -----------------------
+# Значки читают файлы состояния, которые пишет демон. Если бы браузер
+# запускал "/usr/bin/mcu getsys" каждые 15 секунд, rpcd поднимал бы
+# процесс на каждый опрос - веб-интерфейс от этого подтормаживал.
+if grep -q "fs.read" "$RES/battery-indicator.js"; then
+	ok "значок батареи читает файл состояния"
+else
+	fail "значок батареи не читает файл состояния"
+fi
+if grep -q "fs.exec" "$RES/battery-indicator.js"; then
+	fail "значок батареи запускает процесс из браузера (fs.exec) - интерфейс будет подтормаживать"
+else
+	ok "значок батареи не запускает процессы из браузера"
+fi
+if grep -q "fs.exec" "$RES/lte-indicator.js"; then
+	fail "значок сети запускает процесс из браузера (fs.exec)"
+else
+	ok "значок сети не запускает процессы из браузера"
+fi
+if grep -q "refresh_battery" "$SIGNAL"; then
+	ok "демон собирает состояние батареи"
+else
+	fail "демон не собирает состояние батареи"
+fi
+if grep -q '"/tmp/pejir-battery"' "$ACL"; then
+	ok "в ACL есть чтение файла состояния батареи"
+else
+	fail "в ACL нет /tmp/pejir-battery"
+fi
+
 # --- 4) разбор ответов модема ------------------------------------------------
 if [ -f "$SIGNAL" ]; then
 	WORK="$(mktemp -d)"
@@ -156,6 +186,38 @@ STUB
 		[ "$op" = "Beeline" ] && ok "оператор=Beeline" || fail "оператор неверно: $op"
 	else
 		fail "файл состояния не создан (3G)"
+	fi
+
+	# Модем без AT+NWINFO (модули Gosuncn/Meig): тип сети берётся из
+	# кода активности в AT+COPS?.
+	rm -f "$WORK/state"
+	cat > "$WORK/bin/mdm-at" <<'STUB'
+#!/bin/sh
+case "$1" in
+"AT+CSQ")    echo "+CSQ: 18,99" ;;
+"AT+NWINFO") echo "ERROR" ;;
+"AT+COPS?")  echo '+COPS: 0,0,"A1 BY",2' ;;
+*)           echo "OK" ;;
+esac
+STUB
+	chmod 755 "$WORK/bin/mdm-at"
+
+	PATH="$WORK/bin:$PATH" \
+	PEJIR_AT_PORT_FILE="$WORK/at-port" \
+	PEJIR_SIGNAL_STATE="$WORK/state" \
+	PEJIR_SMS_OUTBOX="$WORK/empty-outbox" \
+	PEJIR_SIGNAL_LOCK="$WORK/lock" \
+		"$SIGNAL" refresh >/dev/null 2>&1
+
+	if [ -f "$WORK/state" ]; then
+		net="$(sed -n 's/^net=//p' "$WORK/state" | head -1)"
+		op="$(sed -n 's/^operator=//p' "$WORK/state" | head -1)"
+		pct="$(sed -n 's/^pct=//p' "$WORK/state" | head -1)"
+		[ "$net" = "LTE" ] && ok "без AT+NWINFO тип сети взят из COPS: LTE" || fail "тип сети без NWINFO неверно: $net"
+		[ "$op" = "A1 BY" ] && ok "без AT+NWINFO оператор разобран: A1 BY" || fail "оператор без NWINFO неверно: $op"
+		[ "$pct" = "58" ] && ok "процент сигнала без NWINFO: 58" || fail "процент сигнала неверно: $pct"
+	else
+		fail "файл состояния не создан (без NWINFO)"
 	fi
 
 	# Если в очереди SMS есть исходящие - в порт не лезем

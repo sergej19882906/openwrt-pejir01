@@ -1,0 +1,230 @@
+From 7b146ce83d456a46d58c1f483caa61bd999a6d83 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 18:37:31 GMT
+Subject: =?utf-8?b?bHVjaTogWmlnYmVlIC0g0LfQsNC90Y/RgtGL0LkgSE9NRWQg0LzQvtC00YPQu9GM?=
+ =?utf-8?b?INCx0L7Qu9GM0YjQtSDQvdC1INGB0YfQuNGC0LDQtdGC0YHRjyAi0L3QtSDQvtGC?=
+ =?utf-8?b?0LLQtdGH0LDRjtGJ0LjQvCI=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Страница "Модуль Zigbee (PEJIR01)" показывала:
+
+    Модуль /dev/umxtty1          не проверялось
+    Прошивка NCP (EZSP)          не отвечает - нужна прошивка
+    Залитая прошивка NCP         неизвестно
+
+Хотя модуль работал: в журнале HOMEd был "Coordinator ready, address:
+90:fd:9f:ff:fe:67:41:6c", то есть координатор поднялся и Zigbee
+живой.
+
+Причина в том, что проверка EZSP открывает порт /dev/umxtty1, а его
+держит HOMEd. Рукопожатие в этот момент невозможно, и helper честно
+отвечал "NCP-ОТВЕТА-НЕТ". Страница это переводила в "не отвечает -
+нужна прошивка" - то есть предлагала перепрошить исправно работающий
+модуль (и сбить координатор HOMEd).
+
+Что сделано:
+
+  * pejir-zigbee-ncp status: если HOMEd запущен, EZSP-рукопожатие не
+    делается. Статус определяется по журналу HOMEd: "занят HOMEd" или
+    "занят HOMEd, координатор готов". В вывод добавлен отдельный маркер
+    NCP-ОТВЕТА-НЕ-ПРОВЕРЕНО, чтобы "не проверено" не путалось с "не
+    отвечает";
+  * страница: показывает реальное состояние (отвечает / занят HOMEd /
+    порта нет / не отвечает), а в строке NCP-прошивки пишет "проверка
+    невозможна - порт занят HOMEd" вместо "нужна прошивка"; строка
+    "Залитая прошивка NCP" показывает "не перепрошивался (стоковая
+    прошивка)";
+  * прошивка (flash): HOMEd на время прошивки останавливается, а после
+    неё запускается обратно - иначе модуль остался бы в загрузчике;
+  * ensure: пока HOMEd работает с модулем, прошивка не выполняется
+    вовсе;
+  * описание страницы исправлено: прошивка запускается кнопкой, а не
+    автоматически.
+---
+ .../resources/view/perenio/zigbee.js          | 21 +++++--
+ .../po/ru/luci-app-perenio.po                 | 18 +++++-
+ .../pejir-zigbee-ncp/files/pejir-zigbee-ncp   | 55 ++++++++++++++++++-
+ 3 files changed, 86 insertions(+), 8 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js
+index 9bcb0481..50a54591 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/zigbee.js
+@@ -53,8 +53,17 @@ return view.extend({
+ 		var ncpOut = (data && data[0]) ? data[0] : '';
+ 		var homedOut = (data && data[1]) ? data[1] : '';
+ 		var d = kv(ncpOut);
+-		var installed = /NCP-ОТВЕТА-ДА|NCP-ОТВЕТА-ДА/.test(ncpOut) || /NCP-ОТВЕТА-ДА/.test(ncpOut);
+ 		var answer = /NCP-ОТВЕТА-ДА/.test(ncpOut);
++		/* Порт модуля держит HOMEd - EZSP-проверка в этом случае невозможна,
++		 * и сказать "не отвечает" нельзя: модуль как раз работает. */
++		var notChecked = /НЕ-ПРОВЕРЕНО/.test(ncpOut);
++		var statusText = {
++			'ok': _('answers'),
++			'busy': _('in use by HOMEd'),
++			'busy-ready': _('in use by HOMEd, coordinator ready'),
++			'missing': _('port is missing'),
++			'noresp': _('does not answer')
++		};
+ 
+ 		var self = this;
+ 
+@@ -81,20 +90,22 @@ return view.extend({
+ 		return E('div', { 'class': 'cbi-section' }, [
+ 			E('h2', {}, _('Zigbee module (PEJIR01)')),
+ 			E('div', { 'class': 'cbi-section-descr' },
+-				_('The EFR32 Zigbee module of the router. It talks to HOMEd over EZSP; if the module does not answer, its NCP firmware is flashed automatically. The flash resets the Zigbee module only and needs internet access to download the firmware.')),
++				_('The EFR32 Zigbee module of the router. It talks to HOMEd over EZSP. While HOMEd is running, it keeps the port, so the module cannot be checked - its state is then taken from the HOMEd log. If the module does not answer, its NCP firmware can be flashed with a Gecko image (.gbl); the flash resets the Zigbee module only and needs internet access to download the firmware.')),
+ 
+ 			E('table', { 'class': 'table' }, [
+ 				E('tr', { 'class': 'tr' }, [
+ 					E('td', { 'class': 'td', 'width': '33%' }, _('Module /dev/umxtty1')),
+-					E('td', { 'class': 'td' }, d.status || _('not checked'))
++					E('td', { 'class': 'td' }, statusText[d.status] || _('not checked'))
+ 				]),
+ 				E('tr', { 'class': 'tr' }, [
+ 					E('td', { 'class': 'td' }, _('NCP firmware (EZSP)')),
+-					E('td', { 'class': 'td' }, answer ? _('answers, flashing not needed') : _('does not answer - flashing required'))
++					E('td', { 'class': 'td' }, answer ? _('answers, flashing not needed') :
++						(notChecked ? _('check is not possible - the port is used by HOMEd') :
++							_('does not answer - flashing required')))
+ 				]),
+ 				E('tr', { 'class': 'tr' }, [
+ 					E('td', { 'class': 'td' }, _('Flashed NCP image')),
+-					E('td', { 'class': 'td' }, d.image || _('unknown'))
++					E('td', { 'class': 'td' }, d.image || (notChecked ? _('not flashed (stock firmware)') : _('unknown')))
+ 				]),
+ 				E('tr', { 'class': 'tr' }, [
+ 					E('td', { 'class': 'td' }, _('HOMEd service')),
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 038053aa..3667a756 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -420,8 +420,6 @@ msgid "Show status"
+ msgstr "Показать состояние"
+ msgid "Working..."
+ msgstr "Выполняется..."
+-msgid "The EFR32 Zigbee module of the router. It talks to HOMEd over EZSP; if the module does not answer, its NCP firmware is flashed automatically. The flash resets the Zigbee module only and needs internet access to download the firmware."
+-msgstr "Модуль Zigbee EFR32 роутера. Он общается с HOMEd по протоколу EZSP; если модуль не отвечает, его NCP-прошивка ставится автоматически. Прошивка перезапускает только модуль Zigbee и требует интернета для загрузки прошивки."
+ msgid "Module /dev/umxtty1"
+ msgstr "Модуль /dev/umxtty1"
+ msgid "NCP firmware (EZSP)"
+@@ -580,3 +578,19 @@ msgid "Last saved"
+ msgstr "Сохранено в"
+ msgid "The saved value is shown next to each field: the field itself keeps what you entered, and the value next to it is what is really stored in network.lte. A red value means the entered value differs from the saved one."
+ msgstr "Рядом с каждым полем показано сохранённое значение: само поле сохраняет то, что вы ввели, а значение рядом - то, что действительно записано в network.lte. Красное значение означает, что введённое отличается от сохранённого."
++msgid "answers"
++msgstr "отвечает"
++msgid "does not answer"
++msgstr "не отвечает"
++msgid "port is missing"
++msgstr "порта нет"
++msgid "in use by HOMEd"
++msgstr "занят HOMEd"
++msgid "in use by HOMEd, coordinator ready"
++msgstr "занят HOMEd, координатор готов"
++msgid "check is not possible - the port is used by HOMEd"
++msgstr "проверка невозможна - порт занят HOMEd"
++msgid "not flashed (stock firmware)"
++msgstr "не перепрошивался (стоковая прошивка)"
++msgid "The EFR32 Zigbee module of the router. It talks to HOMEd over EZSP. While HOMEd is running, it keeps the port, so the module cannot be checked - its state is then taken from the HOMEd log. If the module does not answer, its NCP firmware can be flashed with a Gecko image (.gbl); the flash resets the Zigbee module only and needs internet access to download the firmware."
++msgstr "Модуль Zigbee EFR32 роутера. Он общается с HOMEd по протоколу EZSP. Пока работает HOMEd, он держит порт, поэтому модуль проверить нельзя - состояние берётся из журнала HOMEd. Если модуль не отвечает, его NCP-прошивку можно прошить Gecko-образом (.gbl); прошивка перезапускает только модуль Zigbee и требует интернета для загрузки прошивки."
+diff --git a/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+index f688b826..e43fb0ab 100755
+--- a/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
++++ b/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp
+@@ -87,8 +87,26 @@ power_cycle() {
+ 	return 0
+ }
+ 
++# Работает ли HOMEd с модулем.
++#
++# ВАЖНО. Пока HOMEd запущен, порт /dev/umxtty1 держит он, и EZSP-
++# рукопожатие с нашей стороны невозможно: модуль не «мёртв», он просто
++# занят. Раньше страница в этом случае показывала "не отвечает - нужна
++# прошивка", то есть предлагала перепрошить исправно работающий модуль
++# (и тем самым сбить координатор HOMEd). Поэтому, если HOMEd запущен,
++# рукопожатие не делаем, а состояние берём из журнала HOMEd.
++homed_running() {
++	pgrep -f "homed-zigbee" >/dev/null 2>&1
++}
++
++# Готов ли координатор в HOMEd (по журналу).
++homed_ready() {
++	logread 2>/dev/null | grep "homed-zigbee" | grep -q "Coordinator ready"
++}
++
+ cmd_status() {
+ 	if [ ! -e "$PORT" ]; then
++		echo "status=missing"
+ 		log "порта $PORT нет - модуль Zigbee не подключён (uartmuxd не поднялся?)"
+ 		return 2
+ 	fi
+@@ -96,7 +114,23 @@ cmd_status() {
+ 	if [ -f "$NCP_VERSION_FILE" ]; then
+ 		echo "IMAGE $(head -1 "$NCP_VERSION_FILE" 2>/dev/null)"
+ 	fi
+-	pejir-ncp-flash status -p "$PORT"
++	if homed_running; then
++		if homed_ready; then
++			echo "status=busy-ready"
++		else
++			echo "status=busy"
++		fi
++		echo "NCP-ОТВЕТА-НЕ-ПРОВЕРЕНО"
++		log "модуль $PORT занят HOMEd - EZSP-проверка невозможна, состояние взято из журнала HOMEd"
++		return 0
++	fi
++	out="$(pejir-ncp-flash status -p "$PORT" 2>/dev/null)"
++	echo "$out"
++	case "$out" in
++	*NCP-ОТВЕТА-ДА*) echo "status=ok" ;;
++	*) echo "status=noresp" ;;
++	esac
++	return 0
+ }
+ 
+ # Запоминаем, каким образом прошит модуль: имя файла и его sha256.
+@@ -114,6 +148,10 @@ cmd_ensure() {
+ 		log "порта $PORT нет - прошивка NCP невозможна, модуль не подключён"
+ 		return 2
+ 	fi
++	if homed_running; then
++		log "HOMEd работает с модулем - состояние определяется по журналу HOMEd, прошивка не выполняется"
++		return 0
++	fi
+ 	if pejir-ncp-flash status -p "$PORT" >/dev/null 2>&1; then
+ 		log "модуль $PORT отвечает по EZSP - прошивка NCP не нужна"
+ 		return 0
+@@ -138,6 +176,16 @@ cmd_flash() {
+ 		log "порта $PORT нет - прошивка NCP невозможна, модуль не подключён"
+ 		return 2
+ 	fi
++	# HOMEd держит порт модуля. На время прошивки его надо остановить
++	# (иначе EZSP-рукопожатие невозможно), а после прошивки - запустить
++	# обратно, чтобы координатор поднялся заново.
++	homed_was_running=0
++	if homed_running; then
++		homed_was_running=1
++		log "останавливаю HOMEd на время прошивки модуля"
++		/etc/init.d/homed-zigbee stop >/dev/null 2>&1
++		sleep 3
++	fi
+ 	# Перед прошивкой модуль лучше перезапустить: зависший модуль не
+ 	# ответит на EZSP-рукопожатие, и прошивка не начнётся.
+ 	power_cycle
+@@ -145,6 +193,11 @@ cmd_flash() {
+ 	pejir-ncp-flash flash -p "$PORT" -f "$(image_path)" || return 1
+ 	save_ncp_version
+ 	log "записана версия NCP: $NCP_VERSION_FILE"
++	[ "$homed_was_running" = "1" ] && {
++		log "запускаю HOMEd обратно"
++		/etc/init.d/homed-zigbee start >/dev/null 2>&1
++	}
++	return 0
+ }
+ 
+ # Прошивка в фоне: она занимает минуты (скачивание образа + XMODEM по
+

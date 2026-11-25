@@ -251,6 +251,60 @@ else
 	done
 fi
 
+# --- занятый порт: HOMEd держит модуль --------------------------------------
+# Пока HOMEd запущен, порт /dev/umxtty1 держит он, и EZSP-рукопожатие
+# невозможно. Раньше helper в этом случае отвечал "NCP-ОТВЕТА-НЕТ", и
+# страница предлагала перепрошить исправно работающий модуль.
+HELPER="$OW/package/pejir-zigbee-ncp/files/pejir-zigbee-ncp"
+if [ -f "$HELPER" ]; then
+	mkdir -p "$WORK/stub"
+	: > "$WORK/port"
+	cat > "$WORK/stub/pgrep" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+	cat > "$WORK/stub/logread" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+	cat > "$WORK/stub/pejir-ncp-flash" <<'STUB'
+#!/bin/sh
+echo "вызван" >> "$WORK/flash.calls"
+echo "NCP-ОТВЕТА-ДА v8"
+STUB
+	chmod 755 "$WORK/stub"/*
+
+	PATH="$WORK/stub:$PATH" ZIGBEE_PORT="$WORK/port" \
+		sh "$HELPER" status > "$WORK/busy.out" 2>&1
+
+	if grep -q "status=busy" "$WORK/busy.out"; then
+		ok "helper: занятый HOMEd порт - статус busy, а не 'не отвечает'"
+	else
+		fail "helper: при занятом порте нет status=busy"
+		sed 's/^/     /' "$WORK/busy.out"
+	fi
+
+	if grep -q "NCP-ОТВЕТА-НЕ-ПРОВЕРЕНО" "$WORK/busy.out"; then
+		ok "helper: при занятом порте ответ 'не проверено', а не 'не отвечает'"
+	else
+		fail "helper: нет маркера NCP-ОТВЕТА-НЕ-ПРОВЕРЕНО"
+	fi
+
+	if [ ! -f "$WORK/flash.calls" ]; then
+		ok "helper: EZSP-рукопожатие не делается, пока порт занят HOMEd"
+	else
+		fail "helper: EZSP-проверка выполнена при занятом порте"
+	fi
+
+	if grep -q "ensure" "$HELPER" && grep -q "homed_running" "$HELPER"; then
+		ok "helper: ensure/flash учитывают, что модуль занят HOMEd"
+	else
+		fail "helper: нет учёта занятого модуля в ensure/flash"
+	fi
+else
+	fail "нет helper'а $HELPER"
+fi
+
 rm -rf "$WORK"
 
 echo ""

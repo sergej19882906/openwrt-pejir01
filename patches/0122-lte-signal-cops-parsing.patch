@@ -1,0 +1,70 @@
+From 6e491822d46a1f0cd2ed6b7dda5a2b7df131498d Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 18:37:29 GMT
+Subject: =?utf-8?b?cGVqaXItc2lnbmFsOiDRgtC40L8g0YHQtdGC0Lgg0L3QtSDRh9C40YLQsNC70YHR?=
+ =?utf-8?b?jyDQuNC3IEFUK0NPUFM/ICjRgdC70L7QvNCw0L3QvdGL0LkgYXdrKQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Значок сети в шапке показывал пустой тип сети (net=) при зарегистри-
+рованном модеме, хотя оператор и уровень сигнала читались верно.
+
+Причина - в разборе ответа AT+COPS? Регулярное выражение awk,
+начинающееся с кавычки ("[^"]*"), не компилируется ни gawk, ни busybox
+awk ("syntax error" / "Unexpected token"), и из-за этого ВЕСЬ awk-скрипт
+молча не запускался: оператор и код активности (act) не читались, а тип
+сети считался неизвестным.
+
+Разбор переведён на sed (он работает и в busybox, и в dash). Проверено
+на живом ответе модема: "+COPS: 0,0,\"A1 BY\",2" -> оператор "A1 BY",
+act=2 (UTRAN EPS = LTE).
+
+Заодно код активности теперь действительно используется: тип сети
+берётся из AT+NWINFO, а если модем его не поддерживает (модули
+Gosuncn/Meig не поддерживают) - из кода активности в AT+COPS?.
+---
+ .../root/usr/libexec/pejir-signal             | 24 +++++++------------
+ 1 file changed, 9 insertions(+), 15 deletions(-)
+
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-signal b/package/pejir-lte-base/root/usr/libexec/pejir-signal
+index db944e9e..1024446b 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-signal
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-signal
+@@ -43,26 +43,20 @@ parse_nwinfo() {
+ }
+ 
+ # '+COPS: 0,0,"MegaFon",2' -> MegaFon
++#
++# ВАЖНО: разбор сделан на sed, а НЕ на awk. Регулярное выражение awk,
++# начинающееся с кавычки ("[^"]*"), не компилируется ни gawk, ни busybox
++# awk ("syntax error" / "Unexpected token"), из-за чего ВЕСЬ awk-скрипт
++# молча не запускался: оператор и код активности не читались, и в файле
++# состояния тип сети оставался пустым (в шапке показывалось "нет сети",
++# хотя модем был зарегистрирован в сети).
+ parse_cops_op() {
+-	printf '%s' "$1" | awk '
+-		match($0, /\+COPS: *[0-9]+,[0-9]+,"[^"]*"/) {
+-			s = substr($0, RSTART, RLENGTH)
+-			sub(/^.*,"/, "", s)
+-			sub(/"$/, "", s)
+-			print s
+-			exit
+-		}'
++	printf '%s' "$1" | sed -n 's/.*+COPS: *[0-9],[0-9],"\([^"]*\)".*/\1/p' | head -1
+ }
+ 
+ # '+COPS: 0,0,"MegaFon",2' -> 2
+ parse_cops_act() {
+-	printf '%s' "$1" | awk '
+-		match($0, /\+COPS: *[0-9]+,[0-9]+("[^"]*"|[^,]*),[0-9]+/) {
+-			s = substr($0, RSTART, RLENGTH)
+-			n = split(s, a, ",")
+-			print a[n]
+-			exit
+-		}'
++	printf '%s' "$1" | sed -n 's/.*+COPS: *[0-9],[0-9],"[^"]*",\([0-9][0-9]*\).*/\1/p' | head -1
+ }
+ 
+ # Тип сети по NWINFO
+

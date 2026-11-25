@@ -129,6 +129,74 @@ else
 	fail "helper: не сообщает об удалённых чужих скриптах"
 fi
 
+# --- приведение конфигурации: сторож AT-порта и swap по UUID --------------
+mkdir -p "$WORK/stub"
+cat > "$WORK/stub/uci" <<STUB
+#!/bin/sh
+case "\$1" in
+show)
+	echo "fstab.@swap[0]=swap"
+	echo "fstab.@swap[0].device='/dev/sda2'"
+	;;
+-q)
+	case "\$3" in
+	*.uuid) exit 1 ;;
+	*.device) echo "/dev/sda2" ;;
+	esac
+	;;
+set)
+	echo "SET \$2" >> "$WORK/uci.calls"
+	;;
+commit)
+	echo "COMMIT \$2" >> "$WORK/uci.calls"
+	;;
+esac
+exit 0
+STUB
+cat > "$WORK/stub/block" <<'STUB'
+#!/bin/sh
+echo '/dev/sda2: UUID="1234-ABCD" TYPE="swap"'
+exit 0
+STUB
+cat > "$WORK/watch-init" <<STUB
+#!/bin/sh
+echo "watch \$1" >> "$WORK/watch.calls"
+exit 0
+STUB
+chmod 755 "$WORK/stub/uci" "$WORK/stub/block" "$WORK/watch-init"
+rm -f "$WORK/uci.calls" "$WORK/watch.calls"
+# Метка чистки удаляется - helper решит, что образ новый, и выполнит
+# приведение конфигурации (иначе он выйдет раньше).
+rm -f "$WORK/upper/pejir/purge-version"
+
+out_mig="$(PATH="$WORK/stub:$PATH" \
+	PEJIR_PURGE_VERSION_FILE="$WORK/version" \
+	PEJIR_PURGE_MARKER="$WORK/upper/pejir/purge-version" \
+	PEJIR_PURGE_CMD="$WORK/purge" \
+	PEJIR_PURGE_UPPER_DIR="$WORK/upper" \
+	PEJIR_AT_WATCH_INIT="$WORK/watch-init" \
+		sh "$HELPER" 2>&1)"
+
+if grep -q "watch enable" "$WORK/watch.calls" 2>/dev/null; then
+	ok "helper: сторож AT-порта включается в автозапуск после обновления"
+else
+	fail "helper: сторож AT-порта не включён"
+fi
+
+if grep -q "SET fstab.@swap\[0\].uuid=1234-ABCD" "$WORK/uci.calls" 2>/dev/null; then
+	ok "helper: секция swap переводится на UUID"
+else
+	fail "helper: секция swap не переведена на UUID"
+	find="$WORK/uci.calls"
+	[ -f "$find" ] && sed 's/^/     /' "$find"
+fi
+
+if grep -q "COMMIT fstab" "$WORK/uci.calls" 2>/dev/null; then
+	ok "helper: изменение fstab зафиксировано (uci commit)"
+else
+	fail "helper: uci commit fstab не выполнен"
+fi
+
 # Проверка Zigbee: helper сообщает о состоянии модуля /dev/umxtty1
 # В песочнице /dev/umxtty1 нет, поэтому проверяем сам факт проверки:
 # helper обязан упомянуть состояние Zigbee-модуля.

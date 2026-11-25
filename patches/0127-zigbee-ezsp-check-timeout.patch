@@ -1,0 +1,109 @@
+From ecde3d172be37e5c0eb3c9b338d7d9f74c66857a Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 18:43:12 GMT
+Subject: =?utf-8?b?emlnYmVlOiDQv9GA0L7QstC10YDQutCwIEVaU1Ag0L3QtSDQtNC+0LvQttC90LAg?=
+ =?utf-8?b?0LLQuNGB0LXRgtGMINC90LAg0YHRgtGA0LDQvdC40YbQtQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Проверка "отвечает ли модуль" перебирала все версии EZSP подряд, и
+каждая попытка ждала таймаут 3 секунды. Итог - до 30 секунд на
+запрос: страница LuCI с этим запросом висела всё это время (отсюда
+было ощущение, что веб-интерфейс "подвисает"), а процесс pejir-ncp-flash
+всё это время держал порт модуля.
+
+Теперь:
+
+  * если модуль не ответил ни одним байтом, попытки сразу
+    прекращаются (молчащий модуль перебирать версии бессмысленно);
+  * общий бюджет на попытку EZSP - 5 секунд;
+  * таймаут ответа на RST/кадр уменьшен с 3 с до 1.5 с.
+---
+ .../pejir-zigbee-ncp/src/pejir-ncp-flash.c    | 49 ++++++++++++++++---
+ 1 file changed, 43 insertions(+), 6 deletions(-)
+
+diff --git a/package/pejir-zigbee-ncp/src/pejir-ncp-flash.c b/package/pejir-zigbee-ncp/src/pejir-ncp-flash.c
+index 1ea7c51d..379bf1fe 100644
+--- a/package/pejir-zigbee-ncp/src/pejir-ncp-flash.c
++++ b/package/pejir-zigbee-ncp/src/pejir-ncp-flash.c
+@@ -55,7 +55,8 @@
+ #define DEFAULT_BAUD 115200
+ 
+ /* Таймауты, мс */
+-#define T_EZSP 3000      /* ответ на RST/кадр конфигурации */
++#define T_EZSP 1500      /* ответ на RST/кадр конфигурации */
++#define EZSP_BUDGET_MS 5000 /* общий бюджет на попытку EZSP */
+ #define T_BOOT 10000     /* баннер загрузчика и 'C' */
+ #define T_XMODEM 10000   /* ACK на блок */
+ 
+@@ -218,7 +219,28 @@ static const struct ezsp_ver VERSIONS[] = {
+ 	{ "v4", { 0x00, 0x42, 0x21, 0xA8, 0x50, 0xED, 0x2C, 0x7E }, { 0x42, 0xA1, 0xA8, 0x50 } },
+ };
+ 
+-/* Ответ модуля на RST: только EZSP-совместимый NCP ответит RSTACK. */
++/* Сколько миллисекунд прошло с момента start. */
++static long elapsed_ms(const struct timespec *start)
++{
++	struct timespec now;
++	clock_gettime(CLOCK_MONOTONIC, &now);
++	return (long)((now.tv_sec - start->tv_sec) * 1000 +
++			(now.tv_nsec - start->tv_nsec) / 1000000);
++}
++
++/* Ответ модуля на RST: только EZSP-совместимый NCP ответит RSTACK.
++ *
++ * Возвращает:
++ *    0 - RSTACK получен и совпал;
++ *    1 - модуль что-то ответил, но не RSTACK (значит это не EZSP NCP);
++ *   -1 - модуль не ответил вовсе (ни одного байта).
++ *
++ * Разница важна: раньше молчащий модуль проверялся на все версии EZSP
++ * подряд, и каждая попытка ждала таймаут (3 с). Проверка "отвечает ли
++ * модуль" занимала до 30 секунд, а страница LuCI с этим запросом
++ * висела всё это время - отсюда было ощущение, что "веб-интерфейс
++ * подвисает". Теперь молчание сразу обрывает попытки.
++ */
+ static int ezsp_rst(int fd, int timeout_ms)
+ {
+ 	uint8_t resp[16];
+@@ -226,20 +248,35 @@ static int ezsp_rst(int fd, int timeout_ms)
+ 	if (write_all(fd, EZSP_RST, sizeof(EZSP_RST)) < 0)
+ 		return -1;
+ 	ssize_t n = read_exact(fd, resp, sizeof(EZSP_RSTACK), timeout_ms);
+-	if (n != (ssize_t)sizeof(EZSP_RSTACK))
++	if (n == 0)
+ 		return -1;
++	if (n != (ssize_t)sizeof(EZSP_RSTACK))
++		return 1;
+ 	if (memcmp(resp, EZSP_RSTACK, sizeof(EZSP_RSTACK)) != 0)
+-		return -1;
++		return 1;
+ 	return 0;
+ }
+ 
+ /* Полная инициализация EZSP; возвращает номер версии (8..4) или -1. */
+ static int ezsp_init(int fd)
+ {
++	struct timespec start;
++
++	clock_gettime(CLOCK_MONOTONIC, &start);
++
+ 	for (size_t i = 0; i < sizeof(VERSIONS) / sizeof(VERSIONS[0]); i++) {
+ 		uint8_t resp[16];
+-		if (ezsp_rst(fd, T_EZSP) < 0)
+-			continue;
++		int r;
++
++		/* Общий бюджет времени: проверка не должна висеть на странице. */
++		if (elapsed_ms(&start) > EZSP_BUDGET_MS)
++			return -1;
++
++		r = ezsp_rst(fd, T_EZSP);
++		if (r < 0)
++			return -1;	/* модуль молчит - дальше бессмысленно */
++		if (r > 0)
++			continue;	/* ответ есть, но это не EZSP NCP */
+ 		if (write_all(fd, VERSIONS[i].cfg, sizeof(VERSIONS[i].cfg)) < 0)
+ 			continue;
+ 		if (read_exact(fd, resp, 11, T_EZSP) != 11)

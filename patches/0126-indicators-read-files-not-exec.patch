@@ -1,0 +1,150 @@
+From 472a05a79c9048e5e1b3fd02c01a2cea85b5c668 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 18:43:12 GMT
+Subject: =?utf-8?b?bHVjaTog0LfQvdCw0YfQutC4INC90LUg0LfQsNC/0YPRgdC60LDRjtGCINC/0YDQ?=
+ =?utf-8?b?vtGG0LXRgdGB0Ysg0LjQtyDQsdGA0LDRg9C30LXRgNCwICjQstC10LEt0LjQvdGC?=
+ =?utf-8?b?0LXRgNGE0LXQudGBINC/0L7QtNGC0L7RgNC80LDQttC40LLQsNC7KQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Значок батареи каждые 15 секунд запускал "/usr/bin/mcu getsys" из
+браузера. Это клиент vendor-демона mcud: на каждый опрос rpcd
+поднимал процесс, страница ждала ответа, и веб-интерфейс заметно
+терял отзывчивость.
+
+Теперь состояние батареи, как и сети, собирает демон pejir-signal
+(раз в минуту, в фоне) и пишет его в /tmp/pejir-battery. Браузер
+только читает файлы - ни одного процесса из страницы.
+
+  * pejir-signal: новая функция refresh_battery (ответ STM32
+    целиком, с таймаутом 5 с);
+  * battery-indicator.js: читает /tmp/pejir-battery вместо fs.exec;
+  * lte-indicator.js: опрос раз в 30 секунд вместо 15;
+  * в ACL добавлено чтение /tmp/pejir-battery.
+---
+ .../resources/battery-indicator.js            | 12 ++++++----
+ .../luci-static/resources/lte-indicator.js    |  2 +-
+ .../share/rpcd/acl.d/luci-app-perenio.json    |  3 +++
+ .../root/usr/libexec/pejir-signal             | 24 +++++++++++++++++++
+ 4 files changed, 36 insertions(+), 5 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
+index 81ac379c..5d78a423 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
+@@ -23,6 +23,11 @@
+ 
+ var BATTERY_LINK = 'admin/status/perenio-battery';
+ 
++/* Файл состояния батареи. Его пишет демон pejir-signal (раз в минуту).
++ * Раньше браузер сам запускал "/usr/bin/mcu getsys" - на каждый опрос
++ * rpcd поднимал процесс, и веб-интерфейс заметно подтормаживал. */
++var BATTERY_FILE = '/tmp/pejir-battery';
++
+ function chargeText(mod, d) {
+ 	switch (mod.chargeStatus(d)) {
+ 	case 'fast':
+@@ -90,14 +95,13 @@ function render(el, mod, d) {
+ }
+ 
+ function update() {
+-	return fs.exec('/usr/bin/mcu', [ 'getsys' ]).then(function(res) {
++	return fs.read(BATTERY_FILE).then(function(text) {
+ 		var el = indicator();
+ 
+ 		if (!el)
+ 			return;
+ 
+-		var out = (res && res.stdout) ? res.stdout : '';
+-		var d = perenio_battery.parseSys(out);
++		var d = perenio_battery.parseSys(text || '');
+ 
+ 		/* mcud не ответил - значок прячем, чтобы не путать. */
+ 		if (!d) {
+@@ -115,7 +119,7 @@ function update() {
+ 	});
+ }
+ 
+-poll.add(update, 15);
++poll.add(update, 30);
+ update();
+ 
+ return baseclass.extend({
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
+index 112d35f6..40766af6 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
+@@ -154,7 +154,7 @@ function update() {
+ 	});
+ }
+ 
+-poll.add(update, 15);
++poll.add(update, 30);
+ update();
+ 
+ return baseclass.extend({
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index dd56169b..0942c822 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -12,6 +12,9 @@
+ 				"/etc/smsd.conf": [
+ 					"read"
+ 				],
++				"/tmp/pejir-battery": [
++					"read"
++				],
+ 				"/tmp/pejir-signal": [
+ 					"read"
+ 				],
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-signal b/package/pejir-lte-base/root/usr/libexec/pejir-signal
+index 1024446b..f2989425 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-signal
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-signal
+@@ -18,6 +18,7 @@ STATE_FILE="${PEJIR_SIGNAL_STATE:-/tmp/pejir-signal}"
+ INTERVAL="${PEJIR_SIGNAL_INTERVAL:-60}"
+ TIMEOUT="${PEJIR_SIGNAL_TIMEOUT:-4}"
+ SMS_OUTBOX="${PEJIR_SMS_OUTBOX:-/var/spool/sms/outgoing}"
++BATTERY_STATE="${PEJIR_BATTERY_STATE:-/tmp/pejir-battery}"
+ LOCK_FILE="${PEJIR_SIGNAL_LOCK:-/tmp/pejir-signal.lock}"
+ 
+ log() {
+@@ -92,6 +93,26 @@ lock_stale() {
+ 	return 0
+ }
+ 
++# Состояние батареи (STM32) - для значка в шапке.
++#
++# Раньше браузер сам запускал "/usr/bin/mcu getsys" каждые 15 секунд.
++# Это клиент vendor-демона mcud: на каждый опрос rpcd поднимал процесс,
++# а страница LuCI ждала его ответа - веб-интерфейс заметно подтормаживал.
++# Поэтому состояние батареи, как и сеть, собирает демон, а браузер
++# просто читает файл.
++refresh_battery() {
++	local out
++
++	[ -x /usr/bin/mcu ] || return 1
++	out="$(timeout 5 /usr/bin/mcu getsys 2>/dev/null)"
++	case "$out" in
++	*OK*) : ;;
++	*) return 1 ;;
++	esac
++	printf '%s\n' "$out" > "$BATTERY_STATE.tmp" 2>/dev/null &&
++		mv "$BATTERY_STATE.tmp" "$BATTERY_STATE" 2>/dev/null
++}
++
+ cmd_refresh() {
+ 	local port csq nw cops rssi pct net op act
+ 
+@@ -140,6 +161,9 @@ cmd_refresh() {
+ 		echo "operator=${op:-}"
+ 	} > "$STATE_FILE.tmp" 2>/dev/null && mv "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null
+ 
++	# Батарея - отдельным файлом (ответ STM32 целиком).
++	refresh_battery
++
+ 	rmdir "$LOCK_FILE" 2>/dev/null
+ 	trap - EXIT INT TERM
+ 	return 0
+
