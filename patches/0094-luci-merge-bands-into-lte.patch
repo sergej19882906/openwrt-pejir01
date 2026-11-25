@@ -1,0 +1,416 @@
+From 5d931a041853b819e0b2a889ad5687080558f9b2 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 04:07:21 GMT
+Subject: =?utf-8?b?cGVqaXItbHVjaTog0L7QsdGK0LXQtNC40L3QuNGC0YwgwqvQn9C+0LvQvtGB0Ysg?=
+ =?utf-8?b?M0cvNEfCuyDQuCDCq9Cd0LDRgdGC0YDQvtC50LrQuCBMVEXCuyDQsiDQvtC00L3R?=
+ =?utf-8?b?gyDRgdGC0YDQsNC90LjRhtGD?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+Пользовательская правка: страницы «Полосы 3G/4G (PEJIR01)» и «Настройки
+LTE (PEJIR01)» объединены в ОДНУ страницу с одним пунктом меню
+«Настройки LTE (PEJIR01)».
+
+Что сделано:
+  * в perenio/lte.js добавлен раздел «3G/4G bands (PEJIR01)» - список
+    диапазонов (8 позиций: 3G band 1/8, 4G band 1/3/7/8/20/38) с
+    галочками и кнопками «Сохранить диапазоны», «Применить диапазоны к
+    модему», «Показать текущие диапазоны»;
+  * список диапазонов и настройки APN/SIM/режима канала теперь в одном
+    журнале модема (pejir-lte-log) - отдельного «Band log» больше нет;
+  * отдельная страница perenio/bands.js удалена, отдельный пункт меню
+    admin/status/perenio-bands убран;
+  * добавлены переводы новых строк в po/ru/luci-app-perenio.po
+    («Сохранить диапазоны», «Применить диапазоны к модему»,
+    «Показать текущие диапазоны»).
+
+Хранилище и команды не изменились: список диапазонов по-прежнему в
+network.lte.perenio_band, применяется тем же helper'ом
+/usr/libexec/pejir-band (AT+ZBAND) - точно как в стоковой прошивке.
+
+Закреплено тестом tests/test-bands.sh (переведён на новую схему): теперь
+проверяется, что отдельной страницы bands.js нет, отдельного пункта меню
+нет, а список диапазонов и вызовы helper'а присутствуют на странице LTE.
+Тест test-menu-json.sh дополнительно следит, чтобы на странице не
+появилось «висячих» файлов без пункта меню.
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js
+deleted file mode 100644
+index 09b07f9..0000000
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/bands.js
++++ /dev/null
+@@ -1,153 +0,0 @@
+-'use strict';
+-'require view';
+-'require fs';
+-'require uci';
+-'require ui';
+-
+-/* Диапазоны 3G/4G модема GM510.
+- *
+- * Настройка полностью повторяет стоковую прошивку Perenio: список
+- * диапазонов хранится в UCI (network.lte.perenio_band), а модему
+- * отправляется AT+ZBAND=<UMTS>,0,0,<LTE>. Маски диапазонов - те же,
+- * что в стоке (usr/lib/modem_ubus/gosuncn.sh).
+- *
+- * Список диапазонов применяется:
+- *   - кнопкой "Применить сейчас" (сразу, через /usr/libexec/pejir-band);
+- *   - при каждом старте LTE (init-скрипт 47-pejir-lte).
+- *
+- * Если список не задан, модем работает на всех диапазонах (обычная
+- * настройка по умолчанию модема) - ничего не отправляется.
+- */
+-
+-var BANDS = [
+-	[ 'umts01', _('3G: band 1 (2100 MHz)') ],
+-	[ 'umts08', _('3G: band 8 (900 MHz)') ],
+-	[ 'lte01', _('4G: band 1 (2100 MHz)') ],
+-	[ 'lte03', _('4G: band 3 (1800 MHz)') ],
+-	[ 'lte07', _('4G: band 7 (2600 MHz)') ],
+-	[ 'lte08', _('4G: band 8 (900 MHz)') ],
+-	[ 'lte20', _('4G: band 20 (800 MHz)') ],
+-	[ 'lte38', _('4G: band 38 (2600 MHz, TDD)') ]
+-];
+-
+-var BAND = '/usr/libexec/pejir-band';
+-
+-function currentBands() {
+-	var s = uci.get('network', 'lte', 'perenio_band');
+-
+-	if (s == null)
+-		return [];
+-
+-	if (Array.isArray(s))
+-		return s;
+-
+-	return String(s).split(/\s+/).filter(function(x) { return x != ''; });
+-}
+-
+-function setText(id, s) {
+-	var el = document.getElementById(id);
+-
+-	if (el)
+-		el.textContent = s;
+-}
+-
+-return view.extend({
+-	handleSave: function(ev) {
+-		var boxes = document.querySelectorAll('.pejir-band-box');
+-		var val = [];
+-
+-		for (var i = 0; i < boxes.length; i++) {
+-			if (boxes[i].checked)
+-				val.push(boxes[i].value);
+-		}
+-
+-		uci.set('network', 'lte', 'perenio_band', val);
+-		return uci.save().then(function() {
+-			ui.addNotification(null, E('p', {}, _('Saved. Press "Apply now" to send the setting to the modem.')), 'info');
+-		}).catch(function(e) {
+-			ui.addNotification(null, E('p', {}, _('Failed to save: ') + (e && e.message ? e.message : e)), 'error');
+-		});
+-	},
+-
+-	handleApply: function(ev) {
+-		var btn = ev.currentTarget;
+-
+-		btn.disabled = true;
+-		setText('pejir-bands-log', _('Sending the setting to the modem...'));
+-
+-		return fs.exec(BAND, [ 'apply' ]).then(function(r) {
+-			var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
+-
+-			setText('pejir-bands-log', out.trim() || _('Done'));
+-			btn.disabled = false;
+-		}).catch(function(e) {
+-			setText('pejir-bands-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
+-			btn.disabled = false;
+-		});
+-	},
+-
+-	handleShow: function(ev) {
+-		var btn = ev.currentTarget;
+-
+-		btn.disabled = true;
+-		setText('pejir-bands-log', _('Reading the modem bands...'));
+-
+-		return fs.exec(BAND, [ 'show' ]).then(function(r) {
+-			var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
+-
+-			setText('pejir-bands-log', out.trim() || _('No data'));
+-			btn.disabled = false;
+-		}).catch(function(e) {
+-			setText('pejir-bands-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
+-			btn.disabled = false;
+-		});
+-	},
+-
+-	render: function() {
+-		var sel = currentBands();
+-		var rows = [];
+-
+-		BANDS.forEach(function(b) {
+-			var id = 'pejir-band-' + b[0];
+-
+-			rows.push(E('div', { 'class': 'cbi-value' }, [
+-				E('div', { 'class': 'cbi-value-title' }, b[1]),
+-				E('div', { 'class': 'cbi-value-field' },
+-					E('input', { 'type': 'checkbox', 'class': 'pejir-band-box',
+-						'id': id, 'value': b[0],
+-						'checked': sel.indexOf(b[0]) >= 0 }))
+-			]));
+-		});
+-
+-		var saveBtn = E('button', { 'class': 'cbi-button cbi-button-save', 'type': 'button' },
+-				_('Save'));
+-		saveBtn.addEventListener('click', L.bind(this.handleSave, this));
+-
+-		var applyBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
+-				_('Apply now'));
+-		applyBtn.addEventListener('click', L.bind(this.handleApply, this));
+-
+-		var showBtn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' },
+-				_('Show current'));
+-		showBtn.addEventListener('click', L.bind(this.handleShow, this));
+-
+-		return E('div', { 'class': 'cbi-section' }, [
+-			E('h2', {}, _('3G/4G bands (PEJIR01)')),
+-			E('div', { 'class': 'cbi-section-descr' },
+-				_('Allowed frequency bands for the GM510 modem. The list is stored in network.lte.perenio_band and applied with the AT+ZBAND command, exactly as in the stock firmware. If nothing is selected, the modem keeps all bands enabled by default.')),
+-			E('div', { 'class': 'cbi-map' }, rows),
+-			E('div', { 'class': 'cbi-value' }, [
+-				E('div', { 'class': 'cbi-value-title' }, ''),
+-				E('div', { 'class': 'cbi-value-field' }, [
+-					saveBtn, ' ', applyBtn, ' ', showBtn
+-				])
+-			]),
+-			E('div', { 'class': 'cbi-value' }, [
+-				E('div', { 'class': 'cbi-value-title' }, _('Band log')),
+-				E('div', { 'class': 'cbi-value-field' },
+-					E('pre', { 'id': 'pejir-bands-log',
+-						'style': 'white-space:pre-wrap; font-family:monospace; font-size:12px; max-height:40vh; overflow:auto; border:1px solid #ccc; padding:8px;' }, ''))
+-			])
+-		]);
+-	}
+-});
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+index ec807c9..ba0b4ed 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -4,20 +4,41 @@
+ 'require uci';
+ 'require ui';
+ 
+-/* Настройки подключения к сети (APN) модема GM510.
++/* Настройки модема GM510: подключение (APN), SIM, режим канала и
++ * диапазоны 3G/4G - всё на одной странице (один пункт меню).
+  *
+- * Имена полей - те же, что и в стоковой прошивке Perenio:
++ * Имена полей - те же, что в стоковой прошивке Perenio:
+  * network.lte.apn, network.lte.pdptype, network.lte.username,
+- * network.lte.password, network.lte.auth.
++ * network.lte.password, network.lte.auth, network.lte.modes,
++ * network.lte.perenio_band.
+  *
+- * Команды модему собирает /usr/libexec/pejir-lte-apn (AT+CGDCONT и
+- * AT+ZECMCALL - как в стоковом gosuncn.sh), init-скрипт 47-pejir-lte
+- * отправляет их при каждом старте LTE.
++ * Команды модему собирают helper'ы:
++ *   /usr/libexec/pejir-lte-apn    - AT+CGDCONT и AT+ZECMCALL (как в стоке);
++ *   /usr/libexec/pejir-modem-ctl - SIM PIN, номер SIM, AT+ZRST, AT+ZBAND;
++ *   /usr/libexec/pejir-band      - AT+ZBAND по списку диапазонов.
++ * init-скрипт 47-pejir-lte отправляет настройки при каждом старте LTE.
++ *
++ * Диапазоны 3G/4G раньше были отдельной страницей "Полосы 3G/4G
++ * (PEJIR01)"; теперь это раздел ниже, отдельного пункта меню нет.
+  */
+ 
+ var HELPER = '/usr/libexec/pejir-lte-apn';
+ var MODEM = '/usr/libexec/pejir-modem-ctl';
+ var LTE_INIT = '/etc/init.d/47-pejir-lte';
++var BAND = '/usr/libexec/pejir-band';
++
++/* Диапазоны 3G/4G: список и маски - как в стоковой прошивке
++ * (network.lte.perenio_band, AT+ZBAND). */
++var BANDS = [
++	[ 'umts01', _('3G: band 1 (2100 MHz)') ],
++	[ 'umts08', _('3G: band 8 (900 MHz)') ],
++	[ 'lte01', _('4G: band 1 (2100 MHz)') ],
++	[ 'lte03', _('4G: band 3 (1800 MHz)') ],
++	[ 'lte07', _('4G: band 7 (2600 MHz)') ],
++	[ 'lte08', _('4G: band 8 (900 MHz)') ],
++	[ 'lte20', _('4G: band 20 (800 MHz)') ],
++	[ 'lte38', _('4G: band 38 (2600 MHz, TDD)') ]
++];
+ 
+ var PDP_TYPES = [
+ 	[ 'ip', _('IPv4') ],
+@@ -45,6 +66,18 @@ function cur(key) {
+ 	return (v == null) ? '' : String(v);
+ }
+ 
++function currentBands() {
++	var s = uci.get('network', 'lte', 'perenio_band');
++
++	if (s == null)
++		return [];
++
++	if (Array.isArray(s))
++		return s;
++
++	return String(s).split(/\s+/).filter(function(x) { return x != ''; });
++}
++
+ function setText(id, s) {
+ 	var el = document.getElementById(id);
+ 
+@@ -155,6 +188,58 @@ return view.extend({
+ 		});
+ 	},
+ 
++	handleBandsSave: function(ev) {
++		var boxes = document.querySelectorAll('.pejir-band-box');
++		var val = [];
++
++		for (var i = 0; i < boxes.length; i++) {
++			if (boxes[i].checked)
++				val.push(boxes[i].value);
++		}
++
++		uci.set('network', 'lte', 'perenio_band', val);
++
++		return uci.save().then(function() {
++			ui.addNotification(null, E('p', {}, _('Saved. Press "Apply now" to send the setting to the modem.')), 'info');
++		}).catch(function(e) {
++			ui.addNotification(null, E('p', {}, _('Failed to save: ') + (e && e.message ? e.message : e)), 'error');
++		});
++	},
++
++	handleBandsApply: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('pejir-lte-log', _('Sending the setting to the modem...'));
++
++		return fs.exec(BAND, [ 'apply' ]).then(function(r) {
++			var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++
++			setText('pejir-lte-log', out.trim() || _('Done'));
++			btn.disabled = false;
++		}).catch(function(e) {
++			setText('pejir-lte-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++			btn.disabled = false;
++		});
++	},
++
++	handleBandsShow: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('pejir-lte-log', _('Reading the modem bands...'));
++
++		return fs.exec(BAND, [ 'show' ]).then(function(r) {
++			var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++
++			setText('pejir-lte-log', out.trim() || _('No data'));
++			btn.disabled = false;
++		}).catch(function(e) {
++			setText('pejir-lte-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
++			btn.disabled = false;
++		});
++	},
++
+ 	handleMode: function(ev) {
+ 		var btn = ev.currentTarget;
+ 
+@@ -192,6 +277,32 @@ return view.extend({
+ 				_('Apply channel mode'));
+ 		modeBtn.addEventListener('click', L.bind(this.handleMode, this));
+ 
++		/* Раздел диапазонов 3G/4G (раньше была отдельная страница). */
++		var bandSel = currentBands();
++		var bandRows = [];
++
++		BANDS.forEach(function(b) {
++			bandRows.push(E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, b[1]),
++				E('div', { 'class': 'cbi-value-field' },
++					E('input', { 'type': 'checkbox', 'class': 'pejir-band-box',
++						'id': 'pejir-band-' + b[0], 'value': b[0],
++						'checked': bandSel.indexOf(b[0]) >= 0 }))
++			]));
++		});
++
++		var bandSaveBtn = E('button', { 'class': 'cbi-button cbi-button-save', 'type': 'button' },
++				_('Save bands'));
++		bandSaveBtn.addEventListener('click', L.bind(this.handleBandsSave, this));
++
++		var bandApplyBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
++				_('Apply bands now'));
++		bandApplyBtn.addEventListener('click', L.bind(this.handleBandsApply, this));
++
++		var bandShowBtn = E('button', { 'class': 'cbi-button cbi-button-neutral', 'type': 'button' },
++				_('Show current bands'));
++		bandShowBtn.addEventListener('click', L.bind(this.handleBandsShow, this));
++
+ 		/* Кнопка вызова helper'а управления модемом (PIN, номер SIM,
+ 		 * перезагрузка). */
+ 		var self = this;
+@@ -242,6 +353,16 @@ return view.extend({
+ 					modemBtn(_('Restart modem'), 'reset')
+ 				])
+ 			]),
++			E('h3', {}, _('3G/4G bands (PEJIR01)')),
++			E('div', { 'class': 'cbi-section-descr' },
++				_('Allowed frequency bands for the GM510 modem. The list is stored in network.lte.perenio_band and applied with the AT+ZBAND command, exactly as in the stock firmware. If nothing is selected, the modem keeps all bands enabled by default.')),
++			E('div', { 'class': 'cbi-map' }, bandRows),
++			E('div', { 'class': 'cbi-value' }, [
++				E('div', { 'class': 'cbi-value-title' }, ''),
++				E('div', { 'class': 'cbi-value-field' }, [
++					bandSaveBtn, ' ', bandApplyBtn, ' ', bandShowBtn
++				])
++			]),
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, _('Modem log')),
+ 				E('div', { 'class': 'cbi-value-field' },
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 74b2161..0bcad77 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -354,6 +354,12 @@ msgid "3G only"
+ msgstr "Только 3G"
+ msgid "4G only"
+ msgstr "Только 4G"
++msgid "Save bands"
++msgstr "Сохранить диапазоны"
++msgid "Apply bands now"
++msgstr "Применить диапазоны к модему"
++msgid "Show current bands"
++msgstr "Показать текущие диапазоны"
+ msgid "Apply channel mode"
+ msgstr "Применить режим канала"
+ msgid "SIM PIN"
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index 73babba..3e55e7c 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -59,19 +59,6 @@
+ 			}
+ 		}
+ 	},
+-	"admin/status/perenio-bands": {
+-		"title": "Полосы 3G/4G (PEJIR01)",
+-		"order": 70,
+-		"action": {
+-			"type": "view",
+-			"path": "perenio/bands"
+-		},
+-		"depends": {
+-			"acl": [
+-				"luci-app-perenio"
+-			]
+-		}
+-	},
+ 	"admin/status/perenio-lte": {
+ 		"title": "Настройки LTE (PEJIR01)",
+ 		"order": 71,

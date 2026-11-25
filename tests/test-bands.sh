@@ -38,7 +38,10 @@ HELPER="$LTE_PKG/root/usr/libexec/pejir-band"
 INITD="$LTE_PKG/root/etc/init.d/47-pejir-lte"
 ACL="$LUCI_PKG/root/usr/share/rpcd/acl.d/luci-app-perenio.json"
 MENU="$LUCI_PKG/root/usr/share/luci/menu.d/luci-app-perenio.json"
-PAGE="$LUCI_PKG/htdocs/luci-static/resources/view/perenio/bands.js"
+# Диапазоны 3G/4G больше не отдельная страница: это раздел страницы
+# «Настройки LTE (PEJIR01)» (один пункт меню).
+PAGE="$LUCI_PKG/htdocs/luci-static/resources/view/perenio/lte.js"
+OLD_PAGE="$LUCI_PKG/htdocs/luci-static/resources/view/perenio/bands.js"
 
 FAILED=0
 ok()   { echo "OK: $1"; }
@@ -147,10 +150,25 @@ fi
 if python3 -c "
 import json,sys
 d=json.load(open('$MENU'))
-sys.exit(0 if 'admin/status/perenio-bands' in d else 1)"; then
-	ok "меню: есть пункт 'Диапазоны 3G/4G'"
+sys.exit(0 if 'admin/status/perenio-lte' in d else 1)"; then
+	ok "меню: есть единый пункт 'Настройки LTE (PEJIR01)'"
 else
-	fail "меню: нет пункта 'Диапазоны 3G/4G'"
+	fail "меню: нет пункта 'Настройки LTE (PEJIR01)'"
+fi
+
+if python3 -c "
+import json,sys
+d=json.load(open('$MENU'))
+sys.exit(0 if 'admin/status/perenio-bands' in d else 1)"; then
+	fail "меню: остался отдельный пункт 'Диапазоны 3G/4G' - он должен быть объединён с LTE"
+else
+	ok "меню: отдельного пункта 'Диапазоны 3G/4G' нет (диапазоны внутри LTE)"
+fi
+
+if [ -f "$OLD_PAGE" ]; then
+	fail "осталась отдельная страница perenio/bands.js - она должна быть объединена с LTE"
+else
+	ok "отдельной страницы perenio/bands.js нет"
 fi
 
 # --- 5) страница -----------------------------------------------------------
@@ -168,7 +186,7 @@ else
 	fail "страница: кириллица внутри _()"
 fi
 
-for pat in "pejir-band" "perenio_band" "AT+ZBAND"; do
+for pat in "pejir-band" "perenio_band" "pejir-band-box" "handleBandsApply"; do
 	if grep -qF "$pat" "$PAGE"; then
 		ok "страница: есть '$pat'"
 	else
