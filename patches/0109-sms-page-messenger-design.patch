@@ -60,10 +60,10 @@ index 6a2de115..b76e03ea 100644
  	$(INSTALL_DATA) ./root/www/luci-static/perenio/images/battery/*.svg \
 diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css
 new file mode 100644
-index 00000000..9f3d85e9
+index 00000000..2cf13f36
 --- /dev/null
 +++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css
-@@ -0,0 +1,413 @@
+@@ -0,0 +1,426 @@
 +/* Оформление страницы "SMS (Perenio)".
 + *
 + * Страница рассчитана прежде всего на телефон: переписка показана
@@ -210,6 +210,14 @@ index 00000000..9f3d85e9
 +}
 +
 +/* --- Переписка --- */
++/* Переписка на широком экране: колонка по центру, иначе пузыри
++ * разъезжаются по краям и между ними пустое поле. */
++.pejir-sms-chat-card {
++	max-width: 820px;
++	margin-left: auto;
++	margin-right: auto;
++}
++
 +.pejir-sms-card {
 +	background: #fff;
 +	border: 1px solid var(--ps-line);
@@ -327,6 +335,11 @@ index 00000000..9f3d85e9
 +.pejir-sms-del {
 +	margin-left: 6px;
 +	font-size: 11px;
++	line-height: 1.4;
++	/* Тема Argon задаёт button { height: 2.5rem } - без этого кнопка
++	 * получается вдвое выше текста и ломает строку пузыря. */
++	height: auto;
++	min-height: 0;
 +	padding: 2px 8px;
 +	border-radius: 999px;
 +	border: 1px solid var(--ps-line);
@@ -478,7 +491,7 @@ index 00000000..9f3d85e9
 +	}
 +}
 diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
-index 11b90f14..37cc65e2 100644
+index 11b90f14..7c83ef7f 100644
 --- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
 +++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
 @@ -17,6 +17,46 @@ var SMSCTL = '/usr/libexec/pejir-sms-ctl';
@@ -923,7 +936,7 @@ index 11b90f14..37cc65e2 100644
  
 -					E('div', { 'class': 'cbi-value-description' },
 -						_('Files from /var/spool/sms/incoming (smstools3): the first line is the sender, the second is the time, the rest is the message.'))
-+			E('div', { 'class': 'pejir-sms-card' }, [
++			E('div', { 'class': 'pejir-sms-card pejir-sms-chat-card' }, [
 +				E('h3', {}, [
 +					_('Messages'),
 +					E('span', { 'class': 'pejir-sms-pill grey', 'id': 'sms-count' }, '')
