@@ -89,7 +89,54 @@ check_family fibocom "L850" "Fibocom" "L850"
 check_family zte "GM510" "GOSUNCN" "GM510"
 check_family zte "GN510" "GOSUNCN" "GN510"
 check_family zte "MF667" "ZTE" "MF667"
-check_family unknown "SOMETHING" "unknown-vendor" "SOMETHING"
+# Неопознанный модем: раньше он молча считался ZTE (и получал AT+ZECMCALL,
+# которого нет у большинства 3GPP-модемов). Теперь - generic: данные через
+# стандартный AT+CGACT=1,1, сброс через AT+CFUN=1,1, полосы не трогаем.
+check_family generic "SOMETHING" "unknown-vendor" "SOMETHING"
+
+# --- 1a) определение по ВОЗМОЖНОСТЯМ, а не по названию ---------------------
+# Модем, отвечающий на AT+ZECMCALL? (набор Gosuncn/Meig), должен получить
+# проверенный ZTE-путь, даже если его CGMI/GMM/GMM не знакомы.
+cat > "$WORK/probe-cap" <<'EOF'
+#!/bin/sh
+case "$1" in
+'AT+ZECMCALL?') echo "OK" ;;
+'AT+CGMI') echo "$2" ;;
+'AT+GMM')  echo "$1" ;;
+'AT+CGMM') echo "$3" ;;
+esac
+exit 0
+EOF
+	chmod +x "$WORK/probe-cap"
+out="$(PEJIR_FAMILY_PROBE="$WORK/probe-cap" PEJIR_FAMILY_CACHE="$WORK/cache2" \
+	sh "$FAMILY" 2>/dev/null)"
+if [ "$out" = "zte" ]; then
+	ok "семейство определяется по возможностям (AT+ZECMCALL? -> zte), даже для незнакомой фирмы"
+else
+	fail "модем с AT+ZECMCALL? должен определяться как zte, получено '$out'"
+fi
+rm -f "$WORK/cache2"
+
+# Модем, который на AT+ZECMCALL? отвечает ERROR, - стандартный путь.
+cat > "$WORK/probe-noecm" <<'EOF'
+#!/bin/sh
+case "$1" in
+'AT+ZECMCALL?') echo "ERROR" ;;
+'AT+CGMI') echo "$2" ;;
+'AT+GMM')  echo "$1" ;;
+'AT+CGMM') echo "$3" ;;
+esac
+exit 0
+EOF
+	chmod +x "$WORK/probe-noecm"
+out="$(PEJIR_FAMILY_PROBE="$WORK/probe-noecm" PEJIR_FAMILY_CACHE="$WORK/cache3" \
+	sh "$FAMILY" 2>/dev/null)"
+if [ "$out" = "generic" ]; then
+	ok "модем без ZTE-набора (AT+ZECMCALL? -> ERROR) получает стандартный путь"
+else
+	fail "модем без ZTE-набора должен определяться как generic, получено '$out'"
+fi
+rm -f "$WORK/cache3"
 
 # --- 2) кэширование --------------------------------------------------------
 probe "EC25" "Quectel" "EC25"
@@ -110,6 +157,13 @@ if grep -q 'AT+ZECMCALL=1' "$LTE_INIT"; then
 	ok "47-pejir-lte: для zte сохранён AT+ZECMCALL=1"
 else
 	fail "47-pejir-lte: пропала команда AT+ZECMCALL"
+fi
+# Для модема без ZTE-набора полосы не трогаются (остаются в авто-режиме):
+# команда AT+ZBAND ему неизвестна.
+if grep -q 'generic' "$LTE_INIT" && grep -q 'полосы оставляю в авто-режиме' "$LTE_INIT"; then
+	ok "47-pejir-lte: для модема без ZTE-набора полосы не трогаются"
+else
+	fail "47-pejir-lte: нет защиты от AT+ZBAND для неизвестного модема"
 fi
 if grep -q 'AT+QCFG="band"' "$LTE_INIT"; then
 	ok "47-pejir-lte: для quectel полосы через AT+QCFG=band"

@@ -1,0 +1,192 @@
+From 3394162c7888054a53ab94720e60e77d1f7ef8c5 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 08:35:56 GMT
+Subject: =?utf-8?b?cGVqaXItbHRlOiDRgdC10LzQtdC50YHRgtCy0L4g0LzQvtC00LXQvNCwINC+0L/R?=
+ =?utf-8?b?gNC10LTQtdC70Y/RgtGMINC/0L4g0LLQvtC30LzQvtC20L3QvtGB0YLRj9C8LCDQ?=
+ =?utf-8?b?sCDQvdC1INC/0L4g0L3QsNC30LLQsNC90LjRjiDRhNC40YDQvNGL?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+УНИВЕРСАЛЬНОСТЬ: СЕМЕЙСТВО МОДЕМА ОПРЕДЕЛЯЕТСЯ ПО ВОЗМОЖНОСТЯМ.
+
+Железа для Fibocom/Quectel у нас нет, а прошивка должна быть универсальной.
+Значит, решение о том, КАК поднимать связь, не может зависеть от названия
+фирмы: строковый разбор "если в ответе есть слово Fibocom" - это угадывание.
+
+Теперь pejir-modem-family сначала СПРАШИВАЕТ у модема AT+ZECMCALL?:
+  * ответ "OK" (без ERROR) - модем понимает ZTE-набор (Gosuncn/Meig) =>
+    используется проверенный путь (AT+ZECMCALL / AT+ZBAND / AT+ZRST),
+    даже если CGMI/GMM/GMM незнакомые;
+  * ответ "ERROR" - ZTE-набора у модема нет => стандартный 3GPP-путь
+    (данные AT+CGACT=1,1, сброс AT+CFUN=1,1), даже если модем называется
+    "Gosun".
+
+Значение "unknown" заменено на "generic" и теперь означает реально
+универсальное поведение, а не "считаем за zte". Это важно: раньше любой
+неопознанный модем получал AT+ZECMCALL - команду, которой у большинства
+3GPP-модемов нет, - и LTE просто не поднимался.
+
+По умолчанию (generic):
+  * данные - стандартный AT+CGACT=1,1 (3GPP, работает на любом модеме);
+  * сброс - стандартный AT+CFUN=1,1 (раньше для неизвестных уходил
+    AT+ZRST - команда ZTE-набора, которой у них нет);
+  * полосы - НЕ трогаем: AT+ZBAND неизвестна модему, поэтому оставляем
+    авто-режим вместо заведомо ошибочной команды.
+
+Фирменные ветки полос (AT+QCFG="band" для Quectel, AT+XACT=2,,, для
+Fibocom) сохранены - они срабатывают только при опознанной фирме и по
+документации; при ошибке модем просто ответит ERROR, ничего не сломается.
+
+Тест tests/test-modem-family.sh дополнен: проверяется определение по
+возможностям (модем с AT+ZECMCALL? -> zte при незнакомой фирме; модем с
+ERROR -> generic), поведение для generic (полосы не трогаются) и смена
+значения unknown -> generic.
+
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index af73f4b..8dde24f 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -134,15 +134,21 @@ at_ask() {
+ #   1) AT\r     - так работает mdm-at, самый надёжный вариант;
+ #   2) AT+CSQ\r - модем может игнорировать голый AT, но на CSQ отвечает;
+ #   3) AT+CSQ\n - на всякий случай (некоторые прошивки ждут только LF).
+-# Семейство модема: zte (Gosuncn/Meig GM510, как в стоке) | fibocom
+-# (L8xx) | unknown (трактуется как zte).
++# Семейство модема определяет, КАК поднимать связь:
++#   zte     - Gosuncn/Meig (набор AT+ZECMCALL/AT+ZBAND/AT+ZRST), проверено;
++#   quectel - свой набор Q-команд для полос, данные по стандарту;
++#   fibocom - свой набор XACT для полос, данные по стандарту;
++#   generic - модем без ZTE-набора: данные через стандартный AT+CGACT=1,1,
++#             полосы не трогаем (авто-режим), сброс через AT+CFUN=1,1.
++# Значение определяется по ВОЗМОЖНОСТЯМ модема (проба AT+ZECMCALL?),
++# а не только по названию фирмы, - поэтому прошивка универсальна.
+ modem_family() {
+ 	local f
+ 
+ 	if [ -x /usr/libexec/pejir-modem-family ]; then
+ 		f="$(/usr/libexec/pejir-modem-family 2>/dev/null)"
+ 		case "$f" in
+-		zte|fibocom|unknown) echo "$f"; return 0 ;;
++		zte|quectel|fibocom|generic) echo "$f"; return 0 ;;
+ 		esac
+ 	fi
+ 	echo zte
+@@ -366,6 +372,14 @@ sync_bands() {
+ 		return 0
+ 	fi
+ 
++	# Для модема без ZTE-набора (generic) полосы не трогаем: команда
++	# AT+ZBAND ему неизвестна, а при неверной команде модем лишь ответит
++	# ERROR. Оставляем авто-режим - так универсальнее.
++	if [ "$(modem_family)" = "generic" ]; then
++		log "модем не из ZTE-набора - полосы оставляю в авто-режиме"
++		return 0
++	fi
++
+ 	printf 'AT+ZBAND=%s,0,0,%s\r' "$umts" "$lte" > "$script"
+ 	set_port_speed "$port"
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+@@ -407,7 +421,8 @@ ecm_call() {
+ 	# как сетевой интерфейс (NCM), поэтому data call не нужен, достаточно
+ 	# активировать PDP-контекст стандартной командой AT+CGACT=1,1
+ 	# (в L8 AT Command Reference - "12.2.7 +CGACT, PDP Context Activate").
+-	if [ "$(modem_family)" = "fibocom" ] || [ "$(modem_family)" = "quectel" ]; then
++	if [ "$(modem_family)" = "fibocom" ] || [ "$(modem_family)" = "quectel" ] || \
++	   [ "$(modem_family)" = "generic" ]; then
+ 		printf 'AT+CGACT=1,1\r' > "$script"
+ 		set_port_speed "$port"
+ 		timeout "$ECM_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+index 7c195bc..3a9abb2 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+@@ -121,7 +121,7 @@ modem_family() {
+ 	if [ -x /usr/libexec/pejir-modem-family ]; then
+ 		f="$(/usr/libexec/pejir-modem-family 2>/dev/null)"
+ 		case "$f" in
+-		zte|fibocom|quectel|unknown) echo "$f"; return 0 ;;
++		zte|fibocom|quectel|generic) echo "$f"; return 0 ;;
+ 		esac
+ 	fi
+ 	echo zte
+@@ -204,12 +204,12 @@ cnum)
+ 	echo
+ 	;;
+ reset)
+-	# Сброс модема: у ZTE/Gosuncn - AT+ZRST, у Fibocom L8 - стандартный
+-	# AT+CFUN=1,1 (в L8 AT Command Reference - "5.6 +CFUN").
++	# Сброс модема: у ZTE/Gosuncn - AT+ZRST (проверенный набор), у всех
++	# остальных - стандартный AT+CFUN=1,1 (3GPP, работает на любом модеме).
+ 	if [ -x /usr/libexec/pejir-modem-family ] &&
+ 	   case "$(/usr/libexec/pejir-modem-family 2>/dev/null)" in
+-	   fibocom|quectel) true ;;
+-	   *) false ;;
++	   zte) false ;;
++	   *) true ;;
+ 	   esac; then
+ 		echo "перезагрузка модема (AT+CFUN=1,1)..."
+ 		_out=$(modem_cmd 'AT+CFUN=1,1')
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-modem-family b/package/pejir-lte-base/root/usr/libexec/pejir-modem-family
+index 903445f..944aaf1 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-modem-family
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-modem-family
+@@ -16,8 +16,22 @@
+ #   * сброс модема - стандартный AT+CFUN=1,1;
+ #   * полосы - AT+XACT (в ZTE-наборе - AT+ZBAND).
+ #
+-# Вывод: zte | fibocom | unknown. Значение unknown трактуется как zte
+-# (прежнее поведение), чтобы неизвестный модем не ломал LTE.
++# Вывод: zte | quectel | fibocom | generic.
++#
++# zte      - модем отвечает на AT+ZECMCALL (набор Gosuncn/Meig) - проверено
++#            на живом устройстве;
++# quectel  - фирма Quectel (свой набор Q-команд для полос);
++# fibocom  - фирма Fibocom (свой набор XACT для полос);
++# generic  - модем без ZTE-набора и без опознанной фирмы: данные через
++#            стандартный AT+CGACT=1,1, сброс через AT+CFUN=1,1, полосы
++#            не трогаем (остаются в авто-режиме).
++#
++# ВАЖНО: решение принимается НЕ только по названию фирмы, но и по
++# возможностям модема: если он отвечает на AT+ZECMCALL? - используется
++# проверенный ZTE-путь, даже если строка CGMI/GMM незнакомая. И наоборот:
++# модем, который на AT+ZECMCALL? отвечает ERROR, получает стандартный
++# путь, даже если называется "Gosun". Это делает прошивку универсальной:
++# она работает с любым 3GPP-модемом, а не с заранее перечисленными.
+ #
+ # Использование:
+ #   pejir-modem-family              - напечатать семейство
+@@ -49,6 +63,15 @@ detect() {
+ 	gmm="$(ask 'AT+GMM' | tr -d '\r')"
+ 	model="$(ask 'AT+CGMM' | tr -d '\r')"
+ 
++	# ПРОБА ВОЗМОЖНОСТЕЙ: отвечает ли модем на AT+ZECMCALL (набор
++	# Gosuncn/Meig)? Ответ "OK" (без ERROR) - значит проверенный путь
++	# доступен, даже если модем не узнан по названию.
++	probe="$(ask 'AT+ZECMCALL?' | tr -d '\r')"
++	case "$probe" in
++	*ERROR*) : ;;
++	*OK*) echo zte; return 0 ;;
++	esac
++
+ 	case "$cgmi $gmm $model" in
+ 	*[Ff][Ii][Bb][Oo][Cc][Oo][Mm]*|*[Ll]8[0-9][0-9]*|*[Ll][Ee]8[0-9][0-9]*)
+ 		echo fibocom
+@@ -72,7 +95,8 @@ detect() {
+ 		;;
+ 	esac
+ 
+-	echo unknown
++	# Ни ZTE-набора, ни опознанной фирмы: стандартный 3GPP-путь.
++	echo generic
+ 	return 0
+ }
+ 
+@@ -87,7 +111,7 @@ fi
+ if [ -f "$CACHE" ]; then
+ 	fam="$(head -n 1 "$CACHE" 2>/dev/null)"
+ 	case "$fam" in
+-	zte|fibocom|unknown)
++	zte|quectel|fibocom|generic)
+ 		echo "$fam"
+ 		exit 0
+ 		;;
