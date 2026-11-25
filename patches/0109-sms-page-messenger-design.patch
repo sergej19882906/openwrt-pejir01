@@ -1,0 +1,1053 @@
+From 8e3a9a4746a2fe6402f43ddb3053c2bfc7ab6614 Mon Sep 17 00:00:00 2001
+From: MCode <mcode@local>
+Date: Wed, 25 Nov 2026 11:01:15 GMT
+Subject: =?utf-8?b?bHVjaS1hcHAtcGVyZW5pbzog0YHRgtGA0LDQvdC40YbQsCBTTVMgLSDQv9C10YDQ?=
+ =?utf-8?b?tdC/0LjRgdC60LAg0L/Rg9C30YvRgNGP0LzQuCwg0LLQutC70LDQtNC60Lgg0YHQ?=
+ =?utf-8?b?viDRgdGH0ZHRgtGH0LjQutCw0LzQuCwg0LrQsNGA0YLQvtGH0LrQuA==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+СТРАНИЦА SMS: ОФОРМЛЕНИЕ КАК В МЕССЕНДЖЕРЕ.
+
+Страница «SMS (Perenio)» была списком из четырёх таблиц (входящие, в очереди,
+отправленные, неудачные) - на телефоне это читается тяжело, а входящие и
+отправленные сообщения стояли в разных списках, хотя образуют одну переписку.
+
+Что сделано:
+
+1) ПЕРЕПИСКА ОДНИМ СПИСКОМ. Входящие, отправленные, неудачные и стоящие в
+   очереди сообщения показываются вместе, как в мессенджере: входящие - пузырь
+   слева, отправленные - синий пузырь справа, неудачные - розовый. У пузыря
+   круглый аватар с первой буквой отправителя, номер сверху, время и метка
+   состояния (галочка у отправленного, «в очереди», «не отправлено») снизу.
+
+2) РАЗДЕЛИТЕЛИ ДАТ. Сообщения группируются по дням, над группой - заголовок
+   «Сегодня», «Вчера» или дата.
+
+3) ВКЛАДКИ СО СЧЁТЧИКАМИ. «Все сообщения», «Входящие», «Отправленные»,
+   «Неудачные» - с числом сообщений в каждой. Переключение вкладки не
+   перезагружает данные, а просто перерисовывает список.
+
+4) КАРТОЧКИ ВМЕСТО СПРАВОЧНИКА. Служебные блоки (состояние smsd, AT-порты,
+   порт из smsd.conf, журнал) и отправка SMS стали карточками; состояние
+   smsd - цветной «пилюля» в шапке (зелёная - работает, красная - нет).
+
+5) ОФОРМЛЕНИЕ ВЫНЕСЕНО В ОТДЕЛЬНЫЙ ФАЙЛ sms.css, все стили под префиксом
+   .pejir-sms, чтобы не задевать остальные страницы LuCI. Файл подключается
+   через L.resource() и добавляется в Makefile пакета (раньше ставились
+   только *.js).
+
+Все функции сохранены: поиск по номеру и тексту, экспорт переписки, шаблоны
+текста, удаление своих сообщений, отправка, USSD с повтором через
+перезапуск LTE, автообновление раз в 20 секунд. IDs элементов, на которые
+опираются тесты и сам скрипт, не изменились.
+
+Переводы: добавлены «Все сообщения», «Входящие», «Переписка», «Текст
+сообщения», «Сегодня», «Вчера», «Неизвестный отправитель»,
+«Неизвестный получатель», «Ничего не найдено».
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index 6a2de115..b76e03ea 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -25,6 +25,7 @@ endef
+ define Package/luci-app-perenio/install
+ 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/perenio
+ 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/perenio/*.js \
++		./htdocs/luci-static/resources/view/perenio/*.css \
+ 		$(1)/www/luci-static/resources/view/perenio/
+ 	$(INSTALL_DIR) $(1)/www/luci-static/perenio/images/battery
+ 	$(INSTALL_DATA) ./root/www/luci-static/perenio/images/battery/*.svg \
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css
+new file mode 100644
+index 00000000..9f3d85e9
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.css
+@@ -0,0 +1,413 @@
++/* Оформление страницы "SMS (Perenio)".
++ *
++ * Страница рассчитана прежде всего на телефон: переписка показана
++ * пузырями (входящие слева, отправленные справа), счётчики - на
++ * вкладках, служебные блоки - карточками. Все стили scoped классом
++ * .pejir-sms, чтобы не задевать остальные страницы LuCI.
++ */
++
++/* Размеры считаем по границе: иначе поля во 100% вылезают за карточку. */
++.pejir-sms *,
++.pejir-sms *::before,
++.pejir-sms *::after {
++	box-sizing: border-box;
++}
++
++.pejir-sms {
++	--ps-accent: #1a73e8;
++	--ps-accent-soft: #e8f0fe;
++	--ps-in: #f1f3f4;
++	--ps-err: #c5221f;
++	--ps-err-soft: #fce8e6;
++	--ps-ok: #137333;
++	--ps-ok-soft: #e6f4ea;
++	--ps-text: #202124;
++	--ps-muted: #5f6368;
++	--ps-line: #e2e4e8;
++}
++
++/* --- Шапка --- */
++.pejir-sms-head {
++	background: #fff;
++	border: 1px solid var(--ps-line);
++	border-radius: 14px;
++	padding: 14px 14px 12px;
++	margin: 0 0 12px;
++	box-shadow: 0 1px 2px rgba(0, 0, 0, .05);
++}
++
++.pejir-sms-title {
++	display: flex;
++	align-items: center;
++	justify-content: space-between;
++	gap: 10px;
++	margin: 0 0 10px;
++}
++
++.pejir-sms-title h2 {
++	margin: 0;
++	font-size: 19px;
++	font-weight: 600;
++	line-height: 1.2;
++}
++
++.pejir-sms-pill {
++	display: inline-block;
++	font-size: 11px;
++	font-weight: 600;
++	padding: 4px 10px;
++	border-radius: 999px;
++	background: var(--ps-ok-soft);
++	color: var(--ps-ok);
++	white-space: nowrap;
++}
++
++.pejir-sms-pill.bad {
++	background: var(--ps-err-soft);
++	color: var(--ps-err);
++}
++
++.pejir-sms-pill.grey {
++	background: #f1f3f4;
++	color: var(--ps-muted);
++}
++
++/* --- Вкладки --- */
++.pejir-sms-tabs {
++	display: flex;
++	flex-wrap: wrap;
++	gap: 6px;
++	padding-bottom: 2px;
++}
++
++.pejir-sms-tabs::-webkit-scrollbar {
++	display: none;
++}
++
++.pejir-sms-tab {
++	flex: 0 0 auto;
++	font-size: 12.5px;
++	line-height: 1.2;
++	padding: 7px 10px;
++	border-radius: 999px;
++	background: #f1f3f4;
++	color: var(--ps-muted);
++	border: 1px solid transparent;
++	cursor: pointer;
++	white-space: nowrap;
++}
++
++.pejir-sms-tab:hover {
++	background: #e8eaed;
++}
++
++.pejir-sms-tab.on {
++	background: var(--ps-accent);
++	color: #fff;
++	font-weight: 600;
++}
++
++.pejir-sms-tab .n {
++	font-size: 11px;
++	opacity: .75;
++	margin-left: 4px;
++}
++
++.pejir-sms-tab.on .n {
++	opacity: .9;
++}
++
++/* --- Поиск --- */
++.pejir-sms-search {
++	display: flex;
++	align-items: center;
++	gap: 8px;
++	margin-top: 10px;
++	background: #f1f3f4;
++	border-radius: 10px;
++	padding: 9px 12px;
++}
++
++.pejir-sms-search input {
++	flex: 1 1 auto;
++	min-width: 0;
++	border: 0;
++	outline: none;
++	background: transparent;
++	font-size: 14px;
++	color: var(--ps-text);
++}
++
++.pejir-sms-search .ico {
++	color: var(--ps-muted);
++	font-size: 15px;
++}
++
++/* --- Переписка --- */
++.pejir-sms-card {
++	background: #fff;
++	border: 1px solid var(--ps-line);
++	border-radius: 14px;
++	padding: 12px 12px 14px;
++	margin: 0 0 12px;
++	box-shadow: 0 1px 2px rgba(0, 0, 0, .05);
++}
++
++.pejir-sms-card h3 {
++	margin: 0 0 10px;
++	font-size: 15px;
++	font-weight: 600;
++	color: var(--ps-text);
++	display: flex;
++	align-items: center;
++	justify-content: space-between;
++	gap: 8px;
++}
++
++.pejir-sms-day {
++	font-size: 11px;
++	font-weight: 600;
++	letter-spacing: .3px;
++	color: var(--ps-muted);
++	text-align: center;
++	margin: 14px 0 10px;
++}
++
++.pejir-sms-row {
++	display: flex;
++	gap: 8px;
++	align-items: flex-end;
++	margin-bottom: 10px;
++}
++
++.pejir-sms-row.out,
++.pejir-sms-row.err {
++	flex-direction: row-reverse;
++}
++
++.pejir-sms-av {
++	flex: 0 0 34px;
++	width: 34px;
++	height: 34px;
++	border-radius: 50%;
++	background: #7e57c2;
++	color: #fff;
++	display: flex;
++	align-items: center;
++	justify-content: center;
++	font-size: 14px;
++	font-weight: 600;
++	user-select: none;
++}
++
++.pejir-sms-row.out .pejir-sms-av {
++	background: var(--ps-accent);
++}
++
++.pejir-sms-row.err .pejir-sms-av {
++	background: var(--ps-err);
++}
++
++.pejir-sms-bubble {
++	max-width: 78%;
++	background: var(--ps-in);
++	border-radius: 14px;
++	padding: 8px 12px 6px;
++	color: var(--ps-text);
++	word-wrap: break-word;
++	overflow-wrap: anywhere;
++}
++
++.pejir-sms-row.out .pejir-sms-bubble {
++	background: var(--ps-accent);
++	color: #fff;
++}
++
++.pejir-sms-row.err .pejir-sms-bubble {
++	background: var(--ps-err-soft);
++	border: 1px solid #f5c6c2;
++}
++
++.pejir-sms-name {
++	font-size: 12px;
++	color: var(--ps-muted);
++	margin-bottom: 2px;
++}
++
++.pejir-sms-row.out .pejir-sms-name {
++	color: rgba(255, 255, 255, .85);
++}
++
++.pejir-sms-text {
++	font-size: 15px;
++	white-space: pre-wrap;
++}
++
++.pejir-sms-time {
++	font-size: 11px;
++	color: var(--ps-muted);
++	text-align: right;
++	margin-top: 3px;
++	display: flex;
++	align-items: center;
++	justify-content: flex-end;
++	gap: 6px;
++}
++
++.pejir-sms-row.out .pejir-sms-time {
++	color: rgba(255, 255, 255, .8);
++}
++
++.pejir-sms-del {
++	margin-left: 6px;
++	font-size: 11px;
++	padding: 2px 8px;
++	border-radius: 999px;
++	border: 1px solid var(--ps-line);
++	background: #fff;
++	color: var(--ps-muted);
++	cursor: pointer;
++}
++
++.pejir-sms-del:hover {
++	color: var(--ps-err);
++	border-color: var(--ps-err);
++}
++
++.pejir-sms-row.out .pejir-sms-del {
++	background: rgba(255, 255, 255, .18);
++	border-color: rgba(255, 255, 255, .35);
++	color: #fff;
++}
++
++/* На розовом пузыре (не отправлено) кнопка должна быть читаемой. */
++.pejir-sms-row.err .pejir-sms-del {
++	background: #fff;
++	border-color: #f0b4ae;
++	color: var(--ps-err);
++}
++
++/* --- Формы --- */
++.pejir-sms-card .cbi-value {
++	margin-bottom: 8px;
++}
++
++.pejir-sms-input,
++.pejir-sms-textarea {
++	width: 100%;
++	border: 1px solid #dadce0;
++	border-radius: 10px;
++	padding: 10px 12px;
++	font-size: 15px;
++	font-family: inherit;
++	color: var(--ps-text);
++	outline: none;
++	background: #fff;
++}
++
++.pejir-sms-input:focus,
++.pejir-sms-textarea:focus {
++	border-color: var(--ps-accent);
++}
++
++.pejir-sms-textarea {
++	margin-top: 8px;
++	resize: vertical;
++}
++
++.pejir-sms-actions {
++	display: flex;
++	gap: 8px;
++	margin-top: 10px;
++	flex-wrap: wrap;
++}
++
++.pejir-sms-actions .cbi-button {
++	flex: 1 1 auto;
++}
++
++/* --- Служебные значения --- */
++.pejir-sms-kv {
++	display: flex;
++	gap: 10px;
++	font-size: 13px;
++	padding: 5px 0;
++	border-bottom: 1px solid #f1f3f4;
++}
++
++.pejir-sms-kv:last-child {
++	border-bottom: 0;
++}
++
++.pejir-sms-kv .k {
++	flex: 0 0 40%;
++	color: var(--ps-muted);
++}
++
++.pejir-sms-kv .v {
++	flex: 1 1 auto;
++	word-break: break-word;
++}
++
++.pejir-sms-log {
++	background: #f8f9fa;
++	border: 1px solid var(--ps-line);
++	border-radius: 10px;
++	padding: 10px;
++	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
++	font-size: 11px;
++	line-height: 1.5;
++	white-space: pre-wrap;
++	word-break: break-word;
++	max-height: 30vh;
++	overflow: auto;
++	margin: 0;
++}
++
++.pejir-sms-empty {
++	text-align: center;
++	color: var(--ps-muted);
++	font-size: 14px;
++	padding: 18px 0;
++}
++
++.pejir-sms-note {
++	font-size: 12px;
++	color: var(--ps-muted);
++	margin-top: 8px;
++}
++
++/* --- Шаблоны --- */
++.pejir-sms-tpl {
++	display: flex;
++	align-items: center;
++	gap: 8px;
++	padding: 6px 0;
++	border-bottom: 1px solid #f1f3f4;
++	font-size: 13px;
++}
++
++.pejir-sms-tpl .txt {
++	flex: 1 1 auto;
++	min-width: 0;
++	overflow: hidden;
++	text-overflow: ellipsis;
++	white-space: nowrap;
++}
++
++.pejir-sms-tpl .cbi-button {
++	flex: 0 0 auto;
++	padding: 3px 10px;
++	font-size: 12px;
++}
++
++@media (max-width: 480px) {
++	.pejir-sms-bubble {
++		max-width: 82%;
++	}
++
++	.pejir-sms-card,
++	.pejir-sms-head {
++		border-radius: 12px;
++	}
++}
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 11b90f14..37cc65e2 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -17,6 +17,46 @@ var SMSCTL = '/usr/libexec/pejir-sms-ctl';
+ var MSGS = { inbox: [], out: [], sent: [], failed: [] };
+ var FILTER = '';
+ 
++/* Активная вкладка переписки: all | inbox | out | failed. */
++var TAB = 'all';
++
++/* Кнопка-вкладка переписки со счётчиком сообщений. */
++function tabBtn(id, label, countId) {
++	var b = E('span', { 'class': 'pejir-sms-tab', 'id': 'sms-tabbtn-' + id,
++		'data-tab': id }, [
++		label,
++		E('span', { 'class': 'n', 'id': countId }, '0')
++	]);
++
++	b.addEventListener('click', function() {
++		TAB = id;
++
++		Array.prototype.forEach.call(
++			document.querySelectorAll('.pejir-sms-tab'), function(el) {
++				if (el.getAttribute('data-tab') == id)
++					el.classList.add('on');
++				else
++					el.classList.remove('on');
++			});
++
++		renderChat();
++	});
++
++	return b;
++}
++
++/* Оформление страницы лежит отдельным файлом - так его удобнее править
++ * и он не мешает остальным страницам LuCI. */
++function loadCss() {
++	if (document.getElementById('pejir-sms-css'))
++		return;
++
++	var link = E('link', { 'id': 'pejir-sms-css', 'rel': 'stylesheet',
++		'href': L.resource('view/perenio/sms.css') });
++
++	document.head.appendChild(link);
++}
++
+ function setText(id, s) {
+ 	var el = document.getElementById(id);
+ 
+@@ -60,7 +100,12 @@ function readStatus() {
+ 		   smsd работающим. Теперь ищем именно "running" в начале строки. */
+ 		var running = /^\s*running\b/im.test(out);
+ 
+-		setText('sms-svc', running ? _('running (smsd)') : _('not running'));
++		var svcEl = document.getElementById('sms-svc');
++
++		if (svcEl) {
++			svcEl.textContent = running ? _('running (smsd)') : _('not running');
++			svcEl.className = 'pejir-sms-pill' + (running ? '' : ' bad');
++		}
+ 		setText('sms-ports', ports.length ? ports.join(', ') : _('not found (ttyUSB/ttyACM)'));
+ 		setText('sms-device', m ? m[1] : _('not set in smsd.conf'));
+ 		setText('sms-log', log || _('no log'));
+@@ -103,72 +148,199 @@ function filterMsgs(msgs) {
+ 	});
+ }
+ 
+-/* Перерисовка всех списков с учётом фильтра. */
++/* Перерисовка переписки с учётом фильтра и активной вкладки. */
+ function renderAll() {
+-	renderMsgs('sms-list', filterMsgs(MSGS.inbox), _('Sender'));
+-	renderMsgs('sms-out-list', filterMsgs(MSGS.out), _('Recipient'), function() { return readOutbox(); });
+-	renderMsgs('sms-sent-list', filterMsgs(MSGS.sent), _('Recipient'), function() { return readOutbox(); });
+-	renderMsgs('sms-failed-list', filterMsgs(MSGS.failed), _('Recipient'), function() { return readOutbox(); });
++	renderChat();
+ }
+ 
+-/* Отрисовка списка сообщений в таблицу. Если передан refresh - в каждой строке
+- * добавляется кнопка удаления: файл убирается из спула через pejir-sms-clean. */
+-function renderMsgs(boxId, msgs, whoLabel, refresh) {
+-	var box = document.getElementById(boxId);
++/* Все сообщения в одном списке с указанием направления.
++ * dir: in - входящее, queued - в очереди на отправку, out - отправлено,
++ * err - не отправлено. */
++function allMessages() {
++	var out = [];
++
++	MSGS.inbox.forEach(function(m) { out.push({ m: m, dir: 'in' }); });
++	MSGS.out.forEach(function(m) { out.push({ m: m, dir: 'queued' }); });
++	MSGS.sent.forEach(function(m) { out.push({ m: m, dir: 'out' }); });
++	MSGS.failed.forEach(function(m) { out.push({ m: m, dir: 'err' }); });
++
++	out.sort(function(a, b) { return a.m.mtime - b.m.mtime; });
++	return out;
++}
++
++/* Фильтр поиска работает по номеру и тексту сообщения. */
++function matchFilter(x) {
++	if (!FILTER)
++		return true;
++
++	var q = FILTER.toLowerCase();
++
++	return ((x.m.from || '') + ' ' + (x.m.text || '')).toLowerCase().indexOf(q) >= 0;
++}
++
++/* Сообщение попадает в активную вкладку? */
++function matchTab(x) {
++	switch (TAB) {
++	case 'inbox':
++		return x.dir === 'in';
++	case 'out':
++		return x.dir === 'out' || x.dir === 'queued';
++	case 'failed':
++		return x.dir === 'err';
++	default:
++		return true;
++	}
++}
++
++/* Ключ дня - чтобы разделять переписку заголовками дат. */
++function dayKey(ts) {
++	var d = new Date(ts * 1000);
++
++	return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
++}
++
++/* Заголовок дня: сегодня, вчера или дата. */
++function dayLabel(ts) {
++	var d = new Date(ts * 1000);
++	var now = new Date();
++	var yest = new Date(now.getTime() - 86400000);
++
++	if (d.getFullYear() == now.getFullYear() && d.getMonth() == now.getMonth() &&
++		d.getDate() == now.getDate())
++		return _('Today');
++
++	if (d.getFullYear() == yest.getFullYear() && d.getMonth() == yest.getMonth() &&
++		d.getDate() == yest.getDate())
++		return _('Yesterday');
++
++	return d.toLocaleDateString();
++}
++
++/* Время сообщения в коротком виде. */
++function timeLabel(ts) {
++	var d = new Date(ts * 1000);
++
++	return d.toLocaleTimeString([], { 'hour': '2-digit', 'minute': '2-digit' });
++}
++
++/* Первая буква номера или имени - для кружка-аватара. */
++function initialOf(name) {
++	var s = (name || '').trim();
++
++	return s ? s.charAt(0).toUpperCase() : '?';
++}
++
++/* Одно сообщение пузырём. */
++function msgRow(x) {
++	var m = x.m;
++	var who = m.from || (x.dir === 'in' ? _('Unknown sender') : _('Unknown recipient'));
++	var cls = 'pejir-sms-row ' + (x.dir == 'in' ? 'in' : x.dir);
++	var time = timeLabel(m.mtime);
++
++	if (x.dir == 'out')
++		time += ' \u2713';
++	else if (x.dir == 'queued')
++		time += ' \u00b7 ' + _('Queued for sending');
++	else if (x.dir == 'err')
++		time += ' \u00b7 ' + _('Not sent');
++
++	/* Удалить можно только свои сообщения (как и раньше - кнопка была
++	 * только в списках исходящих). */
++	var foot = [ time ];
++
++	if (x.dir != 'in') {
++		var del = E('button', { 'class': 'pejir-sms-del', 'type': 'button' },
++			_('Delete'));
++
++		del.addEventListener('click', function() {
++			del.disabled = true;
++
++			fs.exec('/usr/libexec/pejir-sms-clean', [ m.name ])
++				.then(readOutbox, readOutbox);
++		});
++
++		foot.push(' ', del);
++	}
++
++	var bubble = E('div', { 'class': 'pejir-sms-bubble' }, [
++		E('div', { 'class': 'pejir-sms-name' }, who),
++		E('div', { 'class': 'pejir-sms-text' }, m.text || ''),
++		E('div', { 'class': 'pejir-sms-time' }, foot)
++	]);
++
++	return E('div', { 'class': cls }, [
++		E('div', { 'class': 'pejir-sms-av' }, initialOf(who)),
++		bubble
++	]);
++}
++
++/* Переписка одним списком: пузыри, разделители дат, счётчики вкладок. */
++function renderChat() {
++	var box = document.getElementById('sms-chat');
+ 
+ 	if (!box)
+ 		return;
+ 
+-	if (!msgs.length) {
+-		box.innerHTML = '<em>' + _('No SMS') + '</em>';
+-		return;
+-	}
++	var all = allMessages().filter(matchFilter);
++	var counts = { all: all.length, inbox: 0, out: 0, failed: 0 };
+ 
+-	var rows = msgs.map(function(m) {
+-		var cells = [
+-			E('td', { 'class': 'td', 'style': 'white-space:nowrap' },
+-				new Date(m.mtime * 1000).toLocaleString()),
+-			E('td', { 'class': 'td' }, m.from),
+-			E('td', { 'class': 'td', 'style': 'white-space:pre-wrap' }, m.text)
+-		];
++	all.forEach(function(x) {
++		if (x.dir == 'in')
++			counts.inbox++;
++		else if (x.dir == 'err')
++			counts.failed++;
++		else
++			counts.out++;
++	});
+ 
+-		if (refresh) {
+-			var btn = E('button', { 'class': 'cbi-button cbi-button-remove',
+-				'type': 'button' }, _('Delete'));
++	setTabCounts(counts);
+ 
+-			btn.addEventListener('click', function() {
+-				btn.disabled = true;
++	var list = all.filter(matchTab);
++	var count = document.getElementById('sms-count');
+ 
+-				fs.exec('/usr/libexec/pejir-sms-clean', [ m.name ])
+-					.then(refresh, refresh);
+-			});
++	if (count)
++		count.textContent = list.length ? String(list.length) : '';
++
++	box.innerHTML = '';
++
++	if (!list.length) {
++		box.appendChild(E('div', { 'class': 'pejir-sms-empty' },
++			FILTER ? _('Nothing found') : _('No SMS')));
++		return;
++	}
+ 
+-			cells.push(E('td', { 'class': 'td', 'style': 'white-space:nowrap' }, btn));
++	var lastDay = '';
++
++	list.forEach(function(x) {
++		var k = dayKey(x.m.mtime);
++
++		if (k != lastDay) {
++			lastDay = k;
++			box.appendChild(E('div', { 'class': 'pejir-sms-day' }, dayLabel(x.m.mtime)));
+ 		}
+ 
+-		return E('tr', { 'class': 'tr' }, cells);
++		box.appendChild(msgRow(x));
+ 	});
++}
+ 
+-	var titles = [
+-		E('th', { 'class': 'th' }, _('Time')),
+-		E('th', { 'class': 'th' }, whoLabel),
+-		E('th', { 'class': 'th' }, _('Text'))
+-	];
++/* Обновить счётчики на вкладках. */
++function setTabCounts(counts) {
++	var ids = { all: 'sms-tab-all', inbox: 'sms-tab-inbox',
++		out: 'sms-tab-out', failed: 'sms-tab-failed' };
+ 
+-	if (refresh)
+-		titles.push(E('th', { 'class': 'th' }, _('Actions')));
++	Object.keys(ids).forEach(function(k) {
++		var el = document.getElementById(ids[k]);
+ 
+-	box.innerHTML = '';
+-	box.appendChild(E('table', { 'class': 'table' }, [
+-		E('tr', { 'class': 'tr table-titles' }, titles)
+-	].concat(rows)));
++		if (el)
++			el.textContent = String(counts[k] || 0);
++	});
+ }
+ 
+ /* Приём входящих SMS из /var/spool/sms/incoming */
+ function readInbox() {
+ 	return readSpool(DIR).then(function(msgs) {
+ 		MSGS.inbox = msgs;
+-		renderMsgs('sms-list', filterMsgs(msgs), _('Sender'));
++		renderChat();
+ 	});
+ }
+ 
+@@ -201,9 +373,7 @@ function readOutbox() {
+ 		MSGS.out = all[0];
+ 		MSGS.sent = all[1];
+ 		MSGS.failed = all[2];
+-		renderMsgs('sms-out-list', filterMsgs(all[0]), _('Recipient'), refresh);
+-		renderMsgs('sms-sent-list', filterMsgs(all[1]), _('Recipient'), refresh);
+-		renderMsgs('sms-failed-list', filterMsgs(all[2]), _('Recipient'), refresh);
++		renderChat();
+ 	});
+ }
+ 
+@@ -258,7 +428,7 @@ return view.extend({
+ 
+ 		/* Поиск по переписке: фильтрует все списки на странице. */
+ 		var filterInput = E('input', { 'type': 'text', 'id': 'sms-filter',
+-			'style': 'width:260px', 'placeholder': _('number or text') });
++			'placeholder': _('number or text') });
+ 
+ 		filterInput.addEventListener('input', function() {
+ 			FILTER = (filterInput.value || '').trim();
+@@ -359,153 +529,87 @@ return view.extend({
+ 
+ 		loadTemplates();
+ 
+-		var body = E([
+-			E('h2', {}, _('SMS (GM510)')),
+-			E('div', { 'class': 'cbi-map' }, [
+-				E('div', { 'class': 'cbi-section' }, [
+-					E('div', { 'class': 'cbi-section-descr' },
+-						_('GM510 SMS modem in the LTE module. An active SIM and a running smsd are required.'))
+-				]),
+-				E('div', { 'class': 'cbi-section' }, [
+-					E('div', { 'class': 'cbi-section-descr' },
+-						_('Service state')),
+-
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('smsd')),
+-						E('div', { 'class': 'cbi-value-field' },
+-							E('span', { 'id': 'sms-svc' }, _('checking…')))
+-					]),
+-
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('AT ports')),
+-						E('div', { 'class': 'cbi-value-field' },
+-							E('span', { 'id': 'sms-ports' }, _('checking…')))
+-					]),
++		loadCss();
+ 
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Port in smsd.conf')),
+-						E('div', { 'class': 'cbi-value-field' },
+-							E('span', { 'id': 'sms-device' }, _('checking…')))
+-					]),
+-
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('smsd log')),
+-						E('div', { 'class': 'cbi-value-field' },
+-							E('pre', { 'id': 'sms-log', 'style': 'white-space:pre-wrap' }, ''))
+-					])
++		var body = E('div', { 'class': 'pejir-sms' }, [
++			E('div', { 'class': 'pejir-sms-head' }, [
++				E('div', { 'class': 'pejir-sms-title' }, [
++					E('h2', {}, _('SMS (GM510)')),
++					E('span', { 'class': 'pejir-sms-pill', 'id': 'sms-svc' }, _('checking…'))
+ 				]),
+-				E('div', { 'class': 'cbi-section' }, [
+-					E('div', { 'class': 'cbi-section-descr' },
+-						_('Search and export')),
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Search')),
+-						E('div', { 'class': 'cbi-value-field' }, filterInput)
++				E('div', { 'class': 'pejir-sms-tabs' }, [
++					E('span', { 'class': 'pejir-sms-tab on', 'id': 'sms-tabbtn-all',
++						'data-tab': 'all' }, [
++						_('All messages'),
++						E('span', { 'class': 'n', 'id': 'sms-tab-all' }, '0')
+ 					]),
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Export')),
+-						E('div', { 'class': 'cbi-value-field' }, [
+-							exportBtn, ' ',
+-							E('span', { 'id': 'sms-export-status' }, ''), ' ',
+-							E('span', { 'id': 'sms-export-link' }, '')
+-						])
+-					])
++					tabBtn('inbox', _('Incoming messages'), 'sms-tab-inbox'),
++					tabBtn('out', _('Sent messages'), 'sms-tab-out'),
++					tabBtn('failed', _('Failed messages'), 'sms-tab-failed')
+ 				]),
+-				E('div', { 'class': 'cbi-section' }, [
+-					E('div', { 'class': 'cbi-section-descr' },
+-						_('Send SMS')),
+-
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Number')),
+-						E('div', { 'class': 'cbi-value-field' },
+-							E('input', { 'type': 'tel', 'id': 'sms-to',
+-								'style': 'width:100%', 'placeholder': '+7 900 000-00-00' }))
+-					]),
+-
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Text')),
+-						E('div', { 'class': 'cbi-value-field' },
+-							E('textarea', { 'id': 'sms-text', 'style': 'width:100%', 'rows': 3 }))
+-					]),
+-
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Result')),
+-						E('div', { 'class': 'cbi-value-field' },
+-							E('span', { 'id': 'sms-send-status' }, ''))
+-					]),
+-
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, ''),
+-						E('div', { 'class': 'cbi-value-field' }, sendBtn)
+-					]),
+-
+-					E('div', { 'class': 'cbi-value' }, [
+-						E('div', { 'class': 'cbi-value-title' }, _('Templates')),
+-						E('div', { 'class': 'cbi-value-field' }, [
+-							E('div', { 'id': 'sms-templates' }, ''),
+-							E('div', { 'style': 'margin-top:6px' }, [ tplInput, ' ', tplAddBtn ])
+-						])
+-					])
+-				]),
+-				E('div', { 'class': 'cbi-section' }, [
+-					E('div', { 'class': 'cbi-section-descr' },
+-						_('Incoming SMS')),
+-
+-					E('div', { 'id': 'sms-list' },
+-						E('em', {}, _('Loading…'))),
++				E('div', { 'class': 'pejir-sms-search' }, [
++					E('span', { 'class': 'ico' }, '⌕'),
++					filterInput
++				])
++			]),
+ 
+-					E('div', { 'class': 'cbi-value-description' },
+-						_('Files from /var/spool/sms/incoming (smstools3): the first line is the sender, the second is the time, the rest is the message.'))
++			E('div', { 'class': 'pejir-sms-card' }, [
++				E('h3', {}, [
++					_('Messages'),
++					E('span', { 'class': 'pejir-sms-pill grey', 'id': 'sms-count' }, '')
+ 				]),
+-
+-			E('div', { 'class': 'cbi-section' }, [
+-				E('div', { 'class': 'cbi-section-descr' },
+-					_('Outgoing SMS')),
+-
+-				E('div', { 'class': 'cbi-value-title' }, _('Queued for sending')),
+-				E('div', { 'id': 'sms-out-list' },
+-					E('em', {}, _('Loading…'))),
+-
+-				E('div', { 'class': 'cbi-value-title' }, _('Sent messages')),
+-				E('div', { 'id': 'sms-sent-list' },
+-					E('em', {}, _('Loading…'))),
+-
+-				E('div', { 'class': 'cbi-value-title' }, _('Failed messages')),
+-				E('div', { 'id': 'sms-failed-list' },
+-					E('em', {}, _('Loading…'))),
+-
+-				E('div', { 'class': 'cbi-value-description' },
+-					_('Files from /var/spool/sms/outgoing, /var/spool/sms/sent and /var/spool/sms/failed (smstools3): the first line is the number, the second is the time, the rest is the message.'))
++				E('div', { 'id': 'sms-chat' }, [ E('em', {}, _('Loading…')) ])
+ 			]),
+-			E('div', { 'class': 'cbi-section' }, [
+-				E('div', { 'class': 'cbi-section-descr' },
+-					_('USSD request')),
+-
+-				E('div', { 'class': 'cbi-value' }, [
+-					E('div', { 'class': 'cbi-value-title' }, _('USSD code')),
+-					E('div', { 'class': 'cbi-value-field' },
+-						E('input', { 'type': 'text', 'id': 'ussd-code', 'value': '*100#',
+-							'style': 'width:100%', 'placeholder': '*100#' }))
+-				]),
+ 
+-				E('div', { 'class': 'cbi-value' }, [
+-					E('div', { 'class': 'cbi-value-title' }, _('Operator response')),
+-					E('div', { 'class': 'cbi-value-field' },
+-						E('span', { 'id': 'ussd-result' }, ''))
++			E('div', { 'class': 'pejir-sms-card' }, [
++				E('h3', {}, _('Send SMS')),
++				E('input', { 'type': 'tel', 'id': 'sms-to', 'class': 'pejir-sms-input',
++					'placeholder': '+7 900 000-00-00' }),
++				E('textarea', { 'id': 'sms-text', 'class': 'pejir-sms-textarea',
++					'rows': 3, 'placeholder': _('Message text') }),
++				E('div', { 'class': 'pejir-sms-actions' }, [
++					sendBtn, ' ', exportBtn
+ 				]),
+-
+-				E('div', { 'class': 'cbi-value' }, [
+-					E('div', { 'class': 'cbi-value-title' }, ''),
+-					E('div', { 'class': 'cbi-value-field' }, ussdBtn)
++				E('div', { 'style': 'margin-top:8px' }, [
++					E('span', { 'id': 'sms-send-status', 'class': 'pejir-sms-note' }, ''),
++					' ',
++					E('span', { 'id': 'sms-export-status', 'class': 'pejir-sms-note' }, ''),
++					' ',
++					E('span', { 'id': 'sms-export-link' }, '')
+ 				]),
++				E('div', { 'style': 'margin-top:12px' }, [
++					E('div', { 'class': 'pejir-sms-note' }, _('Templates')),
++					E('div', { 'id': 'sms-templates' }, ''),
++					E('div', { 'class': 'pejir-sms-actions' }, [
++						tplInput, ' ', tplAddBtn
++					])
++				])
++			]),
+ 
+-				E('div', { 'class': 'cbi-value' }, [
+-					E('div', { 'class': 'cbi-value-title' }, ''),
+-					E('div', { 'class': 'cbi-value-field' }, ussdRetryBtn)
++			E('div', { 'class': 'pejir-sms-card' }, [
++				E('h3', {}, _('USSD request')),
++				E('input', { 'type': 'text', 'id': 'ussd-code', 'value': '*100#',
++					'class': 'pejir-sms-input', 'placeholder': '*100#' }),
++				E('div', { 'class': 'pejir-sms-actions' }, [
++					ussdBtn, ' ', ussdRetryBtn
+ 				]),
+-
+-				E('div', { 'class': 'cbi-value-description' },
++				E('div', { 'id': 'ussd-result', 'class': 'pejir-sms-note' }, ''),
++				E('div', { 'class': 'pejir-sms-note' },
+ 					_('The request is sent to the modem directly (AT+CUSD). While the LTE data call is active, the modem does not answer AT commands - in that case use the retry button.'))
+ 			]),
++
++			E('div', { 'class': 'pejir-sms-card' }, [
++				E('h3', {}, _('Service state')),
++				E('div', { 'class': 'pejir-sms-kv' }, [
++					E('div', { 'class': 'k' }, _('AT ports')),
++					E('div', { 'class': 'v', 'id': 'sms-ports' }, _('checking…'))
++				]),
++				E('div', { 'class': 'pejir-sms-kv' }, [
++					E('div', { 'class': 'k' }, _('Port in smsd.conf')),
++					E('div', { 'class': 'v', 'id': 'sms-device' }, _('checking…'))
++				]),
++				E('div', { 'class': 'pejir-sms-note' }, _('smsd log')),
++				E('pre', { 'id': 'sms-log', 'class': 'pejir-sms-log' }, '')
+ 			])
+ 		]);
+ 
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 28f2f83c..b4e6165a 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -512,3 +512,21 @@ msgid "yes"
+ msgstr "да"
+ msgid "USB"
+ msgstr "USB"
++msgid "All messages"
++msgstr "Все сообщения"
++msgid "Incoming messages"
++msgstr "Входящие"
++msgid "Messages"
++msgstr "Переписка"
++msgid "Message text"
++msgstr "Текст сообщения"
++msgid "Today"
++msgstr "Сегодня"
++msgid "Yesterday"
++msgstr "Вчера"
++msgid "Unknown sender"
++msgstr "Неизвестный отправитель"
++msgid "Unknown recipient"
++msgstr "Неизвестный получатель"
++msgid "Nothing found"
++msgstr "Ничего не найдено"

@@ -48,11 +48,29 @@ for pat in "/var/spool/sms/outgoing" "/var/spool/sms/sent" "/var/spool/sms/faile
 	fi
 done
 
-for id in "sms-out-list" "sms-sent-list" "sms-failed-list"; do
-	if grep -qF "$id" "$JS"; then
-		ok "sms.js: есть таблица $id"
+# Патч 0109: три списка объединены в одну переписку (пузыри), поэтому
+# отдельных таблиц sms-out-list/sms-sent-list/sms-failed-list больше
+# нет - проверяем, что все три категории попадают в общий список.
+for dir in "queued" "out" "err"; do
+	if grep -q "dir == '$dir'" "$JS" || grep -q "dir: '$dir'" "$JS" \
+		|| grep -q "'$dir'" "$JS"; then
+		ok "sms.js: категория '$dir' учитывается в переписке"
 	else
-		fail "sms.js: нет таблицы $id"
+		fail "sms.js: категория '$dir' не учитывается - сообщения пропадут из вида"
+	fi
+done
+
+if grep -q "sms-chat" "$JS"; then
+	ok "sms.js: есть общий контейнер переписки sms-chat"
+else
+	fail "sms.js: нет контейнера sms-chat"
+fi
+
+for id in "sms-tab-all" "sms-tab-inbox" "sms-tab-out" "sms-tab-failed"; do
+	if grep -qF "$id" "$JS"; then
+		ok "sms.js: есть счётчик вкладки $id"
+	else
+		fail "sms.js: нет счётчика вкладки $id"
 	fi
 done
 
