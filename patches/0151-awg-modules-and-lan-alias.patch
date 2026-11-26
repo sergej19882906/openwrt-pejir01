@@ -1,0 +1,255 @@
+From 455cfc0d176ea460a937fd40e69ace1101572f13 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 21:33:48 GMT
+Subject: =?utf-8?b?YW1uZXppYXdnOiDQvNC+0LTRg9C70Ywg0LPRgNGD0LfQuNGC0YHRjyDQsiDQv9GA?=
+ =?utf-8?b?0LDQstC40LvRjNC90L7QvCDQv9C+0YDRj9C00LrQtSwgb3BlbndydC5sYW4g0YDQ?=
+ =?utf-8?b?tdC30L7Qu9Cy0LjRgtGB0Y8=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Дефект 1: модуль amneziawg был в образе, но не грузился.
+insmod падал с "Unknown symbol" (chacha20poly1305_encrypt,
+xchacha20poly1305_decrypt, curve25519_base_point, chacha_init_arch):
+крипто-модули ядра не были подгружены, и порядок загрузки не
+соблюдался - libchacha20poly1305 требует chacha-mips и poly1305-mips
+уже в памяти. Автоматический загрузчик модулей их не тянет, поэтому
+netifd держал AWG-интерфейс в pending с сообщением "Please install
+either kernel module (kmod-amneziawg package) or user-space
+implementation in /usr/bin/amneziawg-go", и туннель не поднимался
+вообще.
+
+Новый пакет pejir-awg грузит модули явно и в правильном порядке
+(chacha-mips, poly1305-mips, libchacha20poly1305, libcurve25519,
+amneziawg), а затем делает ifup для всех интерфейсов с протоколом
+amneziawg/wireguard - туннель поднимается сразу после загрузки.
+Зависимости kmod-amneziawg дополнены явными kmod-crypto-lib-chacha20
+и kmod-crypto-lib-poly1305.
+
+Дефект 2: openwrt.lan не резолвился (NXDOMAIN). У dnsmasq был
+domain=lan и local=/lan/, но dnsmasq отвечает только на имена из
+/etc/hosts и DHCP-lease, а самого роутера там не было. Имя работало
+только при поднятом WAN, когда запрос уходил вверх к DNS провайдера.
+Новый пакет pejir-lanhost добавляет в /etc/hosts запись с IP из
+network.lan.ipaddr и перечитывает /etc/hosts через HUP dnsmasq.
+---
+ package/kmod-amneziawg/Makefile               |  2 +
+ package/pejir-awg/Makefile                    | 47 ++++++++++++++++
+ package/pejir-awg/root/etc/init.d/pejir-awg   | 56 +++++++++++++++++++
+ package/pejir-lanhost/Makefile                | 39 +++++++++++++
+ .../root/etc/init.d/pejir-lanhost             | 27 +++++++++
+ 5 files changed, 171 insertions(+)
+ create mode 100644 package/pejir-awg/Makefile
+ create mode 100644 package/pejir-awg/root/etc/init.d/pejir-awg
+ create mode 100644 package/pejir-lanhost/Makefile
+ create mode 100644 package/pejir-lanhost/root/etc/init.d/pejir-lanhost
+
+diff --git a/package/kmod-amneziawg/Makefile b/package/kmod-amneziawg/Makefile
+index 9686aeaa..356cae3b 100644
+--- a/package/kmod-amneziawg/Makefile
++++ b/package/kmod-amneziawg/Makefile
+@@ -24,6 +24,8 @@ define KernelPackage/amneziawg
+ 	DEPENDS:= \
+ 		+kmod-udptunnel4 \
+ 		+kmod-udptunnel6 \
++		+kmod-crypto-lib-chacha20 \
++		+kmod-crypto-lib-poly1305 \
+ 		+kmod-crypto-lib-chacha20poly1305 \
+ 		+kmod-crypto-lib-curve25519
+ endef
+diff --git a/package/pejir-awg/Makefile b/package/pejir-awg/Makefile
+new file mode 100644
+index 00000000..3ecdfe15
+--- /dev/null
++++ b/package/pejir-awg/Makefile
+@@ -0,0 +1,47 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-awg
++PKG_VERSION:=1.0.0
++PKG_RELEASE:=1
++
++PKG_LICENSE:=GPL-2.0
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-awg
++  SECTION:=net
++  CATEGORY:=Network
++  TITLE:=AmneziaWG module loader for PEJIR01
++  DEPENDS:=+kmod-amneziawg +amneziawg-tools
++endef
++
++define Package/pejir-awg/description
++  Loads the AmneziaWG kernel module with all of its crypto dependencies
++  and in the right order.
++
++  The kmod-amneziawg package ships the module itself, but the module
++  refuses to load with "Unknown symbol" until chacha/curve25519 crypto
++  modules are in place, and the automatic module loader does not order
++  them. Netifd then keeps the AWG interface in "pending" state with
++  "Please install either kernel module (kmod-amneziawg package) or
++  user-space implementation in /usr/bin/amneziawg-go", so the tunnel
++  never comes up.
++
++  This package loads the modules explicitly (chacha-mips, poly1305-mips,
++  libchacha20poly1305, libcurve25519, amneziawg) and then re-runs "ifup"
++  for every amneziawg/wireguard interface, so the tunnel starts right
++  after boot and after the network configuration is reloaded.
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-awg/install
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/pejir-awg $(1)/etc/init.d/pejir-awg
++endef
++
++$(eval $(call BuildPackage,pejir-awg))
+diff --git a/package/pejir-awg/root/etc/init.d/pejir-awg b/package/pejir-awg/root/etc/init.d/pejir-awg
+new file mode 100644
+index 00000000..529fd7b2
+--- /dev/null
++++ b/package/pejir-awg/root/etc/init.d/pejir-awg
+@@ -0,0 +1,56 @@
++#!/bin/sh /etc/rc.common
++# AmneziaWG: загрузка модуля ядра и подъём AWG-интерфейсов.
++#
++# Модуль amneziawg зависит от крипто-модулей ядра (chacha20/poly1305/
++# curve25519). Без них insmod падает с "Unknown symbol", а netifd
++# оставляет интерфейс в pending: "Please install either kernel module
++# (kmod-amneziawg package) or user-space implementation in
++# /usr/bin/amneziawg-go". Модули грузим явно и в правильном порядке,
++# затем перезапускаем AWG-интерфейсы.
++
++START=95
++STOP=10
++
++MODDIR="/lib/modules/$(uname -r)"
++
++# Порядок важен: сначала реализации шифров, потом сам amneziawg.
++AWG_MODULES="chacha-mips poly1305-mips libchacha20poly1305 libcurve25519 libcurve25519-generic amneziawg"
++
++load_awg_modules() {
++	local m
++	for m in $AWG_MODULES; do
++		[ -f "$MODDIR/$m.ko" ] || continue
++		insmod "$MODDIR/$m.ko" 2>/dev/null
++	done
++}
++
++awg_interfaces() {
++	local iface proto
++	for iface in $(uci -q show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=interface$/\1/p"); do
++		[ -n "$iface" ] || continue
++		proto="$(uci -q get network."$iface".proto)"
++		case "$proto" in
++			amneziawg|wireguard)
++				echo "$iface"
++				;;
++		esac
++	done
++}
++
++start_service() {
++	load_awg_modules
++	[ -d /sys/module/amneziawg ] || return 0
++	local iface
++	for iface in $(awg_interfaces); do
++		logger -t pejir-awg "интерфейс $iface: перезапуск после загрузки модуля"
++		ifup "$iface" >/dev/null 2>&1
++	done
++}
++
++stop_service() {
++	rmmod amneziawg 2>/dev/null
++}
++
++service_triggers() {
++	procd_add_reload_trigger network
++}
+diff --git a/package/pejir-lanhost/Makefile b/package/pejir-lanhost/Makefile
+new file mode 100644
+index 00000000..82cb4007
+--- /dev/null
++++ b/package/pejir-lanhost/Makefile
+@@ -0,0 +1,39 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-lanhost
++PKG_VERSION:=1.0.0
++PKG_RELEASE:=1
++
++PKG_LICENSE:=GPL-2.0
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-lanhost
++  SECTION:=net
++  CATEGORY:=Network
++  TITLE:=Local name openwrt.lan for the LAN interface
++endef
++
++define Package/pejir-lanhost/description
++  Adds the router itself to /etc/hosts as "openwrt.lan" (and "openwrt")
++  with the current LAN address, then reloads dnsmasq.
++
++  Without it dnsmasq answers NXDOMAIN for openwrt.lan: the local domain
++  is configured (domain=lan, local=/lan/), but dnsmasq only serves the
++  names it knows from /etc/hosts and DHCP leases, and the router's own
++  hostname was not there. The name then only worked while the WAN was
++  up, because the query was forwarded upstream.
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-lanhost/install
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/pejir-lanhost $(1)/etc/init.d/pejir-lanhost
++endef
++
++$(eval $(call BuildPackage,pejir-lanhost))
+diff --git a/package/pejir-lanhost/root/etc/init.d/pejir-lanhost b/package/pejir-lanhost/root/etc/init.d/pejir-lanhost
+new file mode 100644
+index 00000000..20877577
+--- /dev/null
++++ b/package/pejir-lanhost/root/etc/init.d/pejir-lanhost
+@@ -0,0 +1,27 @@
++#!/bin/sh /etc/rc.common
++# Локальное имя роутера: openwrt.lan -> IP LAN.
++#
++# dnsmasq с domain=lan отвечает только на имена, которые есть в
++# /etc/hosts или в DHCP-lease. Самого роутера там не было, поэтому
++# openwrt.lan не резолвился (NXDOMAIN) и работал только при поднятом
++# WAN - запрос уходил вверх к DNS провайдера.
++
++START=96
++STOP=05
++
++start_service() {
++	local ip pid
++	ip="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1)"
++	[ -n "$ip" ] || return 0
++
++	sed -i '/[[:space:]]openwrt\.lan/d' /etc/hosts 2>/dev/null
++	echo "$ip openwrt.lan openwrt" >> /etc/hosts
++
++	pid="$(pidof dnsmasq 2>/dev/null)"
++	[ -n "$pid" ] && kill -HUP $pid 2>/dev/null
++	return 0
++}
++
++service_triggers() {
++	procd_add_reload_trigger network
++}
+-- 
+2.39.5
+
