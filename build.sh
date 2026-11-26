@@ -578,7 +578,7 @@ if [ -n "$SU" ]; then
         # отсутствие mkswap, хотя он в образе есть.
         MKSWAP_OK=""
         for f in sbin/mkswap bin/mkswap usr/bin/mkswap usr/sbin/mkswap; do
-          if echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f"; then
+          if echo "$ROOTFS_LIST" 2>/dev/null | grep -q "squashfs-root/$f"; then
             MKSWAP_OK="$f"
             break
           fi
@@ -598,7 +598,7 @@ if [ -n "$SU" ]; then
                  etc/init.d/50-pejir-mwan etc/config/pejir_mwan \
                  usr/libexec/ip-full \
                  www/luci-static/resources/view/perenio/mwan.js; do
-          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || MWAN_MISSING="$MWAN_MISSING $f"
+          echo "$ROOTFS_LIST" 2>/dev/null | grep -q "squashfs-root/$f" || MWAN_MISSING="$MWAN_MISSING $f"
         done
         if [ -n "$MWAN_MISSING" ]; then
           ann error "build.sh: pejir-mwan" "В образе нет файлов multi-WAN:$MWAN_MISSING"
