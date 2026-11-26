@@ -1,0 +1,48 @@
+From ff9417f537008a68d883e63e61a5424b500170b7 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 22:05:44 GMT
+Subject: =?utf-8?b?YXdnOiDRgdGC0L7RgNC+0LYg0LLQvtC30LLRgNCw0YnQsNC10YIg0LzQsNGA0YjR?=
+ =?utf-8?b?gNGD0YIg0L/QviDRg9C80L7Qu9GH0LDQvdC40Y4sINC60L7Qs9C00LAg0YLRg9C9?=
+ =?utf-8?b?0L3QtdC70Ywg0L7QttC40Ls=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Сторож снимал маршрут по умолчанию через туннель, когда тот не
+оживал (чтобы трафик ушёл на LTE), но маршрут не возвращал обратно,
+когда туннель поднимался. В итоге туннель был поднят (хендшейк есть,
+трафик по нему идёт), а весь трафик роутера и клиентов шёл мимо него
+по LTE - то есть VPN молча не работал, и это выглядело как "туннель
+поднят, но толку нет".
+
+Теперь в ветке "туннель жив" сторой проверяет наличие маршрута по
+умолчанию через интерфейс и возвращает его через ifup, если маршрута
+нет.
+---
+ package/pejir-awg/root/usr/libexec/pejir-awg-watch | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/package/pejir-awg/root/usr/libexec/pejir-awg-watch b/package/pejir-awg/root/usr/libexec/pejir-awg-watch
+index 96b6a9b3..c9d2f813 100755
+--- a/package/pejir-awg/root/usr/libexec/pejir-awg-watch
++++ b/package/pejir-awg/root/usr/libexec/pejir-awg-watch
+@@ -95,8 +95,15 @@ check_once() {
+ 		age="$(hs_age "$iface")"
+ 
+ 		if [ "$up" = "1" ] && [ -n "$age" ] && [ "$age" -le "$STALE" ]; then
+-			# Туннель жив - маршрут на месте, делать нечего.
++			# Туннель жив. Но маршрут по умолчанию через него мог быть
++			# снят раньше (после неудачной проверки) - тогда трафик ушёл
++			# бы на LTE, а через туннель ничего бы не ходило. Маршрут
++			# возвращаем, иначе туннель поднят, но бесполезен.
+ 			count_set "$iface" 0
++			if ! ip route show default dev "$dev" 2>/dev/null | grep -q .; then
++				log "туннель $iface жив, но маршрута по умолчанию через него нет - возвращаем"
++				ifup "$iface" >/dev/null 2>&1
++			fi
+ 			continue
+ 		fi
+ 
+-- 
+2.39.5
+
