@@ -1,0 +1,232 @@
+From 54674e068030c199814b3d7d8b48e22bd7e89ab7 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 21:52:14 GMT
+Subject: =?utf-8?b?YXdnOiDRgdGC0L7RgNC+0LYg0YLRg9C90L3QtdC70Y8gLSDQt9Cw0LLQuNGB0YjQ?=
+ =?utf-8?b?uNC5IFZQTiDQsdC+0LvRjNGI0LUg0L3QtSDRg9GC0LDRgdC60LjQstCw0LXRgiDQ?=
+ =?utf-8?b?uNC90YLQtdGA0L3QtdGC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Если весь трафик роутера идёт через AmneziaWG (у пира
+route_allowed_ips=1), маршрут по умолчанию указывает в туннель.
+Зависший туннель приводит к тому, что интернет пропадает совсем:
+пакеты уходят в туннель и не доходят. Пользователь в такой
+ситуации выключает туннель руками - VPN пропадает совсем
+(проверено на устройстве).
+
+Новый сторож pejir-awg-watch раз в минуту проверяет туннель:
+- интерфейс не поднят или хендшейка нет дольше 180 секунд ->
+  перезапуск интерфейса;
+- туннель не оживает три проверки подряд -> снимаем маршрут по
+  умолчанию через туннель, трафик возвращается на LTE;
+- туннель снова отвечает -> маршрут через него возвращается.
+
+Сторой работает только с теми интерфейсами, трафик которых реально
+идёт через туннель: если пользователь выключил маршрутизацию через
+AWG (route_allowed_ips=0) или сам интерфейс, сторой не вмешивается.
+---
+ package/pejir-awg/Makefile                    |  10 ++
+ .../root/etc/init.d/50-pejir-awg-watch        |  20 +++
+ .../root/usr/libexec/pejir-awg-watch          | 134 ++++++++++++++++++
+ 3 files changed, 164 insertions(+)
+ create mode 100755 package/pejir-awg/root/etc/init.d/50-pejir-awg-watch
+ create mode 100755 package/pejir-awg/root/usr/libexec/pejir-awg-watch
+
+diff --git a/package/pejir-awg/Makefile b/package/pejir-awg/Makefile
+index 3ecdfe15..4c707441 100644
+--- a/package/pejir-awg/Makefile
++++ b/package/pejir-awg/Makefile
+@@ -31,6 +31,13 @@ define Package/pejir-awg/description
+   libchacha20poly1305, libcurve25519, amneziawg) and then re-runs "ifup"
+   for every amneziawg/wireguard interface, so the tunnel starts right
+   after boot and after the network configuration is reloaded.
++
++  It also ships a watchdog for the tunnel. When all router traffic is
++  routed through AmneziaWG, a stuck tunnel takes the whole internet down
++  with it: the default route points into the tunnel and nothing gets
++  through. The watchdog restarts a silent tunnel and, if it does not
++  come back, removes the default route so the router falls back to LTE
++  on its own.
+ endef
+ 
+ define Build/Prepare
+@@ -42,6 +49,9 @@ endef
+ define Package/pejir-awg/install
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./root/etc/init.d/pejir-awg $(1)/etc/init.d/pejir-awg
++	$(INSTALL_BIN) ./root/etc/init.d/50-pejir-awg-watch $(1)/etc/init.d/50-pejir-awg-watch
++	$(INSTALL_DIR) $(1)/usr/libexec
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-awg-watch $(1)/usr/libexec/pejir-awg-watch
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-awg))
+diff --git a/package/pejir-awg/root/etc/init.d/50-pejir-awg-watch b/package/pejir-awg/root/etc/init.d/50-pejir-awg-watch
+new file mode 100755
+index 00000000..1c26b4f7
+--- /dev/null
++++ b/package/pejir-awg/root/etc/init.d/50-pejir-awg-watch
+@@ -0,0 +1,20 @@
++#!/bin/sh /etc/rc.common
++# Сторож AWG-туннеля: следит, чтобы зависший туннель не утащил за собой
++# весь интернет роутера. Подробности - в /usr/libexec/pejir-awg-watch.
++
++START=96
++STOP=10
++USE_PROCD=1
++
++start_service() {
++	procd_open_instance
++	procd_set_param command /usr/libexec/pejir-awg-watch
++	procd_set_param stdout 1
++	procd_set_param stderr 1
++	procd_set_param respawn 3600 5 5
++	procd_close_instance
++}
++
++stop_service() {
++	return 0
++}
+diff --git a/package/pejir-awg/root/usr/libexec/pejir-awg-watch b/package/pejir-awg/root/usr/libexec/pejir-awg-watch
+new file mode 100755
+index 00000000..6634a0b1
+--- /dev/null
++++ b/package/pejir-awg/root/usr/libexec/pejir-awg-watch
+@@ -0,0 +1,134 @@
++#!/bin/sh
++# Сторож AWG-туннеля.
++#
++# Проблема: если весь трафик роутера идёт через AmneziaWG
++# (route_allowed_ips=1 у пира), то при зависшем туннеле интернет
++# пропадает совсем - маршрут по умолчанию указывает в туннель, а трафик
++# туда не доходит. Пользователь в такой ситуации обычно выключает
++# туннель руками (и теряет VPN), хотя правильное действие - дождаться
++# восстановления туннеля или уйти на LTE.
++#
++# Сторож раз в INTERVAL секунд проверяет туннель:
++#   - интерфейс не поднят или хендшейка нет дольше STALE секунд ->
++#     перезапуск интерфейса (ifup);
++#   - туннель не оживает FAIL_LIMIT проверок подряд -> снимаем маршрут
++#     по умолчанию через туннель, трафик возвращается на LTE;
++#   - туннель снова отвечает -> возвращаем маршрут через него.
++#
++# Сторой работает только с теми интерфейсами, трафик которых реально
++# идёт через туннель: если пользователь выключил маршрутизацию через
++# AWG (route_allowed_ips=0) или выключил сам интерфейс, сторой не
++# вмешивается.
++
++set -u
++
++INTERVAL="${PEJIR_AWG_WATCH_INTERVAL:-60}"
++STALE="${PEJIR_AWG_WATCH_STALE:-180}"
++FAIL_LIMIT="${PEJIR_AWG_WATCH_FAILS:-3}"
++COUNT_DIR="${PEJIR_AWG_WATCH_COUNT_DIR:-/tmp/pejir-awg-watch.d}"
++
++log() {
++	logger -t pejir-awg-watch "$*"
++}
++
++awg_interfaces() {
++	local iface proto
++	for iface in $(uci -q show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=interface$/\1/p"); do
++		[ -n "$iface" ] || continue
++		proto="$(uci -q get network."$iface".proto)"
++		case "$proto" in
++			amneziawg|wireguard)
++				echo "$iface"
++				;;
++		esac
++	done
++}
++
++iface_dev() {
++	ubus call network.interface."$1" status 2>/dev/null |
++		grep -o '"l3_device"[[:space:]]*:[[:space:]]*"[^"]*"' |
++		head -1 | cut -d'"' -f4
++}
++
++iface_up() {
++	ubus call network.interface."$1" status 2>/dev/null |
++		grep -o '"up"[[:space:]]*:[[:space:]]*\(true\|false\)' |
++		head -1 | grep -q true && echo 1 || echo 0
++}
++
++# Возраст последнего хендшейка в секундах. Пусто - хендшейка не было.
++hs_age() {
++	_hs="$(awg show "$1" latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')"
++	[ -n "$_hs" ] || return 0
++	echo $(( $(date +%s) - _hs ))
++}
++
++count_get() {
++	local f="$COUNT_DIR/$1"
++	[ -f "$f" ] && cat "$f" || echo 0
++}
++
++count_set() {
++	local f="$COUNT_DIR/$1"
++	mkdir -p "$COUNT_DIR" 2>/dev/null || true
++	echo "$2" > "$f" 2>/dev/null
++}
++
++# Одна проверка всех AWG-интерфейсов. Вынесена отдельно, чтобы её можно
++# было прогнать без бесконечного цикла (--once) - этим пользуется тест.
++check_once() {
++	local iface dev up age fails
++
++	for iface in $(awg_interfaces); do
++		dev="$(iface_dev "$iface")"
++		[ -n "$dev" ] || continue
++
++		# Если трафик через туннель не идёт - не вмешиваемся.
++		ip route show default dev "$dev" 2>/dev/null | grep -q . || {
++			count_set "$iface" 0
++			continue
++		}
++
++		up="$(iface_up "$iface")"
++		age="$(hs_age "$iface")"
++
++		if [ "$up" = "1" ] && [ -n "$age" ] && [ "$age" -le "$STALE" ]; then
++			# Туннель жив - маршрут на месте, делать нечего.
++			count_set "$iface" 0
++			continue
++		fi
++
++		fails="$(count_get "$iface")"
++		fails=$(( fails + 1 ))
++		count_set "$iface" "$fails"
++
++		log "туннель $iface не отвечает (up=$up, хендшейк: ${age:-нет} c) - попытка $fails/$FAIL_LIMIT"
++
++		if [ "$fails" -ge "$FAIL_LIMIT" ]; then
++			log "туннель $iface не оживает - снимаем маршрут по умолчанию через него, трафик идёт по LTE"
++			ip route del default dev "$dev" 2>/dev/null
++			count_set "$iface" 0
++		else
++			ifup "$iface" >/dev/null 2>&1
++		fi
++	done
++}
++
++main_loop() {
++	while true; do
++		sleep "$INTERVAL"
++		check_once
++	done
++}
++
++mkdir -p "$COUNT_DIR" 2>/dev/null || true
++
++# --once: одна проверка и выход (для теста и ручной проверки).
++case "${1:-}" in
++	--once)
++		check_once
++		exit 0
++		;;
++esac
++
++main_loop
+-- 
+2.39.5
+

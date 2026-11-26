@@ -149,6 +149,7 @@ jobs:
           sh tests/test-mwan.sh
           sh tests/test-awg-module-load.sh
           sh tests/test-at-io-drain.sh
+          sh tests/test-awg-watchdog.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый
