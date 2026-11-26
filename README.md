@@ -30,6 +30,24 @@ PBR. По умолчанию выключен, включается на стр�
 wget -O /tmp/c65.sh "https://github.com/sergej19882906/openwrt-pejir01/releases/download/v25.12.6-pejir01.65/check_rel65.sh" && sh /tmp/c65.sh
 ```
 
+**Релиз `25.12.6-pejir01.64`** (патчи 0135–0141, run 45793351650,
+релиз 459287501): sysupgrade 17 429 048 Б
+(sha256 `b003cc85efc0b083942ec231acbb84ed1e4c9a0148da8272fd1aeb06778a4e48`),
+factory 23 724 032 Б
+(sha256 `87cef3133f9ab120159436e3fe9b75541da852f1945e8e7d017d81823ee19fe8`),
+initramfs 16 767 253 Б
+(sha256 `e4995444bf7e81f5dd37ae9e73ef0adcbb544b963dbeafad249d6bfa5a5bc451`),
+rootfs 13 950 976 Б (предел тома 23 998 464 Б).
+
+Релиз `.64` - тот же, что `.65`, но без модуля multi-WAN: остатки
+`mwan3` вычищены, в образе есть `mkswap`, страница батареи не тормозит,
+SMS-сообщения разбираются правильно.
+
+Проверка на устройстве:
+```sh
+wget -O /tmp/c64.sh "https://github.com/sergej19882906/openwrt-pejir01/releases/download/v25.12.6-pejir01.64/check_rel64.sh" && sh /tmp/c64.sh
+```
+
 **Релиз `25.12.6-pejir01.63`** (патчи 0129–0134, run 45735722087,
 релиз 458874748): sysupgrade 17 429 048 Б
 (sha256 `79e69ec300340fabd1b00319353011851bc89b5d031cf58b66ea991a9d4086f6`),
