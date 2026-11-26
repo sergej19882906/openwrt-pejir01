@@ -1,6 +1,6 @@
-From 1e8d009dc37248e7af1dae0d03190626e7cff168 Mon Sep 17 00:00:00 2001
+From d156ec52772e6ec5ae7de12ffb632a9e3b602c30 Mon Sep 17 00:00:00 2001
 From: pejir <pejir@local>
-Date: Thu, 26 Nov 2026 04:07:39 GMT
+Date: Thu, 26 Nov 2026 04:10:57 GMT
 Subject: =?utf-8?b?bmV0OiDRgdCy0L7QuSDQvNC+0LTRg9C70YwgbXVsdGktV0FOIChXQU4gKyBMVEUp?=
  =?utf-8?b?INCy0LzQtdGB0YLQviBtd2FuMw==?=
 MIME-Version: 1.0
@@ -41,13 +41,23 @@ Content-Transfer-Encoding: 8bit
 
 Зависимости: ip-full (busybox ip не умеет ip rule fwmark и таблицы
 маршрутизации) и nftables (уже есть в образе через firewall4).
+
+Два важных нюанса, учтённых в коде:
+- карта вердиктов nft должна быть полной ("verdict map incomplete" -
+  такое правило nft не грузит), поэтому проверка поддержки numgen
+  использует mod 2 с двумя значениями, а рабочая карта разметки всегда
+  содержит все десять;
+- правила ip rule удаляются по полному набору селекторов: iproute2
+  сравнивает все поля запроса с полями правила, поэтому "ip rule del
+  pref N" не снимает правило "to <CIDR> lookup 200" - команда
+  собирается из самой строки "ip rule show".
 ---
  package/pejir-mwan/Makefile                   |  56 ++
  package/pejir-mwan/root/etc/config/pejir_mwan |  26 +
- .../pejir-mwan/root/etc/init.d/50-pejir-mwan  |  29 ++
- .../pejir-mwan/root/usr/libexec/pejir-mwan    | 481 ++++++++++++++++++
+ .../pejir-mwan/root/etc/init.d/50-pejir-mwan  |  29 +
+ .../pejir-mwan/root/usr/libexec/pejir-mwan    | 506 ++++++++++++++++++
  .../root/usr/libexec/pejir-mwan-ctl           | 104 ++++
- 5 files changed, 696 insertions(+)
+ 5 files changed, 721 insertions(+)
  create mode 100644 package/pejir-mwan/Makefile
  create mode 100644 package/pejir-mwan/root/etc/config/pejir_mwan
  create mode 100755 package/pejir-mwan/root/etc/init.d/50-pejir-mwan
@@ -185,10 +195,10 @@ index 00000000..0a9557e3
 +}
 diff --git a/package/pejir-mwan/root/usr/libexec/pejir-mwan b/package/pejir-mwan/root/usr/libexec/pejir-mwan
 new file mode 100755
-index 00000000..2bfca6b4
+index 00000000..188f285e
 --- /dev/null
 +++ b/package/pejir-mwan/root/usr/libexec/pejir-mwan
-@@ -0,0 +1,481 @@
+@@ -0,0 +1,506 @@
 +#!/bin/sh
 +# pejir-mwan - multi-WAN (WAN + LTE) для Perenio PEJIR01.
 +#
@@ -317,13 +327,38 @@ index 00000000..2bfca6b4
 +}
 +
 +# Снять все правила модуля (префиксы 100..999).
++#
++# ВАЖНО: правило удаляется по ПОЛНОМУ набору селекторов. iproute2
++# сравнивает все поля запроса с полями правила, а не заданные поля
++# считаются нулевыми. Поэтому "ip rule del pref 100" НЕ снимает
++# правило "100: from all to 77.88.8.0/21 lookup 200" - оно осталось бы
++# висеть после выключения модуля. Собираем команду из самой строки
++# "ip rule show".
 +flush_rules() {
 +	ip -4 rule show 2>/dev/null | while IFS= read -r line; do
 +		# Реальный ip печатает правило как "100:\tfrom all fwmark 0x1 lookup 100"
 +		pref="$(printf '%s' "$line" | sed -n 's/^\([0-9][0-9]*\):.*/\1/p')"
 +		[ -n "$pref" ] || continue
 +		[ "$pref" -ge "$PREF_LO" ] && [ "$pref" -le "$PREF_HI" ] || continue
-+		ip -4 rule del pref "$pref" 2>/dev/null
++
++		from="$(printf '%s' "$line" | sed -n 's/.*from \([^ ]*\).*/\1/p')"
++		to="$(printf '%s' "$line" | sed -n 's/.*to \([^ ]*\).*/\1/p')"
++		mark="$(printf '%s' "$line" | sed -n 's/.*fwmark \([^ ]*\).*/\1/p')"
++		lookup="$(printf '%s' "$line" | sed -n 's/.*lookup \([^ ]*\).*/\1/p')"
++
++		args=""
++		case "$from" in
++		''|all) ;;
++		*) args="$args from $from" ;;
++		esac
++		case "$to" in
++		''|all) ;;
++		*) args="$args to $to" ;;
++		esac
++		[ -n "$mark" ] && args="$args fwmark $mark"
++		[ -n "$lookup" ] && args="$args lookup $lookup"
++
++		ip -4 rule del pref "$pref" $args 2>/dev/null
 +	done
 +}
 +

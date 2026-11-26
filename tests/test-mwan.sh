@@ -239,6 +239,24 @@ def save_rules(rules):
             fh.write(r + "\n")
 
 
+def rule_fields(line):
+    """Разбор строки "100:\tfrom all to 1.2.3.0/24 fwmark 0x1 lookup 200"."""
+    out = {"pref": None, "from": None, "to": None, "fwmark": None, "lookup": None}
+    if ":" in line:
+        head = line.split(":", 1)[0]
+        if head.strip().isdigit():
+            out["pref"] = head.strip()
+    rest = line.split(":", 1)[1] if ":" in line else ""
+    for part in rest.split():
+        if part in ("from", "to", "fwmark", "lookup"):
+            pass
+    toks = rest.split()
+    for i, t in enumerate(toks):
+        if t in ("from", "to", "fwmark", "lookup") and i + 1 < len(toks):
+            out[t] = toks[i + 1]
+    return out
+
+
 if not argv:
     sys.exit(1)
 cmd, args = argv[0], argv[1:]
@@ -273,14 +291,29 @@ if cmd == "rule":
         save_rules(load_rules() + ["%s:\t%s" % (pref, parts)])
         sys.exit(0)
     if sub == "del":
-        pref = None
+        # Настоящий iproute2 сравнивает ВСЕ поля запроса с полями
+        # правила: не заданные считаются нулевыми. Поэтому правило с
+        # "to ..." не снимается командой "del pref N" без "to ...".
+        sel = {"pref": None, "from": None, "to": None, "fwmark": None, "lookup": None}
         i = 0
         while i < len(rest):
-            if rest[i] == "pref":
-                pref = rest[i + 1]; i += 2
+            if rest[i] in sel and i + 1 < len(rest):
+                sel[rest[i]] = rest[i + 1]; i += 2
             else:
                 i += 1
-        save_rules([r for r in load_rules() if not r.startswith(str(pref) + ":")])
+        keep = []
+        for r in load_rules():
+            f = rule_fields(r)
+            match = True
+            for key, val in sel.items():
+                if val is None:
+                    continue
+                if f.get(key) != val:
+                    match = False
+                    break
+            if not match:
+                keep.append(r)
+        save_rules(keep)
         sys.exit(0)
     sys.exit(0)
 
@@ -476,6 +509,29 @@ if grep -q "active=none" "$WORK/state" 2>/dev/null; then
 	ok "оба канала мертвы: в состоянии none"
 else
 	fail "оба канала мертвы: в состоянии не none"
+fi
+
+# --- 4.5a cleanup снимает правила с "to" (PBR) ----------------------------
+# iproute2 сравнивает ВСЕ поля запроса с полями правила: правило
+# "to <CIDR> lookup 200" не снимается командой "ip rule del pref N"
+# без селектора "to". Модуоль обязан собирать команду удаления из
+# самой строки "ip rule show".
+prep_conf pbr 1 "77.88.8.0/21"
+run_daemon ""
+if grep -q "to 77.88.8.0/21 lookup 200" "$WORK/conf/rules" 2>/dev/null; then
+	ok "pbr: правило с "to" поставлено"
+else
+	fail "pbr: правило с \"to\" не поставлено"
+fi
+PATH="$WORK/bin:$PATH" MOCK_CONF="$WORK/conf" PEJIR_MWAN_STATE="$WORK/state" \
+	PEJIR_MWAN_APPLIED="$WORK/applied" PEJIR_MWAN_LOG="$WORK/log" \
+	PEJIR_MWAN_NFT="$WORK/nft.rules.tmp" PEJIR_MWAN_PID="$WORK/pid" \
+	PEJIR_MWAN_SYSNET="$WORK/sys" \
+	sh "$DAEMON" cleanup
+if [ ! -s "$WORK/conf/rules" ] 2>/dev/null; then
+	ok "cleanup снимает правила с \"to\" (PBR)"
+else
+	fail "cleanup не снял правила с \"to\" (PBR)"
 fi
 
 # --- 4.6 модуль выключен --------------------------------------------------
