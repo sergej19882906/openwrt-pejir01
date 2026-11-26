@@ -1,4 +1,4 @@
-From 97070b53ea2aaf0adb4584544cfc1f90363a9d42 Mon Sep 17 00:00:00 2001
+From 8e8b0731017ce20563b8f8697cfb469e01290acf Mon Sep 17 00:00:00 2001
 From: pejir <pejir@local>
 Date: Thu, 26 Nov 2026 04:10:57 GMT
 Subject: =?utf-8?b?bHVjaTog0YHRgtGA0LDQvdC40YbQsCBtdWx0aS1XQU4gKFdBTiArIExURSkg0Lgg?=
@@ -28,19 +28,19 @@ pejir_mwan в read и write).
 В po/ru добавлены русские переводы новых строк (исходные msgid
 английские, как принято в этом пакете).
 ---
- .../resources/view/perenio/mwan.js            | 322 ++++++++++++++++++
+ .../resources/view/perenio/mwan.js            | 321 ++++++++++++++++++
  .../po/ru/luci-app-perenio.po                 |  79 +++++
  .../share/luci/menu.d/luci-app-perenio.json   |  13 +
  .../share/rpcd/acl.d/luci-app-perenio.json    |  36 +-
- 4 files changed, 448 insertions(+), 2 deletions(-)
+ 4 files changed, 447 insertions(+), 2 deletions(-)
  create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js
 
 diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js
 new file mode 100644
-index 00000000..840dc98f
+index 00000000..4a9aec52
 --- /dev/null
 +++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,321 @@
 +'use strict';
 +'require view';
 +'require fs';
@@ -100,6 +100,13 @@ index 00000000..840dc98f
 +	return st;
 +}
 +
++function setText(id, text) {
++	var e = document.getElementById(id);
++
++	if (e)
++		e.textContent = text;
++}
++
 +function field(id, label, node, hint) {
 +	return E('div', { 'class': 'cbi-value' }, [
 +		E('label', { 'class': 'cbi-value-title', 'for': id }, label),
@@ -122,17 +129,14 @@ index 00000000..840dc98f
 +	var opts = [];
 +
 +	options.forEach(function(o) {
-+		opts.push(E('option', { 'value': o[0], 'selected': (o[0] == value) }, o[1]));
++		opts.push(E('option', { 'value': o[0] }, o[1]));
 +	});
 +
-+	return E('select', { 'id': id, 'class': 'cbi-input-select' }, opts);
-+}
++	var sel = E('select', { 'id': id, 'class': 'cbi-input-select' }, opts);
 +
-+function setText(id, text) {
-+	var e = document.getElementById(id);
++	sel.value = value;
 +
-+	if (e)
-+		e.textContent = text;
++	return sel;
 +}
 +
 +function statusRow(label, id) {
@@ -148,11 +152,11 @@ index 00000000..840dc98f
 +	setText('mwan-st-mode', st.mode || '?');
 +	setText('mwan-st-enabled', (st.enabled == '1') ? _('yes') : _('no'));
 +	setText('mwan-st-daemon', (st.daemon == 'running') ? _('running') : _('stopped'));
-+	setText('mwan-st-wan', st.wan_health == '1' ? _('alive') :
-+		(st.wan_up == '1' ? _('no answer') : _('link down')) +
++	setText('mwan-st-wan', (st.wan_health == '1' ? _('alive') :
++		(st.wan_up == '1' ? _('no answer') : _('link down'))) +
 +		' (' + (st.wan_dev || '-') + (st.wan_gw ? ', ' + st.wan_gw : '') + ')');
-+	setText('mwan-st-lte', st.lte_health == '1' ? _('alive') :
-+		(st.lte_up == '1' ? _('no answer') : _('link down')) +
++	setText('mwan-st-lte', (st.lte_health == '1' ? _('alive') :
++		(st.lte_up == '1' ? _('no answer') : _('link down'))) +
 +		' (' + (st.lte_dev || '-') + (st.lte_gw ? ', ' + st.lte_gw : '') + ')');
 +	setText('mwan-st-active', st.active || '?');
 +	setText('mwan-st-wan-pkts', st.wan_packets || '0');
@@ -169,43 +173,54 @@ index 00000000..840dc98f
 +	load: function() {
 +		return Promise.all([
 +			run([ 'status' ]),
-+			uci.load('pejir_mwan').catch(function() {})
++			uci.load('pejir_mwan').catch(function() { return null; })
 +		]);
 +	},
 +
 +	render: function(data) {
-+		var status = (data && data[0]) ? data[0] : '';
++		/* Элементы формы держим в переменных и вешаем слушатели прямо
++		 * на них. Обращаться к ним через document.getElementById() здесь
++		 * нельзя: LuCI вставляет результат render() в документ ПОСЛЕ
++		 * того, как render вернётся, и getElementById() на этом шаге
++		 * вернул бы null - страница падала бы с TypeError. */
++		var enabledBox = E('input', { 'type': 'checkbox', 'id': 'mwan-enabled', 'class': 'cbi-input-checkbox' });
++		var modeSel = selectInput('mwan-mode', MODES, 'balance');
++		var weightSel = selectInput('mwan-weight', WEIGHTS.map(function(w) {
++			return [ String(w), w + '%' ];
++		}), '50');
++		var wanIface = textInput('mwan-wan-iface', 'wan');
++		var wanDev = textInput('mwan-wan-device', 'eth0');
++		var lteIface = textInput('mwan-lte-iface', 'lte');
++		var lteDev = textInput('mwan-lte-device', 'eth1');
++		var interval = numberInput('mwan-interval', '10');
++		var count = numberInput('mwan-count', '3');
++		var target = textInput('mwan-target', '');
++		var pbr = E('textarea', { 'id': 'mwan-pbr', 'class': 'cbi-input-textarea', 'rows': '3' }, '');
++
++		var saveBtn = E('button', { 'class': 'cbi-button cbi-button-save important', 'type': 'button' }, _('Save'));
++		var applyBtn = E('button', { 'class': 'cbi-button cbi-button-apply', 'type': 'button' }, _('Apply'));
++		var enableBtn = E('button', { 'class': 'cbi-button', 'type': 'button' }, _('Enable'));
++		var disableBtn = E('button', { 'class': 'cbi-button', 'type': 'button' }, _('Disable'));
 +
 +		var body = E('div', { 'class': 'pejir-mwan' }, [
 +			E('h2', {}, _('Multi-WAN: WAN and LTE (PEJIR01)')),
 +			E('div', { 'class': 'cbi-map' }, [
 +				E('h3', {}, _('Mode')),
 +				E('div', { 'class': 'cbi-section' }, [
-+					E('div', { 'class': 'cbi-value' }, [
-+						E('label', { 'class': 'cbi-value-title' }, _('Enabled')),
-+						E('div', { 'class': 'cbi-value-field' }, [
-+							E('input', { 'type': 'checkbox', 'id': 'mwan-enabled', 'class': 'cbi-input-checkbox' }),
-+							E('div', { 'class': 'cbi-value-description' },
-+								_('The module is disabled by default. While it is off it does not change the routing at all.'))
-+						])
-+					]),
-+					field('mwan-mode', _('Mode'), selectInput('mwan-mode', MODES, 'balance')),
-+					field('mwan-weight', _('Share of new connections via WAN'),
-+						selectInput('mwan-weight', WEIGHTS.map(function(w) {
-+							return [ String(w), w + '%' ];
-+						}), '50'),
++					field('mwan-enabled', _('Enabled'), enabledBox,
++						_('The module is disabled by default. While it is off it does not change the routing at all.')),
++					field('mwan-mode', _('Mode'), modeSel),
++					field('mwan-weight', _('Share of new connections via WAN'), weightSel,
 +						_('Used in the balance mode only.')),
-+					field('mwan-wan-iface', _('WAN interface (network section)'), textInput('mwan-wan-iface', 'wan')),
-+					field('mwan-wan-device', _('WAN device'), textInput('mwan-wan-device', 'eth0')),
-+					field('mwan-lte-iface', _('LTE interface (network section)'), textInput('mwan-lte-iface', 'lte')),
-+					field('mwan-lte-device', _('LTE device'), textInput('mwan-lte-device', 'eth1')),
-+					field('mwan-interval', _('Check interval, seconds'), numberInput('mwan-interval', '10')),
-+					field('mwan-count', _('Checks before the link is considered dead'), numberInput('mwan-count', '3')),
-+					field('mwan-target', _('Check target'),
-+						textInput('mwan-target', ''),
++					field('mwan-wan-iface', _('WAN interface (network section)'), wanIface),
++					field('mwan-wan-device', _('WAN device'), wanDev),
++					field('mwan-lte-iface', _('LTE interface (network section)'), lteIface),
++					field('mwan-lte-device', _('LTE device'), lteDev),
++					field('mwan-interval', _('Check interval, seconds'), interval),
++					field('mwan-count', _('Checks before the link is considered dead'), count),
++					field('mwan-target', _('Check target'), target,
 +						_('Empty: ping the gateway of the link. Set an external IP address (for example 1.1.1.1) to check the real Internet access.')),
-+					field('mwan-pbr', _('Networks through LTE'),
-+						E('textarea', { 'id': 'mwan-pbr', 'class': 'cbi-input-textarea', 'rows': '3' }, ''),
++					field('mwan-pbr', _('Networks through LTE'), pbr,
 +						_('Used in the "by address" mode only. One CIDR per line, for example 77.88.8.0/21.'))
 +				])
 +			]),
@@ -229,14 +244,7 @@ index 00000000..840dc98f
 +			]),
 +
 +			E('div', { 'class': 'cbi-page-actions' }, [
-+				E('button', { 'class': 'cbi-button cbi-button-save important', 'id': 'mwan-save' },
-+					_('Save')),
-+				E('button', { 'class': 'cbi-button cbi-button-apply', 'id': 'mwan-apply' },
-+					_('Apply')),
-+				E('button', { 'class': 'cbi-button', 'id': 'mwan-enable' },
-+					_('Enable')),
-+				E('button', { 'class': 'cbi-button', 'id': 'mwan-disable' },
-+					_('Disable'))
++				saveBtn, applyBtn, enableBtn, disableBtn
 +			]),
 +
 +			E('div', { 'class': 'cbi-section' }, [
@@ -244,52 +252,43 @@ index 00000000..840dc98f
 +			])
 +		]);
 +
-+		/* Заполняем поля текущими значениями конфига. */
-+		uci.load('pejir_mwan').then(function() {
-+			var val = function(key, dflt) {
-+				var v = uci.get('pejir_mwan', 'main', key);
++		/* Поля заполняем текущими значениями конфига. Конфиг уже загружен
++		 * в load(), поэтому значения берём синхронно - промис может
++		 * разрешиться раньше, чем LuCI вставит страницу в документ, и
++		 * поля остались бы пустыми. */
++		var val = function(key, dflt) {
++			var v = uci.get('pejir_mwan', 'main', key);
 +
-+				return (v == null || v === '') ? dflt : String(v);
-+			};
-+			var put = function(id, v) {
-+				var e = document.getElementById(id);
++			return (v == null || v === '') ? dflt : String(v);
++		};
 +
-+				if (e)
-+					e.value = v;
-+			};
++		modeSel.value = val('mode', 'balance');
++		weightSel.value = val('wan_weight', '50');
++		wanIface.value = val('wan_iface', 'wan');
++		wanDev.value = val('wan_device', 'eth0');
++		lteIface.value = val('lte_iface', 'lte');
++		lteDev.value = val('lte_device', 'eth1');
++		interval.value = val('check_interval', '10');
++		count.value = val('check_count', '3');
++		target.value = val('check_target', '');
++		pbr.value = val('pbr_list', '');
++		enabledBox.checked = (val('enabled', '0') == '1');
 +
-+			put('mwan-mode', val('mode', 'balance'));
-+			put('mwan-weight', val('wan_weight', '50'));
-+			put('mwan-wan-iface', val('wan_iface', 'wan'));
-+			put('mwan-wan-device', val('wan_device', 'eth0'));
-+			put('mwan-lte-iface', val('lte_iface', 'lte'));
-+			put('mwan-lte-device', val('lte_device', 'eth1'));
-+			put('mwan-interval', val('check_interval', '10'));
-+			put('mwan-count', val('check_count', '3'));
-+			put('mwan-target', val('check_target', ''));
-+			put('mwan-pbr', val('pbr_list', ''));
++		var self = this;
 +
-+			var en = document.getElementById('mwan-enabled');
++		saveBtn.addEventListener('click', L.bind(self.handleSave, self));
++		applyBtn.addEventListener('click', L.bind(self.handleApply, self));
++		enableBtn.addEventListener('click', L.bind(self.handleEnable, self));
++		disableBtn.addEventListener('click', L.bind(self.handleDisable, self));
 +
-+			if (en)
-+				en.checked = (val('enabled', '0') == '1');
-+		}).catch(function() {});
-+
-+		refreshStatus(status);
-+
++		/* Состояние обновляем раз в 5 с: к этому моменту элементы
++		 * таблицы уже в документе. */
 +		poll.add(function() {
 +			return run([ 'status' ]).then(function(t) {
 +				refreshStatus(t);
 +				return '';
 +			});
 +		}, 5);
-+
-+		var self = this;
-+
-+		document.getElementById('mwan-save').addEventListener('click', L.bind(self.handleSave, self));
-+		document.getElementById('mwan-apply').addEventListener('click', L.bind(self.handleApply, self));
-+		document.getElementById('mwan-enable').addEventListener('click', L.bind(self.handleEnable, self));
-+		document.getElementById('mwan-disable').addEventListener('click', L.bind(self.handleDisable, self));
 +
 +		return body;
 +	},
