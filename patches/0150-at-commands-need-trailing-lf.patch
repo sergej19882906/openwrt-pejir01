@@ -1,0 +1,245 @@
+From 909b049942f312021dc93d4631105c47840f6089 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 20:31:44 GMT
+Subject: =?utf-8?b?bW9kZW06IEFULdC60L7QvNCw0L3QtNGLINGD0YXQvtC00Y/RgiDQvNC+0LTQtdC8?=
+ =?utf-8?b?0YMgLSDRhNCw0LnQu9GDINC60L7QvNCw0L3QtNGLINC90YPQttC10L0g0LfQsNCy?=
+ =?utf-8?b?0LXRgNGI0LDRjtGJ0LjQuSBMRg==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Причина найдена: atinout требует, чтобы строка команды в файле
+заканчивалась LF. Его функция tr_lf_cr() иначе печатает "invalid
+string" и ВООБЩЕ НИЧЕГО не отправляет модему. Наши хелперы писали
+файл как "AT+CPIN?\r" - без LF, поэтому ни одна AT-команда не уходила
+модему.
+
+Из-за этого на устройстве:
+
+  * "Показать номер" отвечал "модем не ответил на AT+CNUM" - модем
+    команды просто не получал;
+  * mdm-at отвечал "no AT port found" - проба порта писалась как
+    "AT\r" и тоже не отправлялась;
+  * сторож AT-порта считал живой порт зависшим и перепривязывал
+    USB-драйвер (на устройстве поэтому пересоздавался /dev/ttyUSB2);
+  * init-скрипт LTE не отправлял модему AT+CGDCONT и AT+ZECMCALL -
+    PDP-контекст не поднимался, и LTE не давал интернет (модем при
+    этом отвечал на ping: связь с NAT модема была, наружу трафик не
+    шёл).
+
+Исправлено - команда везде пишется с завершающим LF (файл оканчивается
+на "\r\n", atinout сам переводит его в "\r" для модема):
+
+  * 47-pejir-lte: проба порта, AT+CSQ, AT+QCFG, AT+XACT, AT+ZBAND,
+    AT+CGACT, AT+ZECMCALL;
+  * 40-pejir-sms: проба порта и AT+CSQ;
+  * mdm-at: проба AT-порта (её "AT\r" писался без LF);
+  * pejir-modem-ctl: любая команда (PIN, CNUM, сброс, режим);
+  * pejir-band: выбор диапазонов.
+
+Заодно убран бессмысленный "AT+CSQ\n" (с LF): atinout всё равно
+переводит строку в CR, поэтому модем такого запроса не отличал от
+обычного - теперь проба честная.
+
+Новый тест tests/test-at-command-file.sh: мок atinout повторяет
+настоящее правило (файл без LF - ошибка и пустой вывод) и проверяет,
+что хелперы получают ответ модема, а все AT-команды в наших файлах
+записаны с LF. На дереве без этого патча тест даёт 9 провалов.
+
+Заодно исправлены два места, где файл команды готовился пайпом:
+"pejir-lte-apn | tr '\n' '\r' > $script". Такой файл тоже заканчивался
+без LF, и atinout отбрасывал его целиком - то есть ровно те команды
+(AT+CGDCONT с APN и AT+ZECMCALL - data call), без которых LTE не
+поднимает PDP-контекст и не даёт интернет. Теперь перевод строки
+делает awk ("%s\r\n"), файл всегда заканчивается LF.
+
+Новый тест tests/test-at-command-file.sh проверяет и это: в наших
+AT-файлах не должно быть перевода строки в CR.
+---
+ .../root/etc/init.d/47-pejir-lte              | 32 ++++++++++---------
+ package/pejir-lte-base/root/usr/bin/mdm-at    |  2 +-
+ .../root/usr/libexec/pejir-band               |  2 +-
+ .../root/usr/libexec/pejir-modem-ctl          |  2 +-
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    |  8 ++---
+ 5 files changed, 24 insertions(+), 22 deletions(-)
+
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 8dde24f6..9fa69174 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -108,7 +108,7 @@ DEFAULT_APN="${PEJIR_LTE_APN:-internet}"
+ 
+ # Отправить AT-команду на порт и напечатать ответ модема.
+ #
+-# $1 - порт, $2 - формат команды для printf (например 'AT\r').
++# $1 - порт, $2 - формат команды для printf (например 'AT\r\n').
+ # Скорость выставляется перед КАЖДЫМ обменом: порт могли сбросить
+ # (например, smsd при старте), и тогда модем снова замолчал бы.
+ at_ask() {
+@@ -161,17 +161,17 @@ detect_at_port() {
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
+ 
+-		out="$(at_ask "$p" 'AT\r')"
++		out="$(at_ask "$p" 'AT\r\n')"
+ 		case "$out" in
+ 			*OK*) echo "$p"; return 0 ;;
+ 		esac
+ 
+-		out="$(at_ask "$p" 'AT+CSQ\r')"
++		out="$(at_ask "$p" 'AT+CSQ\r\n')"
+ 		case "$out" in
+ 			*+CSQ*|*OK*) echo "$p"; return 0 ;;
+ 		esac
+ 
+-		out="$(at_ask "$p" 'AT+CSQ\n')"
++		out="$(at_ask "$p" 'AT+CSQ\r\n')"
+ 		case "$out" in
+ 			*+CSQ*|*OK*) echo "$p"; return 0 ;;
+ 		esac
+@@ -286,10 +286,12 @@ sync_apn() {
+ 	# AT+ZECMCALL (APN, тип PDP, логин, пароль, тип аутентификации).
+ 	# Логин и пароль уходят только вместе, иначе позиции параметров
+ 	# сдвинутся и модем примет пароль за логин.
+-	# Хелпер печатает команды по одной в строке (без CR), поэтому
+-	# перед отправкой переводим перевод строки в CR: GM510 не видит
+-	# команду, завершённую только LF.
+-	/usr/libexec/pejir-lte-apn 2>/dev/null | tr '\n' '\r' > "$script" || : > "$script"
++	# Хелпер печатает команды по одной в строке (без CR). Файл команды
++	# обязан заканчиваться LF - иначе atinout считает его некорректным
++	# и НИЧЕГО модему не отправляет. Перевод строки в CR делает сам
++	# atinout, поэтому оставляем "\r\n" (GM510 не видит команду,
++	# завершённую только LF).
++	/usr/libexec/pejir-lte-apn 2>/dev/null | awk '{ printf "%s\r\n", $0 }' > "$script" || : > "$script"
+ 	[ -s "$script" ] || { rm -f "$script"; return 0; }
+ 	set_port_speed "$port"
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+@@ -339,7 +341,7 @@ sync_bands() {
+ 			log "для Quectel поддержаны только LTE-полосы - список пуст, ничего не шлю"
+ 			return 0
+ 		fi
+-		printf 'AT+QCFG="band",1,%s\r' "$q_bands" > "$script"
++		printf 'AT+QCFG="band",1,%s\r\n' "$q_bands" > "$script"
+ 		set_port_speed "$port"
+ 		timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 		rm -f "$script"
+@@ -364,7 +366,7 @@ sync_bands() {
+ 			log "для Fibocom поддержаны только LTE-полосы - список пуст, ничего не шлю"
+ 			return 0
+ 		fi
+-		printf 'AT+XACT=2,,,%s\r' "$fb_bands" > "$script"
++		printf 'AT+XACT=2,,,%s\r\n' "$fb_bands" > "$script"
+ 		set_port_speed "$port"
+ 		timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 		rm -f "$script"
+@@ -380,7 +382,7 @@ sync_bands() {
+ 		return 0
+ 	fi
+ 
+-	printf 'AT+ZBAND=%s,0,0,%s\r' "$umts" "$lte" > "$script"
++	printf 'AT+ZBAND=%s,0,0,%s\r\n' "$umts" "$lte" > "$script"
+ 	set_port_speed "$port"
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+@@ -423,7 +425,7 @@ ecm_call() {
+ 	# (в L8 AT Command Reference - "12.2.7 +CGACT, PDP Context Activate").
+ 	if [ "$(modem_family)" = "fibocom" ] || [ "$(modem_family)" = "quectel" ] || \
+ 	   [ "$(modem_family)" = "generic" ]; then
+-		printf 'AT+CGACT=1,1\r' > "$script"
++		printf 'AT+CGACT=1,1\r\n' > "$script"
+ 		set_port_speed "$port"
+ 		timeout "$ECM_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 		rm -f "$script"
+@@ -432,13 +434,13 @@ ecm_call() {
+ 	fi
+ 
+ 	if [ -x /usr/libexec/pejir-lte-apn ]; then
+-		/usr/libexec/pejir-lte-apn 2>/dev/null | grep '^AT+ZECMCALL=' | tr '\n' '\r' > "$script" || : > "$script"
++		/usr/libexec/pejir-lte-apn 2>/dev/null | grep '^AT+ZECMCALL=' | awk '{ printf "%s\r\n", $0 }' > "$script" || : > "$script"
+ 	fi
+ 	if [ ! -s "$script" ]; then
+ 		if [ -n "$apn" ]; then
+-			printf 'AT+ZECMCALL=1,%s\r' "$apn" > "$script"
++			printf 'AT+ZECMCALL=1,%s\r\n' "$apn" > "$script"
+ 		else
+-			printf 'AT+ZECMCALL=1\r' > "$script"
++			printf 'AT+ZECMCALL=1\r\n' > "$script"
+ 		fi
+ 	fi
+ 	# Ошибку игнорируем: на модемах без ECM-поддержки вызов не нужен,
+diff --git a/package/pejir-lte-base/root/usr/bin/mdm-at b/package/pejir-lte-base/root/usr/bin/mdm-at
+index a1b16ece..755d394e 100755
+--- a/package/pejir-lte-base/root/usr/bin/mdm-at
++++ b/package/pejir-lte-base/root/usr/bin/mdm-at
+@@ -44,7 +44,7 @@ set_port_speed() {
+ detect_port() {
+ 	local p out script="/tmp/mdm-at-probe.$$"
+ 
+-	printf 'AT\r' > "$script"
++	printf 'AT\r\n' > "$script"
+ 
+ 	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyUSB3 \
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-band b/package/pejir-lte-base/root/usr/libexec/pejir-band
+index 36161c50..8a85b0c0 100644
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-band
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-band
+@@ -27,7 +27,7 @@ at_ask() {
+ 	_acmd="$2"
+ 	_script="/tmp/pejir-band.$$"
+ 
+-	printf '%s\r' "$_acmd" > "$_script"
++	printf '%s\r\n' "$_acmd" > "$_script"
+ 	stty -F "$_aport" 115200 raw -echo 2>/dev/null || true
+ 	_out=$(timeout "$AT_TIMEOUT" atinout "$_script" "$_aport" - 2>/dev/null)
+ 	rm -f "$_script"
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+index 48601095..71a8705d 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+@@ -46,7 +46,7 @@ at_ask() {
+ 	_acmd="$2"
+ 	_script="/tmp/pejir-modem-ctl.$$"
+ 
+-	printf '%s\r' "$_acmd" > "$_script"
++	printf '%s\r\n' "$_acmd" > "$_script"
+ 	stty -F "$_aport" 115200 raw -echo 2>/dev/null || true
+ 	_out=$(timeout "$AT_TIMEOUT" atinout "$_script" "$_aport" - 2>/dev/null)
+ 	rm -f "$_script"
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index a2844842..356be373 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -90,7 +90,7 @@ at_port_candidates() {
+ }
+ 
+ # Отправить AT-команду на порт и напечатать ответ модема.
+-# $1 - порт, $2 - формат команды для printf (например 'AT\r').
++# $1 - порт, $2 - формат команды для printf (например 'AT\r\n').
+ # Скорость выставляется перед КАЖДЫМ обменом.
+ at_ask() {
+ 	local p="$1" fmt="$2" out script="/tmp/pejir-sms-ask.$$"
+@@ -115,17 +115,17 @@ detect_at_port() {
+ 	for p in $(at_port_candidates); do
+ 		[ -c "$p" ] || continue
+ 
+-		out="$(at_ask "$p" 'AT\r')"
++		out="$(at_ask "$p" 'AT\r\n')"
+ 		case "$out" in
+ 			*OK*) echo "$p"; return 0 ;;
+ 		esac
+ 
+-		out="$(at_ask "$p" 'AT+CSQ\r')"
++		out="$(at_ask "$p" 'AT+CSQ\r\n')"
+ 		case "$out" in
+ 			*+CSQ*|*OK*) echo "$p"; return 0 ;;
+ 		esac
+ 
+-		out="$(at_ask "$p" 'AT+CSQ\n')"
++		out="$(at_ask "$p" 'AT+CSQ\r\n')"
+ 		case "$out" in
+ 			*+CSQ*|*OK*) echo "$p"; return 0 ;;
+ 		esac
+-- 
+2.39.5
+
