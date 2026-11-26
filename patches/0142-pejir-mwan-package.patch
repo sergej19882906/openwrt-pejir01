@@ -1,6 +1,6 @@
-From 509e8d0cf59fb678ff636f4634bdcf701698843f Mon Sep 17 00:00:00 2001
+From 1e8d009dc37248e7af1dae0d03190626e7cff168 Mon Sep 17 00:00:00 2001
 From: pejir <pejir@local>
-Date: Thu, 26 Nov 2026 04:00:17 GMT
+Date: Thu, 26 Nov 2026 04:07:39 GMT
 Subject: =?utf-8?b?bmV0OiDRgdCy0L7QuSDQvNC+0LTRg9C70YwgbXVsdGktV0FOIChXQU4gKyBMVEUp?=
  =?utf-8?b?INCy0LzQtdGB0YLQviBtd2FuMw==?=
 MIME-Version: 1.0
@@ -45,9 +45,9 @@ Content-Transfer-Encoding: 8bit
  package/pejir-mwan/Makefile                   |  56 ++
  package/pejir-mwan/root/etc/config/pejir_mwan |  26 +
  .../pejir-mwan/root/etc/init.d/50-pejir-mwan  |  29 ++
- .../pejir-mwan/root/usr/libexec/pejir-mwan    | 479 ++++++++++++++++++
+ .../pejir-mwan/root/usr/libexec/pejir-mwan    | 481 ++++++++++++++++++
  .../root/usr/libexec/pejir-mwan-ctl           | 104 ++++
- 5 files changed, 694 insertions(+)
+ 5 files changed, 696 insertions(+)
  create mode 100644 package/pejir-mwan/Makefile
  create mode 100644 package/pejir-mwan/root/etc/config/pejir_mwan
  create mode 100755 package/pejir-mwan/root/etc/init.d/50-pejir-mwan
@@ -185,10 +185,10 @@ index 00000000..0a9557e3
 +}
 diff --git a/package/pejir-mwan/root/usr/libexec/pejir-mwan b/package/pejir-mwan/root/usr/libexec/pejir-mwan
 new file mode 100755
-index 00000000..2e51ed57
+index 00000000..2bfca6b4
 --- /dev/null
 +++ b/package/pejir-mwan/root/usr/libexec/pejir-mwan
-@@ -0,0 +1,479 @@
+@@ -0,0 +1,481 @@
 +#!/bin/sh
 +# pejir-mwan - multi-WAN (WAN + LTE) для Perenio PEJIR01.
 +#
@@ -293,6 +293,8 @@ index 00000000..2e51ed57
 +}
 +
 +# Поддержка nft numgen: без неё режим balance невозможен.
++# Карта должна быть ПОЛНОЙ: nft не грузит правило с неполной картой
++# ("verdict map incomplete"), поэтому здесь mod 2 и оба значения.
 +check_numgen() {
 +	nft list ruleset >/dev/null 2>&1 || return 1
 +	tmp="/tmp/pejir-mwan-numgen-test.$$"
@@ -300,7 +302,7 @@ index 00000000..2e51ed57
 +table inet pejir_numgen_test {
 +	chain t {
 +		type filter hook output priority mangle; policy accept;
-+		numgen random mod 10 vmap { 0 : accept, 1 : accept }
++		numgen random mod 2 vmap { 0 : accept, 1 : accept }
 +	}
 +}
 +NFT
