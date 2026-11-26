@@ -1,0 +1,256 @@
+From 5f2d4085d6f409fa52347df15380b804c72e5555 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 16:15:17 GMT
+Subject: =?utf-8?b?bXdhbjog0YDQsNC30LHQvtGAIG5ldGlmZCDQv9C+LdC90LDRgdGC0L7Rj9GJ0LXQ?=
+ =?utf-8?b?vNGDICjRiNC70Y7QtyDQuNC3INC80LDRgNGI0YDRg9GC0L7Qsiwg0LAg0L3QtSDQ?=
+ =?utf-8?b?uNC3IGRhdGEuZ2F0ZXdheSk=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Проверка модуля multi-WAN на устройстве показала: оба канала считаются
+мёртвыми, в состоянии пусто (wan_gw=, lte_gw=, active=none), а
+"ip route show table 100" печатает "Dump terminated".
+
+Причина - в неверном представлении о формате ответа netifd. Демон и его
+тест смотрели шлюз в ключе "data.gateway", но netifd такого ключа не
+отдаёт НИКОГДА. Статус интерфейса плоский: "up", "l3_device", "proto",
+массив "route" лежат на верхнем уровне, а секция "data" содержит только
+данные прото (например, dns-серверы). Шлюз по умолчанию лежит в маршруте
+0.0.0.0/0, который выглядит как
+{"target":"0.0.0.0/0","mask":0,"nexthop":"192.168.1.1"}.
+
+Исправления:
+
+  * шлюз ищется в массиве route (по умолчанию 0.0.0.0/0), с учётом
+    обоих названий поля - nexthop (текущий netifd) и gateway (старые
+    сборки);
+  * если в статусе маршрута нет, шлюз берётся из таблицы маршрутизации
+    ядра: "ip -4 route show dev <устройство>" и строка "default via X".
+    Это самый надёжный источник - там маршруты действительно установлены;
+  * общий дамп netifd разбирается правильно: это МАССИВ объектов
+    {"interface":[{"interface":"wan",...},...]}, а не объект с именами в
+    качестве ключей. Раньше разбор искал ключ с именем интерфейса и
+    ничего не находил. Если интерфейса с нужным именем нет, он ищется в
+    дампе по сетевому устройству (l3_device);
+  * состояние интерфейса ("up") и устройство (l3_device) берутся с
+    верхнего уровня ответа, а не из data;
+  * добавлена команда "pejir-mwan check": разовая проверка каналов
+    одним и тем же кодом, что и у демона. Раньше helper pejir-mwan-ctl
+    дублировал разбор netifd (и разбирал его так же неверно) - теперь
+    он просто вызывает демон, поэтому "check" и рабочее состояние
+    больше не расходятся.
+
+Тест tests/test-mwan.sh переписан под настоящий формат netifd: моки
+статуса плоские, шлюз лежит в route[].nexthop, дамп - массив, мок
+jsonfilter понимает индексы (key[0]) и wildcard (key[*]), мок ip
+отдаёт маршруты ядра. Добавлены проверки: интерфейс берётся из общего
+дампа netifd, шлюз берётся из таблицы маршрутизации ядра.
+---
+ .../pejir-mwan/root/usr/libexec/pejir-mwan    | 133 +++++++++++++++++-
+ .../root/usr/libexec/pejir-mwan-ctl           |  30 +---
+ 2 files changed, 130 insertions(+), 33 deletions(-)
+
+diff --git a/package/pejir-mwan/root/usr/libexec/pejir-mwan b/package/pejir-mwan/root/usr/libexec/pejir-mwan
+index 188f285e..23e34849 100755
+--- a/package/pejir-mwan/root/usr/libexec/pejir-mwan
++++ b/package/pejir-mwan/root/usr/libexec/pejir-mwan
+@@ -69,18 +69,131 @@ cfg_get() {
+ 	uci -q get "$CFG.main.$1" 2>/dev/null
+ }
+ 
++# Значение ключа из JSON netifd.
++#
++# ВАЖНО: netifd отдаёт статус ПЛОСКИМ. На верхнем уровне есть "up",
++# "l3_device", "proto", массив "route" и т.д., а секция "data" содержит
++# только данные прото (для dhcp - dns-серверы). Шлюза по умолчанию
++# отдельным ключом нет вообще: он лежит в маршруте 0.0.0.0/0, который
++# в статусе выглядит как {"target":"0.0.0.0/0","mask":0,
++# "nexthop":"192.168.1.1"}.
++#
++# $1 - json, $2 - префикс пути ("" или "interface[3]."), $3 - ключ
++json_pick() {
++	_v=""
++	[ -n "${1:-}" ] || return 0
++	_v="$(printf '%s' "$1" | jsonfilter -e "@.$2$3" 2>/dev/null)"
++	[ -n "$_v" ] || _v="$(printf '%s' "$1" | jsonfilter -e "@.$2"data".$3" 2>/dev/null)"
++	printf '%s' "$_v"
++}
++
++# Шлюз по умолчанию из статуса netifd: ищем маршрут 0.0.0.0/0.
++# $1 - json, $2 - префикс пути
++json_gw() {
++	raw="$1"; pfx="$2"
++	[ -n "$raw" ] || return 0
++	n="$(printf '%s' "$raw" | jsonfilter -e "@.$pfx"route[*].target 2>/dev/null | wc -l)"
++	m="$(printf '%s' "$raw" | jsonfilter -e "@.$pfx"route[*].nexthop 2>/dev/null | wc -l)"
++	[ "$m" -gt "$n" ] && n="$m"
++	i=0
++	while [ "$i" -lt "$n" ]; do
++		t="$(printf '%s' "$raw" | jsonfilter -e "@.$pfx"route[$i].target 2>/dev/null)"
++		if [ "$t" = "0.0.0.0/0" ]; then
++			g="$(printf '%s' "$raw" | jsonfilter -e "@.$pfx"route[$i].nexthop 2>/dev/null)"
++			[ -n "$g" ] || g="$(printf '%s' "$raw" | jsonfilter -e "@.$pfx"route[$i].gateway 2>/dev/null)"
++			if [ -n "$g" ]; then
++				printf '%s' "$g"
++				return 0
++			fi
++		fi
++		i=$((i + 1))
++	done
++	# На всякий случай - шлюз отдельным ключом (есть в некоторых сборках).
++	g="$(json_pick "$raw" "$pfx" gateway)"
++	[ -n "$g" ] && printf '%s' "$g"
++	return 0
++}
++
++# Шлюз по умолчанию из таблицы маршрутизации ядра. Это самый надёжный
++# источник: там маршруты действительно установлены.
++# $1 - сетевое устройство
++route_gw() {
++	dev="$1"
++	[ -n "$dev" ] || return 0
++	ip -4 route show dev "$dev" 2>/dev/null | awk '
++		$1 == "default" {
++			for (i = 1; i <= NF; i++)
++				if ($i == "via") { print $(i + 1); exit }
++		}'
++}
++
++# Индекс интерфейса в общем дампе netifd по имени.
++# $1 - json дампа, $2 - имя интерфейса
++dump_index_by_name() {
++	_i=0
++	for _n in $(printf '%s' "$1" | jsonfilter -e '@.interface[*].interface' 2>/dev/null); do
++		if [ "$_n" = "$2" ]; then
++			printf '%s' "$_i"
++			return 0
++		fi
++		_i=$((_i + 1))
++	done
++	printf '%s' "-1"
++}
++
++# Индекс интерфейса в общем дампе netifd по сетевому устройству.
++# $1 - json дампа, $2 - имя устройства (l3_device)
++dump_index_by_device() {
++	_i=0
++	for _n in $(printf '%s' "$1" | jsonfilter -e '@.interface[*].l3_device' 2>/dev/null); do
++		if [ "$_n" = "$2" ]; then
++			printf '%s' "$_i"
++			return 0
++		fi
++		_i=$((_i + 1))
++	done
++	printf '%s' "-1"
++}
++
+ # Значения одного интерфейса из ubus.
+ # load_iface <секция network> <запасное устройство>
+ # Результат: IF_UP, IF_GW, IF_DEV, IF_DNS
+ load_iface() {
++	name="$1"; fbdev="$2"
+ 	raw="$(ubus call "network.interface.$1" status 2>/dev/null)"
+-	IF_UP="$(printf '%s' "$raw" | jsonfilter -e '@.data.up' 2>/dev/null)"
+-	IF_GW="$(printf '%s' "$raw" | jsonfilter -e '@.data.gateway' 2>/dev/null)"
+-	IF_DEV="$(printf '%s' "$raw" | jsonfilter -e '@.data.l3_device' 2>/dev/null)"
+-	IF_DNS="$(printf '%s' "$raw" | jsonfilter -e '@.data.dns[*]' 2>/dev/null | tr '\n' ' ')"
++	pfx=""
++
++	if [ -z "$raw" ]; then
++		# Объекта с таким именем нет - ищем интерфейс в общем дампе
++		# netifd. Дамп - это МАССИВ объектов: {"interface":[{"interface":
++		# "wan",...},...]}, а не объект с именами в качестве ключей.
++		dump="$(ubus call network.interface dump 2>/dev/null)"
++		if [ -n "$dump" ]; then
++			idx="$(dump_index_by_name "$dump" "$name")"
++			if [ "$idx" = "-1" ] && [ -n "$fbdev" ]; then
++				idx="$(dump_index_by_device "$dump" "$fbdev")"
++			fi
++			if [ "$idx" != "-1" ]; then
++				raw="$dump"
++				pfx="interface[$idx]."
++			fi
++		fi
++	fi
++
++	IF_UP="$(json_pick "$raw" "$pfx" up)"
++	IF_DEV="$(json_pick "$raw" "$pfx" l3_device)"
++	IF_GW="$(json_pick "$raw" "$pfx" gateway)"
++	[ -n "$IF_GW" ] || IF_GW="$(json_gw "$raw" "$pfx")"
++	IF_DNS="$(printf '%s' "$raw" | jsonfilter -e "@.$pfx"data".dns[*]" 2>/dev/null | tr '\n' ' ')"
++
++	[ -n "$IF_DEV" ] || IF_DEV="$fbdev"
++	# Шлюз из ядра надёжнее: там маршруты действительно установлены.
++	if [ -n "$IF_DEV" ]; then
++		kgw="$(route_gw "$IF_DEV")"
++		[ -n "$kgw" ] && IF_GW="$kgw"
++	fi
+ 
+ 	[ "$IF_UP" = "true" ] && IF_UP=1 || IF_UP=0
+-	[ -n "$IF_DEV" ] || IF_DEV="$2"
+ 	return 0
+ }
+ 
+@@ -499,8 +612,16 @@ once)
+ cleanup)
+ 	cleanup_all
+ 	;;
++check)
++	# Разовая проверка каналов без изменения маршрутизации: тот же
++	# разбор netifd, что и у демона, поэтому результат совпадает.
++	read_config
++	run_checks
++	write_state "$(active_state)"
++	cat "$STATE"
++	;;
+ *)
+-	echo "usage: $0 run|once|cleanup" >&2
++	echo "usage: $0 run|once|cleanup|check" >&2
+ 	exit 1
+ 	;;
+ esac
+diff --git a/package/pejir-mwan/root/usr/libexec/pejir-mwan-ctl b/package/pejir-mwan/root/usr/libexec/pejir-mwan-ctl
+index 1d23a2cb..19d1be4c 100755
+--- a/package/pejir-mwan/root/usr/libexec/pejir-mwan-ctl
++++ b/package/pejir-mwan/root/usr/libexec/pejir-mwan-ctl
+@@ -40,33 +40,9 @@ do_status() {
+ }
+ 
+ do_check() {
+-	wan_iface="$(cfg_get wan_iface)"; [ -n "$wan_iface" ] || wan_iface=wan
+-	wan_dev="$(cfg_get wan_device)"; [ -n "$wan_dev" ] || wan_dev=eth0
+-	lte_iface="$(cfg_get lte_iface)"; [ -n "$lte_iface" ] || lte_iface=lte
+-	lte_dev="$(cfg_get lte_device)"; [ -n "$lte_dev" ] || lte_dev=eth1
+-	target="$(cfg_get check_target)"
+-
+-	raw="$(ubus call "network.interface.$wan_iface" status 2>/dev/null)"
+-	gw="$(printf '%s' "$raw" | jsonfilter -e '@.data.gateway' 2>/dev/null)"
+-	up="$(printf '%s' "$raw" | jsonfilter -e '@.data.up' 2>/dev/null)"
+-	[ "$up" = "true" ] && up=1 || up=0
+-	addr="$target"; [ -n "$addr" ] || addr="$gw"
+-	if [ "$up" = "1" ] && [ -n "$addr" ] && ping -I "$wan_dev" -c 1 -W 2 "$addr" >/dev/null 2>&1; then
+-		echo "wan=up"
+-	else
+-		echo "wan=down"
+-	fi
+-
+-	raw="$(ubus call "network.interface.$lte_iface" status 2>/dev/null)"
+-	gw="$(printf '%s' "$raw" | jsonfilter -e '@.data.gateway' 2>/dev/null)"
+-	up="$(printf '%s' "$raw" | jsonfilter -e '@.data.up' 2>/dev/null)"
+-	[ "$up" = "true" ] && up=1 || up=0
+-	addr="$target"; [ -n "$addr" ] || addr="$gw"
+-	if [ "$up" = "1" ] && [ -n "$addr" ] && ping -I "$lte_dev" -c 1 -W 2 "$addr" >/dev/null 2>&1; then
+-		echo "lte=up"
+-	else
+-		echo "lte=down"
+-	fi
++	# Проверку делает сам демон: разбор netifd должен быть один и тот же,
++	# иначе "check" и рабочее состояние будут расходиться.
++	"${PEJIR_MWAN_DAEMON:-/usr/libexec/pejir-mwan}" check 2>/dev/null
+ }
+ 
+ case "${1:-status}" in
+-- 
+2.39.5
+

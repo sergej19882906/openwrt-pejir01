@@ -132,19 +132,45 @@ EOF
 cat > "$WORK/bin/ubus" <<'EOF'
 #!/bin/sh
 # Мок ubus: "ubus call network.interface.<имя> status"
+# и "ubus call network.interface dump" (общий дамп netifd).
+case "$2" in
+network.interface)
+	# Настоящий netifd отдаёт общий дамп МАССИВОМ объектов:
+	# {"interface":[{"interface":"wan",...},{"interface":"lte",...}]},
+	# а не объектом, где имя интерфейса - ключ.
+	out='{"interface":['
+	first=1
+	for f in "$MOCK_CONF"/ifaces/*.json; do
+		[ -f "$f" ] || continue
+		n="$(basename "$f" .json)"
+		[ "$first" = "1" ] || out="$out,"
+		first=0
+		# Имя интерфейса - часть того же объекта, поэтому вставляем его
+		# внутрь JSON статуса, а не рядом с ним.
+		out="$out$(sed 's/^{/{\"interface\":\"$n\",/' "$f")"
+	done
+	echo "$out]}"
+	exit 0
+	;;
+esac
 name="${2##*.}"
 f="$MOCK_CONF/ifaces/$name.json"
-if [ -f "$f" ]; then
+# Метка .hidden означает: объекта с таким именем нет (ubus пишет ошибку
+# в stderr, в stdout пусто), но в общем дампе интерфейс есть.
+if [ -f "$f" ] && [ ! -f "$MOCK_CONF/ifaces/$name.hidden" ]; then
 	cat "$f"
 else
-	echo '{"data":{}}'
+	# Настоящий ubus на запрос несуществующего объекта печатает ошибку
+	# в stderr и ничего в stdout - и возвращает непустой код.
+	echo "ubus: object not found" >&2
+	exit 1
 fi
 EOF
 
 cat > "$WORK/bin/jsonfilter" <<'EOF'
 #!/usr/bin/env python3
-"""Мок jsonfilter: поддерживает -e @.data.<key> и @.data.dns[*]."""
-import json, sys
+"""Мок jsonfilter: поддерживает @.key, @.key[0], @.key[*] и вложенность."""
+import json, re, sys
 
 try:
     data = json.load(sys.stdin)
@@ -160,22 +186,36 @@ def out(v):
         print(v)
 
 
-def resolve(obj, path):
-    cur = obj
-    for part in path.split("."):
-        if not part:
-            continue
-        if isinstance(cur, dict):
-            if part not in cur:
-                return None
-            cur = cur[part]
-        elif isinstance(cur, list):
-            try:
-                cur = cur[int(part)]
-            except (ValueError, IndexError):
-                return None
-        else:
-            return None
+PART = re.compile(r"^([^\[\]]*)(?:\[(\d+|\*)\])?$")
+
+
+def matches(obj, path):
+    """Все значения по пути: поддерживаются "key", "key[0]" и "key[*]"."""
+    cur = [obj]
+    for part in [p for p in path.split(".") if p]:
+        m = PART.match(part)
+        if not m:
+            return []
+        name, idx = m.group(1), m.group(2)
+        nxt = []
+        for c in cur:
+            if name:
+                if isinstance(c, dict) and name in c:
+                    c = c[name]
+                else:
+                    continue
+            if idx is None:
+                nxt.append(c)
+            elif idx == "*":
+                if isinstance(c, list):
+                    nxt.extend(c)
+            else:
+                if isinstance(c, list):
+                    try:
+                        nxt.append(c[int(idx)])
+                    except (ValueError, IndexError):
+                        pass
+        cur = nxt
     return cur
 
 
@@ -185,14 +225,11 @@ for arg in sys.argv[1:]:
     p = arg[1:]
     if p.endswith("[*]"):
         base = p[:-3]
-        vals = resolve(data, base)
-        if isinstance(vals, list):
-            for v in vals:
-                out(v)
-        else:
-            out(vals)
+        for v in matches(data, base):
+            out(v)
     else:
-        out(resolve(data, p))
+        for v in matches(data, p):
+            out(v)
 EOF
 
 cat > "$WORK/bin/ping" <<'EOF'
@@ -319,8 +356,29 @@ if cmd == "rule":
 
 if cmd == "route":
     if len(args) >= 2 and args[0] == "show":
-        print(os.environ.get("MOCK_LINK_ROUTE",
-              "192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.5"))
+        # Реальный ip печатает маршруты главной таблицы. Мок берёт их
+        # из файла kernel_routes (по одной строке на маршрут) и умеет
+        # фильтровать по устройству и по "scope link".
+        dev = None
+        if "dev" in args:
+            dev = args[args.index("dev") + 1]
+        scope_link = "link" in args
+        kpath = os.path.join(conf, "kernel_routes")
+        lines = []
+        if os.path.exists(kpath):
+            lines = [l.rstrip("\n") for l in open(kpath) if l.strip()]
+        else:
+            lines = [os.environ.get("MOCK_LINK_ROUTE",
+                    "192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.5")]
+        for line in lines:
+            ldev = None
+            if " dev " in line:
+                ldev = line.split(" dev ", 1)[1].split()[0]
+            if dev and ldev != dev:
+                continue
+            if scope_link and " scope link" not in line:
+                continue
+            print(line)
         sys.exit(0)
     with open(routes_path, "a") as fh:
         fh.write(" ".join(argv) + "\n")
@@ -382,12 +440,22 @@ config mwan 'main'
 	option check_target ''
 	option pbr_list '$3'
 EOF
+	# Формат - как у настоящего netifd: статус плоский, шлюза
+	# отдельным ключом нет, он лежит в маршруте 0.0.0.0/0.
 	cat > "$WORK/conf/ifaces/wan.json" <<'EOF'
-{"data":{"up":true,"gateway":"192.168.1.1","l3_device":"eth0","dns":["8.8.8.8"]}}
+{"up":true,"pending":false,"available":true,"autostart":true,"l3_device":"eth0","proto":"dhcp","device":"eth0","ipv4-address":[{"address":"192.168.1.5","mask":24}],"route":[{"target":"192.168.1.0/24","mask":24,"nexthop":"0.0.0.0"},{"target":"0.0.0.0/0","mask":0,"nexthop":"192.168.1.1"}],"data":{"dns":["8.8.8.8"]}}
 EOF
 	cat > "$WORK/conf/ifaces/lte.json" <<'EOF'
-{"data":{"up":true,"gateway":"10.10.10.1","l3_device":"eth1","dns":["8.8.4.4"]}}
+{"up":true,"pending":false,"available":true,"autostart":true,"l3_device":"eth1","proto":"dhcp","device":"eth1","ipv4-address":[{"address":"10.10.10.5","mask":24}],"route":[{"target":"10.10.0.0/24","mask":24,"nexthop":"0.0.0.0"},{"target":"0.0.0.0/0","mask":0,"nexthop":"10.10.10.1"}],"data":{"dns":["8.8.4.4"]}}
 EOF
+	# Маршруты ядра (главная таблица) - их видит ip -4 route show.
+	cat > "$WORK/conf/kernel_routes" <<'EOF'
+default via 192.168.1.1 dev eth0
+192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.5
+default via 10.10.10.1 dev eth1
+10.10.0.0/24 dev eth1 proto kernel scope link src 10.10.10.5
+EOF
+	rm -f "$WORK/conf/ifaces/wan.hidden" "$WORK/conf/ifaces/lte.hidden"
 	rm -f "$WORK/conf/rules" "$WORK/conf/nft.rules" "$WORK/conf/routes.log" "$WORK/state" "$WORK/applied"
 }
 
@@ -509,6 +577,37 @@ if grep -q "active=none" "$WORK/state" 2>/dev/null; then
 	ok "оба канала мертвы: в состоянии none"
 else
 	fail "оба канала мертвы: в состоянии не none"
+fi
+
+# --- 4.4a интерфейс берётся из общего дампа netifd ------------------------
+# На устройстве объект "network.interface.wan" может не ответить - тогда
+# интерфейс ищется в общем дампе netifd. Дамп - это МАССИВ объектов,
+# а не объект с именами в качестве ключей, и в нём лежит полный статус
+# интерфейса вместе с маршрутами. Шлюза в ядре в этом сценарии нет:
+# он должен взяться из маршрута 0.0.0.0/0 в статусе netifd.
+prep_conf failover 1 ""
+touch "$WORK/conf/ifaces/wan.hidden"
+grep -v "default via 192.168.1.1 dev eth0" "$WORK/conf/kernel_routes" > "$WORK/conf/kr.tmp"
+mv "$WORK/conf/kr.tmp" "$WORK/conf/kernel_routes"
+run_daemon ""
+if grep -q "wan_gw=192.168.1.1" "$WORK/state" 2>/dev/null; then
+	ok "интерфейс взят из общего дампа netifd"
+else
+	fail "интерфейс не взят из общего дампа netifd (wan_gw пустой)"
+fi
+
+# --- 4.4b шлюз берётся из таблицы маршрутизации ядра --------------------
+# В статусе netifd маршрута по умолчанию нет (не все версии netifd его
+# отдают) - тогда шлюз берётся из главной таблицы маршрутизации.
+prep_conf failover 1 ""
+cat > "$WORK/conf/ifaces/wan.json" <<'EOF'
+{"up":true,"l3_device":"eth0","proto":"dhcp","ipv4-address":[{"address":"192.168.1.5","mask":24}],"data":{"dns":["8.8.8.8"]}}
+EOF
+run_daemon ""
+if grep -q "wan_gw=192.168.1.1" "$WORK/state" 2>/dev/null; then
+	ok "шлюз взят из таблицы маршрутизации ядра"
+else
+	fail "шлюз не взят из таблицы маршрутизации ядра (wan_gw пустой)"
 fi
 
 # --- 4.5a cleanup снимает правила с "to" (PBR) ----------------------------

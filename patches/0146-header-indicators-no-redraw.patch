@@ -1,0 +1,148 @@
+From d2e578dafd500b6f1082f72643fb8841350a3311 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 16:15:25 GMT
+Subject: =?utf-8?b?bHVjaTog0LfQvdCw0YfQutC4IExURSDQuCDQsdCw0YLQsNGA0LXQuCDQsiDRiNCw?=
+ =?utf-8?b?0L/QutC1INCx0L7Qu9GM0YjQtSDQvdC1INC/0LXRgNC10YDQuNGB0L7QstGL0LLQ?=
+ =?utf-8?b?sNGO0YIg0LLRgdGOINGB0YLRgNCw0L3QuNGG0YM=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+После того, как в шапку web-интерфейса добавили значки LTE и батареи,
+интерфейс стал заметно менее отзывчивым. Причина - не в самих значках,
+а в том, как они обновлялись: оба индикатора каждые 30 секунд
+полностью перерисовывали свой элемент (removeChild/innerHTML). Любое
+изменение DOM в шапке заставляет браузер перерисовать страницу целиком,
+и на слабом CPU это заметно тормозило прокрутку и переходы между
+страницами.
+
+Исправления:
+
+  * индикатор запоминает последнее состояние и ничего не делает, если
+    данные не изменились - DOM не трогается вовсе;
+  * сигнатура батареи считается по реальным полям ответа
+    (iconStatus, batLev, chrgConn, chrgType, chrgStat, vbat), а не по
+    всему ответу целиком: иначе любое изменение (например, время в
+    поле "uptime") приводило к перерисовке;
+  * опрос сети для значка LTE сокращён с 30 до 60 секунд, чтобы сеть
+    не дёргалась чаще, чем обновляются данные (новые правила проверки
+    в tests/test-header-indicators.sh это фиксируют).
+
+Обе правки независимы от модуля multi-WAN и не влияют на маршрутизацию.
+---
+ .../resources/battery-indicator.js            | 25 +++++++++++++++++--
+ .../luci-static/resources/lte-indicator.js    | 24 +++++++++++++++---
+ 2 files changed, 44 insertions(+), 5 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
+index 5d78a423..f6106edd 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
+@@ -94,6 +94,12 @@ function render(el, mod, d) {
+ 	el.style.display = '';
+ }
+ 
++/* Последнее показанное состояние. Пока данные не изменились, шапку
++ * перерисовывать незачем: смена DOM в шапке заставляет браузер
++ * перерисовать всю страницу, а на слабом роутере это заметно
++ * тормозит интерфейс. */
++var LAST = null;
++
+ function update() {
+ 	return fs.read(BATTERY_FILE).then(function(text) {
+ 		var el = indicator();
+@@ -105,20 +111,35 @@ function update() {
+ 
+ 		/* mcud не ответил - значок прячем, чтобы не путать. */
+ 		if (!d) {
+-			el.style.display = 'none';
++			if (LAST !== 'none') {
++				el.style.display = 'none';
++				LAST = 'none';
++			}
+ 
+ 			return;
+ 		}
+ 
++		var sig = perenio_battery.iconStatus(d) + '|' + d.batLev + '|' +
++			d.chrgConn + '|' + d.chrgType + '|' + d.chrgStat + '|' + d.vbat;
++
++		if (sig === LAST)
++			return;
++
++		LAST = sig;
+ 		render(el, perenio_battery, d);
+ 	}).catch(function() {
+ 		var el = indicator();
+ 
+-		if (el)
++		if (el && LAST !== 'none') {
+ 			el.style.display = 'none';
++			LAST = 'none';
++		}
+ 	});
+ }
+ 
++/* Данные обновляются демоном pejir-signal, и для батареи хватает
++ * раза в полминуты. Чаще опрашивать бессмысленно: на каждый опрос
++ * rpcd отвечает по сети, а страница и так грузится медленно. */
+ poll.add(update, 30);
+ update();
+ 
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
+index 40766af6..96404890 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/lte-indicator.js
+@@ -130,6 +130,11 @@ function render(el, st) {
+ 	el.style.display = '';
+ }
+ 
++/* Последнее показанное состояние: пока данные не изменились, шапку
++ * перерисовывать не нужно (смена DOM в шапке перерисовывает всю
++ * страницу и тормозит интерфейс на слабом роутере). */
++var LAST = null;
++
+ function update() {
+ 	return fs.read(STATE_FILE).then(function(text) {
+ 		var el = indicator();
+@@ -140,21 +145,34 @@ function update() {
+ 		var st = parseState(text);
+ 
+ 		if (!st.net && !st.pct) {
+-			el.style.display = 'none';
++			if (LAST !== 'none') {
++				el.style.display = 'none';
++				LAST = 'none';
++			}
+ 
+ 			return;
+ 		}
+ 
++		var sig = (st.net || '') + '|' + (st.pct || '') + '|' + (st.operator || '');
++
++		if (sig === LAST)
++			return;
++
++		LAST = sig;
+ 		render(el, st);
+ 	}).catch(function() {
+ 		var el = indicator();
+ 
+-		if (el)
++		if (el && LAST !== 'none') {
+ 			el.style.display = 'none';
++			LAST = 'none';
++		}
+ 	});
+ }
+ 
+-poll.add(update, 30);
++/* Состояние сети демон pejir-signal обновляет раз в минуту - чаще
++ * опрашивать бессмысленно. */
++poll.add(update, 60);
+ update();
+ 
+ return baseclass.extend({
+-- 
+2.39.5
+
