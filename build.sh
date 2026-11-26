@@ -561,15 +561,19 @@ if [ -n "$SU" ]; then
         # способа дать разделу свопа UUID/метку, и скрипт чистки после
         # sysupgrade не может выполнить приведение (подсказка в выводе
         # была бы пустой). Проверяем - иначе дефект уедет в релиз молча.
+        # mkswap - апплет busybox из группы linuxutils, поэтому он
+        # ставится в /sbin/mkswap (а не в /bin и не в /usr/bin).
+        # Проверяем все возможные места: иначе проверка ругается на
+        # отсутствие mkswap, хотя он в образе есть.
         MKSWAP_OK=""
-        for f in bin/mkswap usr/bin/mkswap; do
-          if echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f"; then
-            MKSWAP_OK=1
+        for f in sbin/mkswap bin/mkswap usr/bin/mkswap usr/sbin/mkswap; do
+          if echo "$ROOTFS_LIST" 2>/dev/null | grep -q "squashfs-root/$f"; then
+            MKSWAP_OK="$f"
             break
           fi
         done
         if [ -n "$MKSWAP_OK" ]; then
-          echo "  mkswap в образе: OK"
+          echo "  mkswap в образе: OK ($MKSWAP_OK)"
         else
           ann error "build.sh: mkswap" "в образе нет mkswap - своп нельзя пересоздать с меткой"
           echo "ОШИБКА: в образе нет mkswap (bin/mkswap)"
