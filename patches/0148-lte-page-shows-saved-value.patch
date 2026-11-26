@@ -1,0 +1,318 @@
+From a867ffdcb90b5813851f420a731424d4a997f285 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 16:31:38 GMT
+Subject: =?utf-8?b?bHVjaTog0YHRgtGA0LDQvdC40YbQsCBMVEUgLSDQv9C+0LvQtSDQv9C+0LrQsNC3?=
+ =?utf-8?b?0YvQstCw0LXRgiDRgdC+0YXRgNCw0L3RkdC90L3QvtC1INC30L3QsNGH0LXQvdC4?=
+ =?utf-8?b?0LUsINCwINC90LUg0LLQstC10LTRkdC90L3QvtC1?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Пользователь пожаловался на страницу настроек LTE: рядом с каждым
+полем показывались сразу два значения - то, что введено (в самом поле),
+и то, что действительно записано в network.lte (рядом), причём
+расхождение подсвечивалось красным. Страница выглядела так, будто
+настройки не сохранились, и приходилось гадать, что же записано на
+самом деле. Раньше это делалось намеренно (после неудачного
+сохранения поле оставалось с введённым текстом, а рядом показывалось
+фактическое), но в итоге путало больше, чем помогало.
+
+Теперь:
+
+  * поле ввода всегда показывает значение, которое РЕАЛЬНО лежит в
+    network.lte (учитываются и значения по умолчанию: ip, none, all -
+    если опции в конфиге нет, в поле видно то, что реально применяется);
+  * красным рядом с полем отмечается только несохранённая правка:
+    "не сохранено: <значение>", с подсказкой в заголовке;
+  * после сохранения поля перечитываются из конфига и заполняются
+    записанными значениями;
+  * после "Применить сейчас" конфиг перечитывается с диска через
+    ubus (uci get network.lte): init-скрипт LTE дописывает туда свои
+    значения (например, APN по умолчанию), и страница должна показывать
+    фактическое состояние, а не то, что было до перезапуска;
+  * при ошибке сохранения поле остаётся с введённым значением, а рядом
+    красным видно, что в конфиге - то самое расхождение.
+
+Переводы: старые тексты ("Differs from the entered value" и описание
+про два значения рядом) убраны, добавлены новые ("Not saved", "The
+field has been changed, but not saved yet" и новое описание). Русский
+перевод обновлён.
+
+Тест tests/test-lte-saved-values.sh переписан под новое поведение.
+---
+ .../luci-static/resources/view/perenio/lte.js | 144 ++++++++++++++----
+ .../po/ru/luci-app-perenio.po                 |  10 +-
+ 2 files changed, 124 insertions(+), 30 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+index 5b412c78..3cdad70e 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 'require view';
+ 'require fs';
++'require rpc';
+ 'require uci';
+ 'require ui';
+ 
+@@ -62,20 +63,27 @@ var AUTH_TYPES = [
+ 
+ /* Поля страницы: подпись, id поля ввода и ключ в network.lte.
+  *
+- * Справа от каждого поля показывается значение, которое РЕАЛЬНО лежит
+- * в конфиге (network.lte), а в поле ввода - то, что ввёл пользователь.
+- * Раньше было только поле ввода, поэтому после неудачного сохранения
+- * (нет прав на uci network, опечатка в секции) страница выглядела так,
+- * будто настройки пропали, и понять, записалось что-нибудь или нет,
+- * было невозможно. */
++ * Поле ввода всегда показывает значение, которое РЕАЛЬНО лежит в
++ * конфиге (network.lte). Если пользователь изменил поле и ещё не
++ * нажал "Сохранить", значение рядом с полем становится красным - это
++ * предупреждение о несохранённых правках.
++ *
++ * Раньше было наоборот: в поле оставался введённый текст, а рядом
++ * показывалось сохранённое значение. Страница выглядела так, будто
++ * настройки не сохранились (два разных значения рядом, второе красное),
++ * и пользователю приходилось гадать, что же записано на самом деле.
++ *
++ * 'def' - значение по умолчанию для случая, когда опции в конфиге нет
++ * (тогда uci.get() вернёт пустую строку, а поле должно показывать
++ * то, что реально применяется). */
+ var FIELDS = [
+ 	{ 'id': 'pejir-apn', 'label': _('APN'), 'key': 'apn' },
+-	{ 'id': 'pejir-pdptype', 'label': _('PDP type'), 'key': 'pdptype' },
++	{ 'id': 'pejir-pdptype', 'label': _('PDP type'), 'key': 'pdptype', 'def': 'ip' },
+ 	{ 'id': 'pejir-username', 'label': _('Username'), 'key': 'username' },
+ 	{ 'id': 'pejir-password', 'label': _('Password'), 'key': 'password' },
+-	{ 'id': 'pejir-auth', 'label': _('Authentication type'), 'key': 'auth' },
++	{ 'id': 'pejir-auth', 'label': _('Authentication type'), 'key': 'auth', 'def': 'none' },
+ 	{ 'id': 'pejir-dns', 'label': _('DNS (optional)'), 'key': 'dns' },
+-	{ 'id': 'pejir-mode', 'label': _('Channel mode'), 'key': 'modes' }
++	{ 'id': 'pejir-mode', 'label': _('Channel mode'), 'key': 'modes', 'def': 'all' }
+ ];
+ 
+ function cur(key) {
+@@ -122,14 +130,84 @@ function select(id, options, value) {
+ 	return E('select', { 'id': id, 'class': 'cbi-input-select' }, opts);
+ }
+ 
++/* Значения, реально сохранённые в network.lte. */
++var SAVED = {};
++
++/* Перечитать сохранённые значения из конфига. */
++function readSaved() {
++	FIELDS.forEach(function(f) {
++		SAVED[f.key] = cur(f.key);
++	});
++}
++
++/* Сохранённое значение с учётом значения по умолчанию. */
++function savedValue(key) {
++	var f = FIELDS.filter(function(x) { return x.key == key; })[0];
++	var v = SAVED[key];
++
++	if ((v == null) || (v == ''))
++		return (f && f.def) ? f.def : '';
++
++	return String(v);
++}
++
+ /* Значение, реально сохранённое в network.lte. */
+ function savedText(key) {
+-	var v = cur(key);
++	var v = savedValue(key);
+ 
+ 	return (v == '') ? _('not set') : v;
+ }
+ 
+-/* Обновить колонку "сохранено" и подсветить расхождения с введённым. */
++/* Проставить сохранённые значения в поля ввода: поле всегда должно
++ * показывать то, что реально лежит в конфиге. */
++function fillFromSaved() {
++	FIELDS.forEach(function(f) {
++		var inp = document.getElementById(f.id);
++
++		if (!inp)
++			return;
++
++		var v = savedValue(f.key);
++
++		if (inp.tagName == 'SELECT') {
++			/* Значение из конфига может отсутствовать в списке - тогда
++			 * оставляем то, что выбрано сейчас. */
++			var found = false;
++
++			Array.prototype.forEach.call(inp.options, function(o) {
++				if (o.value == v)
++					found = true;
++			});
++
++			if (found)
++				inp.value = v;
++		}
++		else {
++			inp.value = v;
++		}
++	});
++}
++
++/* Перечитать network.lte с диска (init-скрипт LTE мог дописать туда
++ * свои значения) и обновить поля. */
++function reloadSaved() {
++	return rpc.call('uci', 'get', { 'config': 'network', 'section': 'lte' })
++		.then(function(res) {
++			var vals = (res && res.values) ? res.values : {};
++
++			FIELDS.forEach(function(f) {
++				if (vals[f.key] != null)
++					SAVED[f.key] = String(vals[f.key]);
++			});
++
++			fillFromSaved();
++			refreshSaved();
++		}).catch(function() {
++			/* Перечитать не удалось - показываем то, что есть. */
++		});
++}
++
++/* Обновить соседние ячейки: красным - несохранённые правки. */
+ function refreshSaved() {
+ 	FIELDS.forEach(function(f) {
+ 		var cell = document.getElementById('pejir-saved-' + f.key);
+@@ -138,18 +216,16 @@ function refreshSaved() {
+ 		if (!cell)
+ 			return;
+ 
+-		var v = cur(f.key);
+-
+-		if (inp && inp.value !== v) {
++		if (inp && inp.value !== savedValue(f.key)) {
+ 			cell.className = 'pejir-saved-diff';
+ 			cell.style.color = '#c0392b';
+-			cell.textContent = _('Saved') + ': ' + savedText(f.key) + ' \u2260';
+-			cell.title = _('Differs from the entered value');
++			cell.textContent = _('Not saved') + ': ' + savedText(f.key);
++			cell.title = _('The field has been changed, but not saved yet');
+ 		}
+ 		else {
+ 			cell.className = 'pejir-saved';
+ 			cell.style.color = '#888';
+-			cell.textContent = _('Saved') + ': ' + savedText(f.key);
++			cell.textContent = '';
+ 			cell.title = '';
+ 		}
+ 	});
+@@ -180,7 +256,7 @@ function rowSaved(title, field, key) {
+ 				'id': 'pejir-saved-' + key,
+ 				'class': 'pejir-saved',
+ 				'style': 'margin-left:8px;color:#888'
+-			}, _('Saved') + ': ' + savedText(key))
++			}, '')
+ 		])
+ 	]);
+ }
+@@ -208,6 +284,9 @@ return view.extend({
+ 
+ 		return uci.save().then(function() {
+ 			btn.disabled = false;
++			/* Поле должно показывать то, что реально записано. */
++			readSaved();
++			fillFromSaved();
+ 			refreshSaved();
+ 			markSaved();
+ 			ui.addNotification(null, E('p', {}, _('Saved. Press "Apply now" to send the settings to the modem.')), 'info');
+@@ -216,6 +295,8 @@ return view.extend({
+ 			/* Показываем то, что лежит в конфиге на самом деле:
+ 			 * если сохранение запрещено правами, поле останется
+ 			 * пустым, и это будет видно сразу. */
++			readSaved();
++			fillFromSaved();
+ 			refreshSaved();
+ 			ui.addNotification(null, E('p', {}, _('Failed to save: ') + (e && e.message ? e.message : e)), 'error');
+ 		});
+@@ -232,6 +313,11 @@ return view.extend({
+ 
+ 			setText('pejir-lte-log', out.trim() || _('Done'));
+ 			btn.disabled = false;
++
++			/* Init-скрипт LTE мог дописать в network.lte свои значения
++			 * (например, APN по умолчанию) - показываем конфиг как он
++			 * есть на диске. */
++			return reloadSaved();
+ 		}).catch(function(e) {
+ 			setText('pejir-lte-log', _('Error: ') + (e && e.message ? e.message : String(e || '')));
+ 			btn.disabled = false;
+@@ -338,6 +424,8 @@ return view.extend({
+ 		uci.set('network', 'lte', 'modes', document.getElementById('pejir-mode').value);
+ 
+ 		return uci.save().then(function() {
++			readSaved();
++			fillFromSaved();
+ 			refreshSaved();
+ 			markSaved();
+ 
+@@ -354,6 +442,10 @@ return view.extend({
+ 	},
+ 
+ 	render: function() {
++		/* Значения для полей берём из конфига - поле всегда показывает
++		 * то, что реально сохранено. */
++		readSaved();
++
+ 		var saveBtn = E('button', { 'class': 'cbi-button cbi-button-save', 'type': 'button' },
+ 				_('Save'));
+ 		saveBtn.addEventListener('click', L.bind(this.handleSave, this));
+@@ -414,14 +506,14 @@ return view.extend({
+ 			E('div', { 'class': 'cbi-section-descr' },
+ 				_('APN settings for the GM510 modem. The values are stored in network.lte and are sent to the modem as AT+CGDCONT and AT+ZECMCALL, exactly as in the stock firmware. The optional DNS overrides the DNS received from the operator via DHCP; leave it empty to use the operator DNS.')),
+ 			E('div', { 'class': 'cbi-value-description' },
+-				_('The saved value is shown next to each field: the field itself keeps what you entered, and the value next to it is what is really stored in network.lte. A red value means the entered value differs from the saved one.')),
+-			rowSaved(_('APN'), input('pejir-apn', 'text', cur('apn')), 'apn'),
+-			rowSaved(_('PDP type'), select('pejir-pdptype', PDP_TYPES, cur('pdptype') || 'ip'), 'pdptype'),
+-			rowSaved(_('Username'), input('pejir-username', 'text', cur('username')), 'username'),
+-			rowSaved(_('Password'), input('pejir-password', 'password', cur('password')), 'password'),
+-			rowSaved(_('Authentication type'), select('pejir-auth', AUTH_TYPES, cur('auth') || 'none'), 'auth'),
+-			rowSaved(_('DNS (optional)'), input('pejir-dns', 'text', cur('dns')), 'dns'),
+-			rowSaved(_('Channel mode'), select('pejir-mode', CHANNEL_MODES, cur('modes') || 'all'), 'modes'),
++				_('Each field shows the value that is really saved in network.lte. If you change the field and do not press "Save", the value next to it turns red - the change is not saved yet.')),
++			rowSaved(_('APN'), input('pejir-apn', 'text', savedValue('apn')), 'apn'),
++			rowSaved(_('PDP type'), select('pejir-pdptype', PDP_TYPES, savedValue('pdptype')), 'pdptype'),
++			rowSaved(_('Username'), input('pejir-username', 'text', savedValue('username')), 'username'),
++			rowSaved(_('Password'), input('pejir-password', 'password', savedValue('password')), 'password'),
++			rowSaved(_('Authentication type'), select('pejir-auth', AUTH_TYPES, savedValue('auth')), 'auth'),
++			rowSaved(_('DNS (optional)'), input('pejir-dns', 'text', savedValue('dns')), 'dns'),
++			rowSaved(_('Channel mode'), select('pejir-mode', CHANNEL_MODES, savedValue('modes')), 'modes'),
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, ''),
+ 				E('div', { 'class': 'cbi-value-field' }, [
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 41440c10..80b950b2 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -562,12 +562,8 @@ msgid "Signal level"
+ msgstr "Уровень сигнала"
+ msgid "not set"
+ msgstr "не задано"
+-msgid "Differs from the entered value"
+-msgstr "Отличается от введённого значения"
+ msgid "Last saved"
+ msgstr "Сохранено в"
+-msgid "The saved value is shown next to each field: the field itself keeps what you entered, and the value next to it is what is really stored in network.lte. A red value means the entered value differs from the saved one."
+-msgstr "Рядом с каждым полем показано сохранённое значение: само поле сохраняет то, что вы ввели, а значение рядом - то, что действительно записано в network.lte. Красное значение означает, что введённое отличается от сохранённого."
+ msgid "answers"
+ msgstr "отвечает"
+ msgid "does not answer"
+@@ -677,3 +673,9 @@ msgid "Enabling..."
+ msgstr "Включаем..."
+ msgid "Disabling..."
+ msgstr "Выключаем..."
++msgid "Not saved"
++msgstr "не сохранено"
++msgid "The field has been changed, but not saved yet"
++msgstr "Поле изменено, но изменения ещё не сохранены"
++msgid "Each field shows the value that is really saved in network.lte. If you change the field and do not press \"Save\", the value next to it turns red - the change is not saved yet."
++msgstr "Каждое поле показывает значение, которое действительно записано в network.lte. Если изменить поле и не нажать «Сохранить», значение рядом с ним станет красным - правка ещё не сохранена."
+-- 
+2.39.5
+
