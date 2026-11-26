@@ -1,0 +1,75 @@
+From 24d2a21a48d76b4c7a6cd607cf85db844408dda6 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 03:25:32 GMT
+Subject: =?utf-8?b?c21zOiDQttGD0YDQvdCw0Lsg0LHQtdC3INGI0YPQvNCwINC+INC/0LXRgNC10LLQ?=
+ =?utf-8?b?vtC00LUg0LrQuNGA0LjQu9C70LjRhtGLINCyIFVDUzI=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+smstools3 при отправке сообщения с кириллицей сначала пробует GSM
+03.38, не находит символ и пишет в журнал:
+
+    NOTICE: Cannot convert 1. character (D0B8) to GSM.
+    NOTICE: 5 characters outside the GSM alphabet, converting to UCS2
+
+Это ИНФОРМАЦИЯ, а не ошибка: сообщение целиком переводится в UCS2
+(DCS 0x08) и уходит как unicode-текст. Но в журнале это выглядит как
+ошибка, а на странице SMS занимает место.
+
+Команда "pejir-sms-ctl log" теперь убирает эти строки. Убираются ТОЛЬКО
+две: "Cannot convert ... to GSM" и "... outside the GSM alphabet".
+Остальные NOTICE (например "SMSC address changed") - важные, они
+остаются.
+
+Фильтр применяется ДО отбора хвоста, поэтому в окне журнала помещается
+столько же полезных строк, сколько просили.
+---
+ .../pejir-sms/root/usr/libexec/pejir-sms-ctl  | 22 ++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/package/pejir-sms/root/usr/libexec/pejir-sms-ctl b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+index 441b06d1..f7766282 100755
+--- a/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
++++ b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+@@ -138,10 +138,24 @@ cmd_log() {
+ 	[ "$n" -ge 1 ] 2>/dev/null || n=8
+ 	[ "$n" -le 200 ] 2>/dev/null || n=200
+ 
+-	# Путь к журналу можно переопределить (используется в тестах).
++	# Шум о кодировке убираем.
++	#
++	# smstools3 при отправке сообщения с кириллицей сначала пробует
++	# GSM 03.38, не находит символ и печатает в журнал:
++	#   NOTICE: Cannot convert 1. character (D0B8) to GSM.
++	#   NOTICE: 5 characters outside the GSM alphabet, converting to UCS2
++	# Это ИНФОРМАЦИЯ, а не ошибка: сообщение целиком переводится в
++	# UCS2 (DCS 0x08) и уходит как unicode-текст - кириллица доходит до
++	# телефона. Но в журнале это выглядит как ошибка, а на странице SMS
++	# занимает место.
++	#
++	# Убираем ТОЛЬКО эти две строки на символ и итоговую. Остальные
++	# NOTICE (например "SMSC address changed") - важные, они остаются.
+ 	if [ -n "${PEJIR_SMS_LOG:-}" ]; then
+ 		if [ -f "$PEJIR_SMS_LOG" ]; then
+-			tail -n "$n" "$PEJIR_SMS_LOG" 2>/dev/null
++			grep -v -e "Cannot convert .* to GSM" \
++				-e "characters outside the GSM alphabet" \
++				"$PEJIR_SMS_LOG" 2>/dev/null | tail -n "$n"
+ 		else
+ 			echo "(журнал smsd не найден)"
+ 		fi
+@@ -150,7 +164,9 @@ cmd_log() {
+ 
+ 	for f in /var/log/smsd.log /tmp/log/smsd.log /var/log/smsd.log.1 /tmp/log/smsd.log.1; do
+ 		if [ -f "$f" ]; then
+-			tail -n "$n" "$f" 2>/dev/null
++			grep -v -e "Cannot convert .* to GSM" \
++				-e "characters outside the GSM alphabet" \
++				"$f" 2>/dev/null | tail -n "$n"
+ 			exit 0
+ 		fi
+ 	done
+-- 
+2.39.5
+

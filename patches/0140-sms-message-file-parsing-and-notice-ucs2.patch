@@ -1,0 +1,212 @@
+From 6812ad7d5685f3666f8fb326dc37a3fe3407d683 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 03:25:55 GMT
+Subject: =?utf-8?b?c21zOiDQv9GA0LDQstC40LvRjNC90YvQuSDRgNCw0LfQsdC+0YAg0YTQsNC50LvQ?=
+ =?utf-8?b?vtCyINGB0L7QvtCx0YnQtdC90LjQuSDQuCDRh9C40YHRgtGL0LUgTk9USUNFINCy?=
+ =?utf-8?b?IHNtc2QuY29uZg==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Жалоба: в сообщениях видны служебные строки
+"NOTICE: Cannot convert 1. character (D0B8) to GSM."
+
+ПРИЧИНА ПЕРВАЯ - РАЗБОР ФАЙЛА. Файл сообщения smstools3 устроен так:
+сначала ЗАГОЛОВКИ ("From:", "To:", "Date:", "Alphabet:", "NOTICE: ..."),
+потом ПУСТАЯ строка, потом тело. Наша страница брала номер из первой
+строки, дату - из второй, а текстом считала ВСЁ остальное. Значит в
+поле номера попадало "From: +79990000000", а в текст сообщения - и
+заголовки, и строки NOTICE. Пользователь видел в переписке мусор.
+
+Теперь разбор учитывает заголовки: номер и дата берутся из From/To и
+Date, текст - из тела (после пустой строки). Старый формат без
+заголовков (номер, дата, текст) тоже понимается.
+
+ПРИЧИНА ВТОРАЯ - NOTICE В САМИХ ФАЙЛАХ. smstools3 дописывает в файл
+сообщения заголовки NOTICE ("Cannot convert ... to GSM") - так
+заведено опцией notice_ucs2 (по умолчанию 2). Это информация, а не
+ошибка: сообщение с кириллицей уходит как UCS2 (DCS 0x08).
+
+Теперь в секции модема выставляется notice_ucs2 = 0 - NOTICE в файлы
+сообщений не попадают. Остальные NOTICE (например "SMSC address
+changed") в журнале остаются.
+
+Заодно ensure_device_options следит за decode_unicode_text = yes в
+секции модема: без этой опции smsd переводит входящие UCS2-сообщения
+в ISO-8859-15, где кириллицы нет, и символы выбрасываются
+("Cannot convert UCS2 character ... to ISO-8859-15. Consider using
+incoming_utf8 = yes"). Опция уже была в шаблоне конфигурации, но при
+обновлении существующего файла её никто не проверял.
+---
+ .../luci-static/resources/view/perenio/sms.js | 66 +++++++++++++++++--
+ .../pejir-sms/root/etc/init.d/40-pejir-sms    | 53 +++++++++++++++
+ 2 files changed, 113 insertions(+), 6 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 898635d9..a21dfd5e 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -132,9 +132,64 @@ function readStatus() {
+ 	});
+ }
+ 
+-/* Чтение сообщений из каталога spool smstools3.
+- * Формат файла: первая строка - номер (у входящих отправитель, у исходящих
+- * получатель), вторая - дата, дальше - текст сообщения. */
++/* Разбор файла сообщения smstools3.
++ *
++ * Формат файла: сначала ЗАГОЛОВКИ ("From:", "To:", "Date:", "Alphabet:",
++ * "NOTICE: ..."), потом ПУСТАЯ строка, потом тело сообщения.
++ *
++ * Отсюда две беды старого разбора:
++ *   - номер и дата брались из ПЕРВЫХ строк файла, а там заголовки -
++ *     в поле "номер" попадало "From: +79990000000";
++ *   - в текст сообщения попадали и заголовки, и служебные строки
++ *     NOTICE ("NOTICE: Cannot convert 1. character (D0B8) to GSM.") -
++ *     пользователь видел их внутри сообщения.
++ *
++ * Номер и дата берём из заголовков (From/To и Date), текст - из тела.
++ * Старый формат без заголовков (номер, дата, текст) тоже понимаем.
++ */
++function parseMessage(txt) {
++	var raw = (txt || '').replace(/\r/g, '');
++	var lines = raw.split('\n');
++	var hdr = {}, body, i, sep = -1;
++
++	/* Заголовки есть, если первая строка похожа на "Имя: значение". */
++	if (/^[A-Za-z][A-Za-z-]*[ \t]*:/.test(lines[0] || '')) {
++		for (i = 0; i < lines.length; i++) {
++			if (lines[i].replace(/[ \t]+$/, '') === '') { sep = i; break; }
++		}
++
++		if (sep >= 0) {
++			for (i = 0; i < sep; i++) {
++				var m = lines[i].match(/^([A-Za-z][A-Za-z-]*):[ \t]*(.*)$/);
++
++				if (m)
++					hdr[m[1].toLowerCase()] = m[2];
++			}
++
++			body = lines.slice(sep + 1);
++		}
++		else
++			body = lines.slice();
++	}
++	else
++		body = lines.slice();
++
++	var from = hdr['from'] || hdr['to'] || '';
++	var date = hdr['date'] || hdr['sent'] || '';
++
++	/* Старый формат: тело само начинается с номера и даты. */
++	if (body.length >= 2 &&
++	    /^\+?[0-9][0-9 \-]{4,}$/.test(body[0].trim()) &&
++	    /^[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(body[1].trim())) {
++		from = body[0].trim();
++		date = body[1].trim();
++		body = body.slice(2);
++	}
++
++	return { from: from, date: date, text: body.join('\n').trim() };
++}
++
++/* Чтение сообщений из каталога spool smstools3. */
+ function readSpool(dir) {
+ 	return fs.list(dir).catch(function() { return []; }).then(L.bind(function(list) {
+ 		var files = (list || []).filter(function(f) { return f.type == 'file'; });
+@@ -144,11 +199,10 @@ function readSpool(dir) {
+ 
+ 		return Promise.all(files.map(function(f) {
+ 			return fs.read(dir + '/' + f.name).then(function(txt) {
+-				var lines = (txt || '').split('\n');
++				var m = parseMessage(txt);
+ 
+ 				return { name: f.name, mtime: f.mtime,
+-					from: lines[0] || '', date: lines[1] || '',
+-					text: lines.slice(2).join('\n').trim() };
++					from: m.from, date: m.date, text: m.text };
+ 			}).catch(function() { return null; });
+ 		})).then(function(all) {
+ 			return all.filter(function(m) { return m != null; });
+diff --git a/package/pejir-sms/root/etc/init.d/40-pejir-sms b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+index 35903a25..a2844842 100644
+--- a/package/pejir-sms/root/etc/init.d/40-pejir-sms
++++ b/package/pejir-sms/root/etc/init.d/40-pejir-sms
+@@ -280,6 +280,44 @@ ensure_charset_options() {
+ 	update_charset_options
+ }
+ 
++# Привести опции СЕКЦИИ МОДЕМА к каноническим.
++#
++# decode_unicode_text и notice_ucs2 - опции секции устройства (не
++# глобальные): в глобальной части smsd их не понимает ("Unknown setting
++# for modem"). Старые значения удаляем, канонические ставим сразу после
++# строки с именем секции.
++ensure_device_options() {
++	local tmp sec
++
++	[ -f "$CONF" ] || return 0
++	grep -q "$MARKER" "$CONF" || return 0
++
++	# Секция устройства - первая секция "[...]" в файле.
++	sec="$(grep -n '^\[' "$CONF" | head -1 | cut -d: -f1)"
++	[ -n "$sec" ] || return 0
++
++	tmp="/tmp/pejir-sms-devopts.$$"
++	awk -v sec="$sec" '
++		NR == sec {
++			print
++			print ""
++			print "# Входящие UCS2 (кириллица) - сразу в UTF-8."
++			print "decode_unicode_text = yes"
++			print ""
++			print "# Не писать NOTICE о переводе кириллицы в UCS2 в файл сообщения."
++			print "notice_ucs2 = 0"
++			next
++		}
++		/^[ \t]*decode_unicode_text[ \t]*=/ { next }
++		/^[ \t]*notice_ucs2[ \t]*=/ { next }
++		{ print }
++	' "$CONF" > "$tmp"
++
++	# Пишем через cat, а не mv: сохраняем права и владельца файла.
++	cat "$tmp" > "$CONF"
++	rm -f "$tmp"
++}
++
+ write_conf() {
+ 	local port="$1"
+ 
+@@ -332,7 +370,18 @@ init = AT+CMGF=1
+ init = AT+CNMI=2,1,0,2,0
+ incoming = yes
+ outgoing = yes
++
++# Входящие UCS2-сообщения (кириллица) - сразу в UTF-8: без этой опции
++# smsd переводит их в ISO-8859-15, где кириллицы нет, и символы
++# выбрасываются ("Cannot convert UCS2 character ... to ISO-8859-15").
+ decode_unicode_text = yes
++
++# Не писать в тело сообщения строки NOTICE про перевод кириллицы в UCS2
++# ("Cannot convert 1. character (D0B8) to GSM"). Это ИНФОРМАЦИЯ, а не
++# ошибка: сообщение уходит как unicode-текст. Без notice_ucs2 = 0 эти
++# строки попадали в файл сообщения, а оттуда - в текст сообщения на
++# странице LuCI.
++notice_ucs2 = 0
+ CONF
+ }
+ 
+@@ -347,6 +396,10 @@ start_service() {
+ 	# не появлялись бы никогда, и русский текст в SMS ломался бы.
+ 	ensure_charset_options
+ 
++	# Опции секции модема (decode_unicode_text, notice_ucs2) - по той же
++	# причине: от ответа AT-порта они не зависят.
++	ensure_device_options
++
+ 	# Ждём появления USB-модема и пробуем AT-порт.
+ 	wait_for_modem_usb
+ 
+-- 
+2.39.5
+

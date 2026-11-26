@@ -556,6 +556,25 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  sing-box и LXC в образе отсутствуют - OK"
+
+        # mkswap должен быть в образе: без него у пользователя нет
+        # способа дать разделу свопа UUID/метку, и скрипт чистки после
+        # sysupgrade не может выполнить приведение (подсказка в выводе
+        # была бы пустой). Проверяем - иначе дефект уедет в релиз молча.
+        MKSWAP_OK=""
+        for f in bin/mkswap usr/bin/mkswap; do
+          if echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f"; then
+            MKSWAP_OK=1
+            break
+          fi
+        done
+        if [ -n "$MKSWAP_OK" ]; then
+          echo "  mkswap в образе: OK"
+        else
+          ann error "build.sh: mkswap" "в образе нет mkswap - своп нельзя пересоздать с меткой"
+          echo "ОШИБКА: в образе нет mkswap (bin/mkswap)"
+          exit 1
+        fi
         OTA_MISSING=""
         for f in usr/bin/pejir-ota usr/bin/pejir-ovl-purge usr/lib/pejir/version \
                  etc/config/pejir_ota \

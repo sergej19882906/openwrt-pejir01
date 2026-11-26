@@ -30,6 +30,15 @@ PAGE="$LUCI_PKG/htdocs/luci-static/resources/view/perenio/battery.js"
 BASE="$LUCI_PKG/htdocs/luci-static/resources/perenio-battery.js"
 PO="$LUCI_PKG/po/ru/luci-app-perenio.po"
 ICONS="$LUCI_PKG/root/www/luci-static/perenio/images/battery"
+ACL="$LUCI_PKG/root/usr/share/rpcd/acl.d/luci-app-perenio.json"
+
+# Дерево OpenWrt (нужно для helper'а pejir-signal из пакета pejir-lte-base).
+if [ -n "${OW_TEST:-}" ]; then
+	TREE="$OW_TEST"
+else
+	TREE="/workspace/ow-test"
+fi
+SIGNAL="$TREE/package/pejir-lte-base/root/usr/libexec/pejir-signal"
 
 FAILED=0
 ok()   { echo "OK: $1"; }
@@ -38,6 +47,7 @@ fail() { echo "FAIL: $1"; FAILED=$((FAILED+1)); }
 [ -f "$PAGE" ] || { echo "FAIL: нет файла $PAGE"; exit 1; }
 [ -f "$BASE" ] || { echo "FAIL: нет файла $BASE"; exit 1; }
 [ -f "$PO" ] || { echo "FAIL: нет файла $PO"; exit 1; }
+[ -f "$ACL" ] || { echo "FAIL: нет файла $ACL"; exit 1; }
 [ -d "$ICONS" ] || { echo "FAIL: нет каталога $ICONS"; exit 1; }
 
 # --- 1) стоковые иконки на месте -------------------------------------------
@@ -73,6 +83,59 @@ for m in "Battery voltage" "Battery level" "Charge status" "Charging" \
 		fail "нет перевода для: $m"
 	fi
 done
+
+# --- 3a) страница НЕ запускает процессы: данные читает из файлов ---------
+# Дефект: страница каждые 15 секунд запускала три vendor-процесса
+# ("mcu getsys", "mcu getver", "mcu getvolt"). Это клиенты mcud: rpcd
+# поднимал процесс, страница ждала ответа - опрос батареи был медленным.
+# Данные собирает фоновый демон pejir-signal, страница читает файлы.
+if grep -q "fs.exec('/usr/bin/mcu'" "$PAGE"; then
+	fail "страница батареи запускает процессы - опрос батареи медленный"
+else
+	ok "страница батареи не запускает процессы (только читает файлы)"
+fi
+for f in /tmp/pejir-battery /tmp/pejir-battery-ver /tmp/pejir-battery-volt; do
+	if grep -qF "'$f'" "$PAGE"; then
+		ok "страница читает $f"
+	else
+		fail "страница не читает $f"
+	fi
+done
+
+# Гранты ACL на эти файлы: без них LuCI ответит "Permission denied".
+for f in "/tmp/pejir-battery" "/tmp/pejir-battery-ver" "/tmp/pejir-battery-volt"; do
+	if grep -qF "\"$f\"" "$ACL"; then
+		ok "ACL: есть грант на чтение $f"
+	else
+		fail "ACL: нет гранта на чтение $f"
+	fi
+done
+
+# --- 3b) демон pejir-signal собирает данные STM32 -------------------------
+if [ -f "$SIGNAL" ]; then
+	sh -n "$SIGNAL" 2>/dev/null || fail "синтаксис pejir-signal"
+	for pat in "pejir-battery-ver" "pejir-battery-volt" "getver" "getvolt"; do
+		if grep -q "$pat" "$SIGNAL"; then
+			ok "демон pejir-signal собирает $pat"
+		else
+			fail "демон pejir-signal не собирает $pat"
+		fi
+	done
+	if grep -q "^battery)" "$SIGNAL"; then
+		ok "у демона есть команда battery (обновить только батарею)"
+	else
+		fail "у демона нет команды battery"
+	fi
+	# Батарея - локальный обмен с STM32, модем при этом не занят,
+	# поэтому её можно опрашивать чаще, чем модем.
+	if grep -q "PEJIR_BATTERY_INTERVAL" "$SIGNAL"; then
+		ok "у демона отдельный интервал для батареи"
+	else
+		fail "у демона нет отдельного интервала для батареи"
+	fi
+else
+	fail "нет helper'а pejir-signal ($SIGNAL)"
+fi
 
 # --- 4) логика разбора и статуса (в node) -----------------------------------
 if ! command -v node >/dev/null 2>&1; then
