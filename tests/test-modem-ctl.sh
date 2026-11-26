@@ -58,7 +58,16 @@ mkdir -p "$WORK/bin"
 cat > "$WORK/bin/atinout" <<'ATEOF'
 #!/bin/sh
 # Мок atinout: первым аргументом приходит файл с командой.
+# MOCK_AT_FAILS=N - первые N обменов модем не отвечает (пустой вывод):
+# так проверяется, что helper повторяет команду, а не сдаётся сразу.
 cat "$1" 2>/dev/null | tr -d '\r' >> "$MOCK_AT_LOG"
+cnt=0
+[ -f "$MOCK_AT_COUNT" ] && cnt="$(cat "$MOCK_AT_COUNT" 2>/dev/null)"
+cnt=$((cnt + 1))
+echo "$cnt" > "$MOCK_AT_COUNT"
+if [ "${MOCK_AT_FAILS:-0}" -gt 0 ] && [ "$cnt" -le "$MOCK_AT_FAILS" ]; then
+	exit 0
+fi
 printf '\r\nOK\r\n'
 ATEOF
 
@@ -101,6 +110,7 @@ AT_LOG="$WORK/at.log"
 run_helper() {
 	PATH="$WORK/bin:$PATH" \
 	MOCK_AT_LOG="$AT_LOG" \
+	MOCK_AT_COUNT="$WORK/at.count" \
 	MOCK_MODE="${MOCK_MODE:-}" \
 	MOCK_BANDS="${MOCK_BANDS:-}" \
 	PEJIR_AT_PORT="$WORK/ttyFAKE" \
@@ -193,6 +203,33 @@ if grep -qE "AT\+ZBAND=[0-9a-f]+,0,0,[0-9a-f]+" "$AT_LOG"; then
 	ok "режим auto оставляет обе маски: $(grep AT+ZBAND "$AT_LOG")"
 else
 	fail "режим auto исказил маски (в логе: $(cat "$AT_LOG" | tr '\n' ' '))"
+fi
+
+# --- модем ответил не сразу ----------------------------------------------
+# На устройстве номер SIM (AT+CNUM) модем отдаёт медленно - он читает
+# его с карты, и первый ответ может не прийти вовсе. Helper обязан
+# повторять команду, иначе кнопка "Показать номер" выдаёт "модем не
+# ответил" при живом модеме.
+: > "$AT_LOG"
+rm -f "$WORK/at.count"
+OUT="$(MOCK_AT_FAILS=1 run_helper cnum)"
+if printf '%s' "$OUT" | grep -q "не ответил"; then
+	fail "cnum: модем ответил только со второй попытки, а helper сдался"
+else
+	ok "cnum: ответ получен после повторной попытки"
+fi
+# Команда пишется в лог без перевода строки, поэтому считаем вхождения.
+attempts="$(grep -o 'AT+CNUM' "$AT_LOG" 2>/dev/null | wc -l)"
+if [ "${attempts:-0}" -ge 2 ]; then
+	ok "cnum: команда отправлена повторно (попыток: $attempts)"
+else
+	fail "cnum: команда отправлена один раз, повтора не было"
+fi
+
+if grep -q "AT_RETRIES" "$HELPER"; then
+	ok "helper повторяет команду, если модем не ответил"
+else
+	fail "в helper нет повторов AT-команды"
 fi
 
 rm -rf "$WORK"
