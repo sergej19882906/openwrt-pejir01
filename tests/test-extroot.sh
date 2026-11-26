@@ -40,6 +40,9 @@ info)
         sda1) echo "$2: UUID=\"1111-2222\" LABEL=\"pejir-overlay\" TYPE=\"ext4\"" ;;
         sda2) echo "$2: UUID=\"5555-6666\" LABEL=\"pejir-swap\" TYPE=\"swap\"" ;;
         sdb1) echo "$2: UUID=\"3333-4444\" LABEL=\"OTHER\" TYPE=\"vfat\"" ;;
+        # Раздел свопа без UUID - только с меткой (так бывает после
+        # "mkswap -L swap" без "-U").
+        sdc2) echo "$2: UUID=\"\" LABEL=\"swaponly\" TYPE=\"swap\"" ;;
         esac
     else
         echo '/dev/sda1: UUID="1111-2222" LABEL="pejir-overlay" TYPE="ext4"'
@@ -178,6 +181,45 @@ if grep -A4 "config swap" /tmp/extroot-test/fstab 2>/dev/null | grep -q "option 
 	ok "setup: в секции swap есть и путь к разделу (запасной вариант)"
 else
 	fail "setup: в секции swap нет пути к разделу"
+fi
+
+# --- тест 2c: секция swap с меткой не переписывается ----------------------
+# У раздела свопа, созданного "mkswap -L swap", UUID обычно нет - только
+# метка. fstools ищет своп по uuid, потом по label, потом по имени
+# (block.c, swap_add), поэтому метка годится и переживает перенумерацию
+# разделов. Скрипт не должен переписывать такую секцию - иначе метка
+# пропадёт и своп снова будет привязан к пути /dev/sda2.
+cat > /tmp/extroot-test/fstab <<'EOF'
+config mount
+	option target '/overlay'
+	option uuid '1111-2222'
+
+config swap
+	option label 'pejir-swap'
+	option enabled '1'
+EOF
+out="$(FSTAB=/tmp/extroot-test/fstab sh "$SCRIPT" swap 2>&1)"
+if grep -q "option label 'pejir-swap'" /tmp/extroot-test/fstab 2>/dev/null; then
+	ok "swap: секция с меткой не переписана"
+else
+	fail "swap: секция с меткой переписана"; cat /tmp/extroot-test/fstab 2>/dev/null
+fi
+if grep -q "option uuid '5555-6666'" /tmp/extroot-test/fstab 2>/dev/null; then
+	fail "swap: метка заменена на UUID"
+else
+	ok "swap: метка не заменена на UUID"
+fi
+
+# --- тест 2d: раздел свопа без UUID прописывается по метке -----------------
+: > /tmp/extroot-test/dev/sdc2
+mv /tmp/extroot-test/dev/sda2 /tmp/extroot-test/dev/sda2.hidden
+rm -f /tmp/extroot-test/fstab
+FSTAB=/tmp/extroot-test/fstab sh "$SCRIPT" swap >/dev/null 2>&1
+mv /tmp/extroot-test/dev/sda2.hidden /tmp/extroot-test/dev/sda2
+if grep -q "option label 'swaponly'" /tmp/extroot-test/fstab 2>/dev/null; then
+	ok "swap: раздел без UUID прописан по метке"
+else
+	fail "swap: раздел без UUID не прописан по метке"; cat /tmp/extroot-test/fstab 2>/dev/null
 fi
 
 # --- тест 2a: в fstab нет посторонних строк --------------------------------

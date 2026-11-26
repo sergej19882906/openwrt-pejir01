@@ -1,0 +1,91 @@
+From 9362a6a0f23251290f20f1f6861f58d655ceb0cd Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 16:46:43 GMT
+Subject: =?utf-8?b?ZXh0cm9vdDog0YHQtdC60YbQuNGPIHN3YXAg0YEg0LzQtdGC0LrQvtC5INC90LUg?=
+ =?utf-8?b?0L/QtdGA0LXQv9C40YHRi9Cy0LDQtdGC0YHRjywg0LzQtdGC0LrQsCDQv9C40YjQ?=
+ =?utf-8?b?tdGC0YHRjyDQsiBmc3RhYg==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Устройство показало: секции swap в /etc/config/fstab нет вообще
+("uci: Entry not found"), хотя раздел своп создан (mkswap -L swap) и
+помечен меткой "swap".
+
+Две причины:
+
+  * скрипт pejir-extroot переписывает секцию swap, если в ней нет
+    "option uuid" (так он чинит старые секции, привязанные только к
+    пути /dev/sda2). Но у раздела свопа, созданного через
+    "mkswap -L swap", UUID обычно нет - есть только метка. Такая
+    секция попадала под "переписать", метка терялась, и оставалась
+    привязка к имени раздела, которая ломается при перенумерации;
+  * при создании секции с нуля писался только путь к разделу, хотя
+    метка у раздела есть и работает не хуже пути.
+
+Теперь:
+
+  * секция swap с "option uuid" ИЛИ с "option label" считается
+    правильной и не переписывается;
+  * в новую секцию пишется метка раздела (если UUID нет), рядом с
+    путём - метка тоже переживает перенумерацию разделов.
+
+Тест tests/test-extroot.sh дополнен: секция с меткой не переписывается,
+а раздел свопа без UUID прописывается по метке.
+---
+ package/pejir-extroot/files/pejir-extroot | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/package/pejir-extroot/files/pejir-extroot b/package/pejir-extroot/files/pejir-extroot
+index 732e47a6..1e415ae8 100755
+--- a/package/pejir-extroot/files/pejir-extroot
++++ b/package/pejir-extroot/files/pejir-extroot
+@@ -96,6 +96,13 @@ dev_uuid() {
+ 	block info "$1" 2>/dev/null | sed -n 's/.*UUID="\([^"]*\)".*/\1/p' | head -1
+ }
+ 
++# Метка (LABEL) раздела. У раздела свопа, созданного через
++# "mkswap -L swap", UUID нет - есть только метка, и fstools ищет своп
++# по ней (block.c: swap_add - сначала uuid, потом label).
++dev_label() {
++	block info "$1" 2>/dev/null | sed -n 's/.*LABEL="\([^"]*\)".*/\1/p' | head -1
++}
++
+ dev_type() {
+ 	block info "$1" 2>/dev/null | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p' | head -1
+ }
+@@ -371,16 +378,19 @@ do_swap() {
+ 	fi
+ 
+ 	swapuuid="$(dev_uuid "$dev")"
++	swaplabel="$(dev_label "$dev")"
+ 
+ 	# Секция swap может быть записана старой версией - только путём к
+ 	# разделу. Такой путь перестаёт работать после перенумерации
+-	# (sda2 -> sdb2), поэтому переписываем секцию с UUID.
++	# (sda2 -> sdb2), поэтому переписываем секцию с UUID или с меткой.
++	# Метка тоже переживает перенумерацию, и у раздела свопа, созданного
++	# через "mkswap -L swap", UUID обычно нет - есть только метка.
+ 	if grep -q "config swap" "$FSTAB" 2>/dev/null; then
+-		if grep -A6 "config swap" "$FSTAB" 2>/dev/null | grep -q "option uuid"; then
+-			log "Секция swap в $FSTAB уже есть (с UUID)."
++		if grep -A6 "config swap" "$FSTAB" 2>/dev/null | grep -qE "option (uuid|label)"; then
++			log "Секция swap в $FSTAB уже есть (с UUID или меткой)."
+ 			return 0
+ 		fi
+-		log "Секция swap записана без UUID - переписываю (раздел мог перенумероваться)."
++		log "Секция swap записана без UUID и метки - переписываю (раздел мог перенумероваться)."
+ 		sed '/^[[:space:]]*config[[:space:]]*swap/,$d' "$FSTAB" > "$FSTAB.tmp" &&
+ 			mv "$FSTAB.tmp" "$FSTAB"
+ 	fi
+@@ -389,6 +399,7 @@ do_swap() {
+ 		echo ""
+ 		echo "config swap"
+ 		[ -n "$swapuuid" ] && echo "	option uuid '$swapuuid'"
++		[ -n "$swaplabel" ] && echo "	option label '$swaplabel'"
+ 		echo "	option device '$(basename "$dev")'"
+ 		echo "	option enabled '1'"
+ 	} >> "$FSTAB"
+-- 
+2.39.5
+
