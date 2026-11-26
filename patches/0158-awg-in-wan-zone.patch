@@ -1,0 +1,141 @@
+From a7d2f01a7c35aa722c750b9a4e0a58e95a105b6b Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 22:15:04 GMT
+Subject: =?utf-8?b?ZmlyZXdhbGw6IEFXRy3QuNC90YLQtdGA0YTQtdC50YEg0LIg0LfQvtC90LUgd2Fu?=
+ =?utf-8?b?LCDQsCDQvdC1INCyINC+0YLQtNC10LvRjNC90L7QuSDQt9C+0L3QtQ==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Симптом, который поймал пользователь: с включённым WG страницы у
+телефона не открывались, хотя собственный трафик роутера шёл через
+туннель нормально.
+
+Причина в цепочке FORWARD. fw4 для зоны lan переходит только в
+accept_to_wan и accept_to_lan. Туннель, вынесенный в отдельную зону
+awg, попадал мимо обоих переходов, и его трафик уходил в DROP по
+умолчанию. Собственный трафик роутера идёт по OUTPUT, поэтому
+проверки с самого роутера показывали "всё работает" - страдали
+только клиенты LAN.
+
+Теперь AWG-интерфейс переносится в зону wan - там уже есть
+masquerading (трафик клиентов NAT-ится в адрес туннеля), mtu_fix
+(обрезка MSS под MTU туннеля) и разрешённый переход lan -> wan.
+
+Проверено на устройстве: после переноса в правилах fw4 появилось
+oifname { "wan", "eth1", "Home" } в accept_to_wan и в srcnat_wan.
+---
+ .../pejir-awg/root/usr/libexec/pejir-awg-zone | 72 +++++++++++--------
+ 1 file changed, 42 insertions(+), 30 deletions(-)
+
+diff --git a/package/pejir-awg/root/usr/libexec/pejir-awg-zone b/package/pejir-awg/root/usr/libexec/pejir-awg-zone
+index 769d357a..d8e175ef 100755
+--- a/package/pejir-awg/root/usr/libexec/pejir-awg-zone
++++ b/package/pejir-awg/root/usr/libexec/pejir-awg-zone
+@@ -1,22 +1,22 @@
+ #!/bin/sh
+-# Привести AWG-интерфейс в отдельную зону файрвола с masquerading.
++# Привести AWG-интерфейс в зону wan.
+ #
+-# Зачем: интерфейс amneziawg по умолчанию попадает в зону lan. Тогда
+-# трафик клиентов LAN (телефон, ноутбук) уходит в туннель с адресом
+-# 192.168.2.x, а сервер AmneziaWG такой подсети не знает и не делает по
+-# ней NAT - пакеты теряются, и страницы не открываются. Собственный трафик
+-# роутера при этом работает: у него адрес интерфейса туннеля, и он
+-# NAT-ится ядром.
++# Почему именно wan, а не отдельная зона: у клиентов LAN трафик к
++# туннелю идёт по цепочке FORWARD, а fw4 для зоны lan переходит только в
++# accept_to_wan и accept_to_lan. Туннель в отдельной зоне попадал
++# мимо обоих переходов и его трафик уходил в DROP по умолчанию -
++# страницы у телефона не открывались, хотя собственный трафик роутера
++# (цепочка OUTPUT) проходил нормально.
+ #
+-# Решение: своя зона "awg" с masq=1 (клиентский трафик NAT-ится в адрес
+-# туннеля) и mtu_fix=1 (обрезка MSS под MTU туннеля). И интерфейс
+-# убирается из зоны lan.
++# В зоне wan уже есть всё нужное: masquerading (трафик клиентов NAT-ится
++# в адрес туннеля), mtu_fix (обрезка MSS под MTU туннеля) и разрешённый
++# переход lan -> wan.
+ #
+-# Скрипт идемпотентен: если зона уже настроена - ничего не делает.
++# Скрипт идемпотентен.
+ 
+ set -u
+ 
+-ZONE="awg"
++ZONE="wan"
+ 
+ awg_interfaces() {
+ 	local iface proto
+@@ -31,38 +31,50 @@ awg_interfaces() {
+ 	done
+ }
+ 
++# Номер секции зоны wan (если зоны нет - создадим).
++wan_section() {
++	uci -q show firewall 2>/dev/null |
++		sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.name='\?${ZONE}'\?$/\1/p" |
++		head -1
++}
++
+ changed=0
+-first=""
++wan="$(wan_section)"
+ 
+-for iface in $(awg_interfaces); do
+-	[ -n "$first" ] || first="$iface"
++if [ -z "$wan" ]; then
++	# Зоны wan нет - создаём её целиком.
++	uci -q delete firewall.wan
++	uci set firewall.wan=zone
++	uci set firewall.wan.name="$ZONE"
++	uci set firewall.wan.input="REJECT"
++	uci set firewall.wan.output="ACCEPT"
++	uci set firewall.wan.forward="DROP"
++	uci set firewall.wan.masq="1"
++	uci set firewall.wan.mtu_fix="1"
++	wan="wan"
++	changed=1
++fi
+ 
+-	# убираем интерфейс из зоны lan
+-	for z in $(uci -q show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.network=.*/\1/p"); do
+-		if uci -q get firewall."$z".network | tr " " "\n" | grep -qx "$iface"; then
++for iface in $(awg_interfaces); do
++	# Убираем интерфейс из всех прочих зон.
++	for z in $(uci -q show firewall 2>/dev/null | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.network=.*/\1/p"); do
++		[ "$z" = "$wan" ] && continue
++		if uci -q get firewall."$z".network 2>/dev/null | tr " " "\n" | grep -qx "$iface"; then
+ 			uci -q del_list firewall."$z".network="$iface"
+ 			changed=1
+ 		fi
+ 	done
+ 
+-	# добавляем в свою зону
+-	if ! uci -q get firewall."$ZONE".network | tr " " "\n" | grep -qx "$iface"; then
+-		uci -q delete firewall."$ZONE" 2>/dev/null
+-		uci set firewall."$ZONE"=zone
+-		uci set firewall."$ZONE".name="$ZONE"
+-		uci set firewall."$ZONE".input="REJECT"
+-		uci set firewall."$ZONE".output="ACCEPT"
+-		uci set firewall."$ZONE".forward="ACCEPT"
+-		uci set firewall."$ZONE".masq="1"
+-		uci set firewall."$ZONE".mtu_fix="1"
+-		uci set firewall."$ZONE".network="$iface"
++	# И добавляем в зону wan.
++	if ! uci -q get firewall."$wan".network 2>/dev/null | tr " " "\n" | grep -qx "$iface"; then
++		uci add_list firewall."$wan".network="$iface"
+ 		changed=1
+ 	fi
+ done
+ 
+ if [ "$changed" = "1" ]; then
+ 	uci commit firewall
+-	logger -t pejir-awg "AWG-интерфейс переведён в зону $ZONE с masquerading"
++	logger -t pejir-awg "AWG-интерфейс переведён в зону $ZONE (masquerading, mtu_fix, lan -> wan разрешён)"
+ 	/etc/init.d/firewall reload >/dev/null 2>&1
+ fi
+ 
+-- 
+2.39.5
+

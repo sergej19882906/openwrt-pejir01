@@ -41,10 +41,15 @@ grep -q "pejir-awg-zone" "$AWG_INIT" && ok "helper зоны вызывается
 	|| fail "helper зоны не вызывается - зона не настроится сама"
 
 # --- 2. в зоне есть masquerading и обрезка MSS ----------------------------
-grep -q 'masq="1"' "$ZONE_HELPER" && ok "зона AWG с masquerading (трафик клиентов NAT-ится в туннель)" \
-	|| fail "в зоне AWG нет masquerading - трафик клиентов не NAT-ится"
-grep -q 'mtu_fix="1"' "$ZONE_HELPER" && ok "зона AWG с mtu_fix (обрезка MSS под MTU туннеля)" \
-	|| fail "в зоне AWG нет mtu_fix"
+grep -q 'masq="1"' "$ZONE_HELPER" && ok "зона wan с masquerading (трафик клиентов NAT-ится в туннель)" \
+	|| fail "в зоне wan нет masquerading - трафик клиентов не NAT-ится"
+grep -q 'mtu_fix="1"' "$ZONE_HELPER" && ok "зона wan с mtu_fix (обрезка MSS под MTU туннеля)" \
+	|| fail "в зоне wan нет mtu_fix"
+
+# Туннель должен быть именно в зоне wan: fw4 для lan переходит только в
+# accept_to_wan и accept_to_lan, туннель в отдельной зоне уходил в DROP.
+grep -q 'ZONE="wan"' "$ZONE_HELPER" && ok "интерфейс переносится в зону wan (переход lan -> wan разрешён)" \
+	|| fail "интерфейс переносится не в зону wan - трафик клиентов уйдёт в DROP"
 
 # --- 3. интерфейс убирается из зоны lan -----------------------------------
 grep -q "del_list" "$ZONE_HELPER" && ok "интерфейс убирается из зоны lan" \
@@ -73,7 +78,9 @@ case "$1" in
 			firewall)
 				echo "firewall.@zone[0]=zone"
 				echo "firewall.@zone[0].network='lan' 'Home'"
-				echo "firewall.@zone[0].masq='0'"
+				echo "firewall.@zone[1]=zone"
+				echo "firewall.@zone[1].name='wan'"
+				echo "firewall.@zone[1].network='wan' 'lte'"
 				;;
 		esac
 		exit 0
@@ -82,13 +89,13 @@ case "$1" in
 		key="$2"
 		case "$key" in
 			firewall.@zone\[0\].network) echo "lan Home" ;;
-			firewall.awg.network) echo "" ;;
+			firewall.@zone\[1\].network) echo "wan lte" ;;
 			network.Home.proto) echo "amneziawg" ;;
 			*) exit 1 ;;
 		esac
 		exit 0
 		;;
-	set|del_list|delete)
+	set|add_list|del_list|delete)
 		echo "$1 $2" >> "$WORK/uci.actions"
 		exit 0
 		;;
@@ -125,20 +132,20 @@ chmod +x "$WORK/bin"/*
 # в /tmp не получится, поэтому проверяем только решения по uci.
 out="$(PATH="$WORK/bin:$PATH" WORK="$WORK" sh "$ZONE_HELPER" 2>&1)"
 
-if grep -q "firewall.@zone\[0\].network" "$WORK/uci.actions" 2>/dev/null; then
+if grep -q "del_list firewall.@zone\[0\].network" "$WORK/uci.actions" 2>/dev/null; then
 	ok "интерфейс убирается из зоны lan"
 else
 	fail "интерфейс не убирается из зоны lan"
 fi
 
-if grep -q "set firewall.awg.name" "$WORK/uci.actions" 2>/dev/null; then
-	ok "создаётся своя зона awg"
+if grep -q "firewall.@zone\[1\].network" "$WORK/uci.actions" 2>/dev/null; then
+	ok "интерфейс добавляется в зону wan"
 else
-	fail "своя зона awg не создаётся"
+	fail "интерфейс не добавляется в зону wan"
 fi
 
 if [ "$FAILED" -eq 0 ]; then
-	echo "PASS: AWG-интерфейс в отдельной зоне с masquerading"
+	echo "PASS: AWG-интерфейс в зоне wan с masquerading"
 	exit 0
 fi
 echo "Провалено тестов: $FAILED"
