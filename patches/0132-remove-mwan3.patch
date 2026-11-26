@@ -1,0 +1,401 @@
+From ae012d46f10edb5959cf407bc47bef4ebf109665 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 01:19:46 GMT
+Subject: =?utf-8?b?bHRlOiDRg9Cx0YDQsNGC0YwgbXdhbjMgLSDRgNC10LfQtdGA0LLQvdGL0Lkg0LrQ?=
+ =?utf-8?b?sNC90LDQuyDRg9C20LUg0YDQsNCx0L7RgtCw0LXRgiDRiNGC0LDRgtC90L4=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Жалоба: в /etc/rc.d есть S19mwan3, в логах - "устаревшие правила
+iptables", которые добавляет mwan3.
+
+ПРИЧИНА. В OpenWrt 25.12 mwan3 (2.12.0-r3) работает только через
+iptables (в /lib/mwan3/mwan3.sh нет поддержки nftables). Пакет был
+включён в образ (build.sh: CONFIG_PACKAGE_mwan3=y,
+CONFIG_PACKAGE_luci-app-mwan3=y) и стартовал при загрузке со стоковым
+/etc/config/mwan3 из образа - интерфейсы в WAN-группу не входят,
+участников нет, поэтому он просто навешивал свои (устаревшие) правила
+iptables. Пользователь это видел как мусор в правилах.
+
+ПРИЧИНА ВТОРАЯ - НАША ОШИБКА. Рядом с этим в образе лежал helper
+pejir-mwan3, который при настройке "WAN основной, LTE резервный" ставил
+интерфейсам defaultroute=0 ("маршрутизацией занимается mwan3") и
+поднимал mwan3. Схема с defaultroute=0 ломала нормальную маршрутизацию
+netifd: маршрут по умолчанию пропадал, интернет мог не подняться вовсе.
+
+ПРАВИЛЬНОЕ РЕШЕНИЕ. Резервный канал WAN/LTE на устройстве УЖЕ
+работает штатно, без mwan3:
+  * network.wan - основной маршрут по умолчанию (метрики нет);
+  * network.lte - резервный маршрут с metric 30 (её ставит
+    47-pejir-lte / 40-pejir-lte).
+Именно это и показывает ip route на устройстве:
+  default via 192.168.1.1 dev wan
+  default via 192.168.0.1 dev eth1 metric 30
+netifd сам уберёт основной маршрут, если проводной канал пропадёт, и
+вернёт его, когда канал восстановится. Никаких дополнительных пакетов
+для этого не нужно.
+
+ЧТО СДЕЛАНО:
+- helper pejir-mwan3 удалён из пакета pejir-lte-base (и из Makefile);
+- гранты ACL на /usr/libexec/pejir-mwan3 удалены;
+- на странице "LTE" блок настройки mwan3 заменён на справочную
+  информацию: как работает переключение на модем и что настраивать
+  ничего не нужно (переведено на русский);
+- в pejir-upgrade-purge добавлена чистка остатков mwan3 из верхнего
+  слоя (/etc/config/mwan3, /etc/init.d/mwan3, /etc/rc.d/S19mwan3,
+  /etc/mwan3) и возврат интерфейсам права ставить свой маршрут по
+  умолчанию (defaultroute=0 удаляется) - на случай, если пользователь
+  успел нажать "настроить" в прежней версии.
+
+Сам пакет mwan3 убирается из образа в build.sh (CONFIG_PACKAGE_mwan3
+и CONFIG_PACKAGE_luci-app-mwan3).
+---
+ .../luci-static/resources/view/perenio/lte.js |  47 +-----
+ .../po/ru/luci-app-perenio.po                 |  15 +-
+ .../share/rpcd/acl.d/luci-app-perenio.json    |  12 --
+ package/pejir-lte-base/Makefile               |   1 -
+ .../root/usr/libexec/pejir-mwan3              | 142 ------------------
+ package/pejir-ota/files/pejir-upgrade-purge   |  39 +++++
+ 6 files changed, 46 insertions(+), 210 deletions(-)
+ delete mode 100755 package/pejir-lte-base/root/usr/libexec/pejir-mwan3
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+index 681e5771..5b412c78 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -439,49 +439,9 @@ return view.extend({
+ 				E('div', { 'class': 'cbi-value-title' }, ''),
+ 				E('div', { 'class': 'cbi-value-field' }, [ modeBtn ])
+ 			]),
+-			E('h3', {}, _('LTE as a backup link (mwan3)')),
++			E('h3', {}, _('LTE as a backup link')),
+ 			E('div', { 'class': 'cbi-value-description' },
+-				_('mwan3 is installed but not configured, so the LTE interface belongs to no WAN group. This sets the wired WAN as the main link and LTE as the backup: if the wired link stops answering, traffic goes through the modem and returns back when the link recovers.')),
+-			E('div', { 'class': 'cbi-value' }, [
+-				E('div', { 'class': 'cbi-value-title' }, ''),
+-				E('div', { 'class': 'cbi-value-field' }, [
+-					E('button', {
+-						'class': 'cbi-button cbi-button-neutral', 'type': 'button',
+-						'click': ui.createHandlerFn(this, function() {
+-							var box = document.getElementById('perenio-mwan3-out');
+-							if (box) box.textContent = _('Working...');
+-							return fs.exec('/usr/libexec/pejir-mwan3', [ 'setup' ]).then(function(r) {
+-								var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
+-								if (box) box.textContent = out.trim() || _('Done');
+-							});
+-						})
+-					}, _('Set up LTE as backup')),
+-					' ',
+-					E('button', {
+-						'class': 'cbi-button cbi-button-neutral', 'type': 'button',
+-						'click': ui.createHandlerFn(this, function() {
+-							var box = document.getElementById('perenio-mwan3-out');
+-							if (box) box.textContent = _('Working...');
+-							return fs.exec('/usr/libexec/pejir-mwan3', [ 'remove' ]).then(function(r) {
+-								var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
+-								if (box) box.textContent = out.trim() || _('Done');
+-							});
+-						})
+-					}, _('Remove the backup setup')),
+-					' ',
+-					E('button', {
+-						'class': 'cbi-button cbi-button-neutral', 'type': 'button',
+-						'click': ui.createHandlerFn(this, function() {
+-							var box = document.getElementById('perenio-mwan3-out');
+-							if (box) box.textContent = _('Working...');
+-							return fs.exec('/usr/libexec/pejir-mwan3', [ 'status' ]).then(function(r) {
+-								var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
+-								if (box) box.textContent = out.trim() || _('Done');
+-							});
+-						})
+-					}, _('Show status'))
+-				])
+-			]),
++				_('The router switches to the modem on its own: the wired WAN has the main default route, and LTE has a backup route with a higher metric. If the wired link goes down, traffic goes through the modem, and it returns back when the link recovers. Nothing has to be installed or configured for that.')),
+ 			E('h3', {}, _('Modem AT port watchdog')),
+ 			E('div', { 'class': 'cbi-value-description' },
+ 				_('If the modem stops answering AT commands, LTE, SMS and USSD stop working until the router is rebooted. The watchdog rebinds the USB serial driver of the modem port and restarts LTE. It runs by itself every few minutes; the buttons below let you check the port and recover it manually.')),
+@@ -516,9 +476,6 @@ return view.extend({
+ 			E('pre', { 'id': 'perenio-atwatch-out',
+ 				'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
+ 				''),
+-			E('pre', { 'id': 'perenio-mwan3-out',
+-				'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
+-				''),
+ 			E('div', { 'class': 'cbi-value' }, [
+ 				E('div', { 'class': 'cbi-value-title' }, _('SIM PIN')),
+ 				E('div', { 'class': 'cbi-value-field' }, [
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 3667a756..39a92c4b 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -400,10 +400,6 @@ msgid "Brightness applied"
+ msgstr "Яркость применена"
+ msgid "DNS (optional)"
+ msgstr "DNS (необязательно)"
+-msgid "LTE as a backup link (mwan3)"
+-msgstr "LTE как резервный канал (mwan3)"
+-msgid "mwan3 is installed but not configured, so the LTE interface belongs to no WAN group. This sets the wired WAN as the main link and LTE as the backup: if the wired link stops answering, traffic goes through the modem and returns back when the link recovers."
+-msgstr "mwan3 установлен, но не настроен, поэтому LTE-интерфейс не входит ни в одну группу WAN. Здесь проводной WAN становится основным каналом, а LTE - резервным: если проводная связь перестаёт отвечать, трафик идёт через модем и возвращается обратно при восстановлении."
+ msgid "Modem AT port watchdog"
+ msgstr "Сторож AT-порта модема"
+ msgid "If the modem stops answering AT commands, LTE, SMS and USSD stop working until the router is rebooted. The watchdog rebinds the USB serial driver of the modem port and restarts LTE. It runs by itself every few minutes; the buttons below let you check the port and recover it manually."
+@@ -412,12 +408,6 @@ msgid "Check the port"
+ msgstr "Проверить порт"
+ msgid "Recover the port"
+ msgstr "Восстановить порт"
+-msgid "Set up LTE as backup"
+-msgstr "Настроить LTE как резерв"
+-msgid "Remove the backup setup"
+-msgstr "Убрать резервную настройку"
+-msgid "Show status"
+-msgstr "Показать состояние"
+ msgid "Working..."
+ msgstr "Выполняется..."
+ msgid "Module /dev/umxtty1"
+@@ -594,3 +584,8 @@ msgid "not flashed (stock firmware)"
+ msgstr "не перепрошивался (стоковая прошивка)"
+ msgid "The EFR32 Zigbee module of the router. It talks to HOMEd over EZSP. While HOMEd is running, it keeps the port, so the module cannot be checked - its state is then taken from the HOMEd log. If the module does not answer, its NCP firmware can be flashed with a Gecko image (.gbl); the flash resets the Zigbee module only and needs internet access to download the firmware."
+ msgstr "Модуль Zigbee EFR32 роутера. Он общается с HOMEd по протоколу EZSP. Пока работает HOMEd, он держит порт, поэтому модуль проверить нельзя - состояние берётся из журнала HOMEd. Если модуль не отвечает, его NCP-прошивку можно прошить Gecko-образом (.gbl); прошивка перезапускает только модуль Zigbee и требует интернета для загрузки прошивки."
++
++msgid "LTE as a backup link"
++msgstr "LTE как резервный канал"
++msgid "The router switches to the modem on its own: the wired WAN has the main default route, and LTE has a backup route with a higher metric. If the wired link goes down, traffic goes through the modem, and it returns back when the link recovers. Nothing has to be installed or configured for that."
++msgstr "Роутер переключается на модем сам: у проводного WAN основной маршрут по умолчанию, а у LTE - резервный с большей метрикой. Если проводная связь пропала, трафик идёт через модем, а при восстановлении возвращается обратно. Ничего устанавливать и настраивать не нужно."
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 59cb47df..fb96ab44 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -152,18 +152,6 @@
+ 				"/usr/libexec/pejir-modem-ctl": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-mwan3": [
+-					"exec"
+-				],
+-				"/usr/libexec/pejir-mwan3 status": [
+-					"exec"
+-				],
+-				"/usr/libexec/pejir-mwan3 setup": [
+-					"exec"
+-				],
+-				"/usr/libexec/pejir-mwan3 remove": [
+-					"exec"
+-				],
+ 				"/etc/init.d/homed-zigbee restart": [
+ 					"exec"
+ 				],
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index d266bcd8..2d70096d 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -42,7 +42,6 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-lte-apn $(1)/usr/libexec/pejir-lte-apn
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-family $(1)/usr/libexec/pejir-modem-family
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-at-watch $(1)/usr/libexec/pejir-at-watch
+-	$(INSTALL_BIN) ./root/usr/libexec/pejir-mwan3 $(1)/usr/libexec/pejir-mwan3
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-ctl $(1)/usr/libexec/pejir-modem-ctl
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-signal $(1)/usr/libexec/pejir-signal
+ 	$(INSTALL_BIN) ./root/etc/init.d/46-pejir-signal $(1)/etc/init.d/46-pejir-signal
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-mwan3 b/package/pejir-lte-base/root/usr/libexec/pejir-mwan3
+deleted file mode 100755
+index 48c71b8b..00000000
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-mwan3
++++ /dev/null
+@@ -1,142 +0,0 @@
+-#!/bin/sh
+-# Резервный канал LTE (mwan3) для Perenio PEJIR01.
+-#
+-# В образе стоит mwan3, но он не настроен: интерфейс LTE (network.lte)
+-# не входит ни в одну группу WAN, поэтому "переключить интернет на LTE"
+-# приходится делать руками. Этот helper готовит простую и предсказуемую
+-# схему:
+-#
+-#   * основной канал - проводной WAN (network.wan);
+-#   * резервный - LTE (network.lte);
+-#   * при падении WAN (не отвечает ping) трафик уходит в LTE;
+-#   * при восстановлении WAN трафик возвращается обратно.
+-#
+-# Команды:
+-#   status   - что настроено сейчас (mwan3, участники, активный канал);
+-#   setup    - настроить схему "WAN основной, LTE резервный";
+-#   remove   - убрать настройку и вернуть обычную маршрутизацию.
+-#
+-# Ничего не делается молча: setup/remove меняют маршрутизацию, поэтому
+-# вызываются только по явной команде (кнопка в LuCI).
+-
+-set -u
+-
+-CFG=mwan3
+-WAN_IF="${PEJIR_MWAN_WAN:-wan}"
+-LTE_IF="${PEJIR_MWAN_LTE:-lte}"
+-TRACK_IP="1.1.1.1 8.8.8.8"
+-
+-log() { echo "[mwan3] $*"; }
+-
+-mwan_get() { uci -q get "$CFG.$1" 2>/dev/null; }
+-
+-cmd_status() {
+-	echo "STATUS"
+-	echo "mwan3_present=$( [ -x /etc/init.d/mwan3 ] && echo yes || echo no )"
+-	echo "wan_ifname=$WAN_IF"
+-	echo "lte_ifname=$LTE_IF"
+-	echo "wan_configured=$( [ -n "$(mwan_get interfaces.$WAN_IF.enabled)" ] && echo yes || echo no )"
+-	echo "lte_configured=$( [ -n "$(mwan_get interfaces.$LTE_IF.enabled)" ] && echo yes || echo no )"
+-	echo "members=$(uci -q show "$CFG" 2>/dev/null | grep -c '=member' || true)"
+-	echo "policies=$(uci -q show "$CFG" 2>/dev/null | grep -c '=policy' || true)"
+-	echo "rules=$(uci -q show "$CFG" 2>/dev/null | grep -c '=rule' || true)"
+-	echo "default_route:"
+-	ip route show default 2>/dev/null | sed 's/^/  /'
+-	echo "mwan3_log:"
+-	logread 2>/dev/null | grep -i mwan3 | tail -5 | sed 's/^/  /'
+-}
+-
+-cmd_setup() {
+-	# Интерфейсы и участники.
+-	uci set "$CFG.globals=globals"
+-	uci set "$CFG.globals.mmx_mask=0x3F00"
+-
+-	uci set "$CFG.interfaces.$WAN_IF=interface"
+-	uci set "$CFG.interfaces.$WAN_IF.enabled=1"
+-	uci set "$CFG.interfaces.$WAN_IF.family=ipv4"
+-	uci set "$CFG.interfaces.$WAN_IF.reliability=2"
+-	uci -q delete "$CFG.interfaces.$WAN_IF.track_ip" 2>/dev/null
+-	for ip in $TRACK_IP; do
+-		uci add_list "$CFG.interfaces.$WAN_IF.track_ip" "$ip"
+-	done
+-
+-	uci set "$CFG.interfaces.$LTE_IF=interface"
+-	uci set "$CFG.interfaces.$LTE_IF.enabled=1"
+-	uci set "$CFG.interfaces.$LTE_IF.family=ipv4"
+-	uci set "$CFG.interfaces.$LTE_IF.reliability=1"
+-	uci -q delete "$CFG.interfaces.$LTE_IF.track_ip" 2>/dev/null
+-	for ip in $TRACK_IP; do
+-		uci add_list "$CFG.interfaces.$LTE_IF.track_ip" "$ip"
+-	done
+-
+-	uci set "$CFG.members.wan_primary=member"
+-	uci set "$CFG.members.wan_primary.interface=$WAN_IF"
+-	uci set "$CFG.members.wan_primary.metric=1"
+-	uci set "$CFG.members.wan_primary.reliability=1"
+-
+-	uci set "$CFG.members.lte_backup=member"
+-	uci set "$CFG.members.lte_backup.interface=$LTE_IF"
+-	uci set "$CFG.members.lte_backup.metric=2"
+-	uci set "$CFG.members.lte_backup.reliability=1"
+-
+-	# Политика: сначала WAN, при его недоступности - LTE.
+-	uci set "$CFG.policies.wan_then_lte=policy"
+-	uci set "$CFG.policies.wan_then_lte.use_member=wan_primary"
+-	uci set "$CFG.policies.wan_then_lte.fallback=wan_then_lte_lte"
+-	uci set "$CFG.policies.wan_then_lte_lte=policy"
+-	uci set "$CFG.policies.wan_then_lte_lte.use_member=lte_backup"
+-
+-	uci set "$CFG.rules.default_rule=rule"
+-	uci set "$CFG.rules.default_rule.policy=wan_then_lte"
+-	uci set "$CFG.rules.default_rule.use_ip=wan_then_lte"
+-
+-	uci commit "$CFG"
+-
+-	# Интерфейсы, которые ведёт mwan3, не должны ставить СВОЙ маршрут
+-	# по умолчанию: маршрутизацией занимается mwan3, иначе netifd и
+-	# mwan3 спорят за default route (интернет то есть, то нет).
+-	# Возвращаем этот параметр в cmd_remove.
+-	for i in "$WAN_IF" "$LTE_IF"; do
+-		uci set "network.$i.defaultroute=0" 2>/dev/null
+-	done
+-	uci commit network
+-
+-	# mwan3 должен стартовать после того, как поднялись интерфейсы.
+-	/etc/init.d/mwan3 enable >/dev/null 2>&1
+-	/etc/init.d/mwan3 restart >/dev/null 2>&1
+-
+-	log "настроено: основной канал $WAN_IF, резервный $LTE_IF"
+-	cmd_status
+-}
+-
+-cmd_remove() {
+-	# Убираем только свои секции, чужие настройки mwan3 не трогаем.
+-	for s in members.wan_primary members.lte_backup \
+-		 policies.wan_then_lte policies.wan_then_lte_lte \
+-		 rules.default_rule \
+-		 interfaces.$WAN_IF interfaces.$LTE_IF; do
+-		uci -q delete "$CFG.$s" 2>/dev/null
+-	done
+-	uci commit "$CFG"
+-
+-	# Возвращаем интерфейсам право ставить свой маршрут по умолчанию:
+-	# без этого после удаления mwan3 роутер остался бы без интернета.
+-	for i in "$WAN_IF" "$LTE_IF"; do
+-		uci -q delete "network.$i.defaultroute" 2>/dev/null
+-	done
+-	uci commit network
+-
+-	/etc/init.d/mwan3 restart >/dev/null 2>&1
+-	log "настройка резервного канала убрана"
+-	cmd_status
+-}
+-
+-case "${1:-}" in
+-	status) cmd_status ;;
+-	setup)  cmd_setup ;;
+-	remove) cmd_remove ;;
+-	*)
+-		echo "Использование: pejir-mwan3 {status|setup|remove}" >&2
+-		exit 1
+-		;;
+-esac
+diff --git a/package/pejir-ota/files/pejir-upgrade-purge b/package/pejir-ota/files/pejir-upgrade-purge
+index 03831b2a..1f5142d7 100755
+--- a/package/pejir-ota/files/pejir-upgrade-purge
++++ b/package/pejir-ota/files/pejir-upgrade-purge
+@@ -71,6 +71,45 @@ else
+ 	echo "чужих init-скриптов не было"
+ fi
+ 
++# mwan3: в новом образе этого пакета нет, а в верхнем слое могли
++# остаться его файлы. Сейчас mwan3 убран из образа потому, что в
++# OpenWrt 25.12 он работает только через iptables: на старте он
++# поднимался со стоковым /etc/config/mwan3 из образа и засорял
++# таблицы iptables "устаревшими правилами" (пользователь это видел).
++#
++# Что чистим:
++#   * конфиг mwan3 (/etc/config/mwan3) - без пакета он бесполезен;
++#   * init-скрипт и симлинки автозапуска (/etc/init.d/mwan3,
++#     /etc/rc.d/S19mwan3) - иначе procd продолжит его запускать;
++#   * каталог /etc/mwan3 с его состоянием.
++#
++# ОТДЕЛЬНО - маршруты. Наш прежний helper pejir-mwan3 (он больше не
++# в образе) перед настройкой ставил интерфейсам defaultroute=0:
++# "маршрутизацией занимается mwan3". С mwan3 маршрут по умолчанию
++# должен ставить netifd, поэтому возвращаем интерфейсам право на
++# свой маршрут - иначе после провала проводного канала интернет не
++# пошёл бы через модем.
++for i in wan lte lte6; do
++	if [ "$(uci -q get "network.$i.defaultroute")" = "0" ]; then
++		uci -q delete "network.$i.defaultroute"
++		uci commit network
++		echo "mwan3: network.$i.defaultroute=0 убран - маршрут по умолчанию снова у интерфейса"
++	fi
++done
++
++# Останавливаем сервис, если он ещё жив (init-скрипт мог попасть в
++# верхний слой и быть запущен procd на этой загрузке).
++if [ -x /etc/init.d/mwan3 ]; then
++	/etc/init.d/mwan3 stop >/dev/null 2>&1
++	/etc/init.d/mwan3 disable >/dev/null 2>&1
++fi
++
++for f in etc/config/mwan3 etc/init.d/mwan3 etc/rc.d/S19mwan3 etc/mwan3; do
++	if [ -e "$UPPER/$f" ] || [ -L "$UPPER/$f" ]; then
++		rm -rf "$UPPER/$f" 2>/dev/null && echo "mwan3: удалён остаток $f из верхнего слоя"
++	fi
++done
++
+ # Сторож AT-порта: в прежних версиях его приходилось выключать руками
+ # (он рвал модем, занятый LTE-вызовом, и SMS переставали работать).
+ # Начиная с этой версии сторож исправлен и безопасен, поэтому включаем
+-- 
+2.39.5
+

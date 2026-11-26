@@ -1,0 +1,102 @@
+From ec026771c43f59766e59fcb041f656f6f10db517 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 01:17:37 GMT
+Subject: =?utf-8?b?bHVjaTog0LHQsNGC0LDRgNC10Y8gLSDQstC10YDQvdGD0YLRjCBwYUNvbm5UZXh0?=
+ =?utf-8?b?KCkvcGFUeXBlVGV4dCgpLCDRgdGC0YDQsNC90LjRhtCwINC/0LDQtNCw0LvQsCDR?=
+ =?utf-8?b?gSBSZWZlcmVuY2VFcnJvcg==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+При выносе разбора данных STM32 из view/perenio/battery.js в общий модуль
+perenio-battery.js (нужен был значок аккумулятора в шапке LuCI) функции
+paConnText() и paTypeText() остались только в старом файле, а страница
+"Батарея и питание" продолжала их вызывать.
+
+Итог: JavaScript ReferenceError при построении таблицы, последние две
+ячейки ("Зарядное устройство", "Батарея подключена") навсегда оставались
+со знаком "..." - пользователь не видел ни состояние зарядного устройства,
+ни тип питания.
+
+Исправление:
+- функции перенесены в общий модуль perenio-battery.js (единый источник
+  для страницы и значка), тексты совпадают с исходной версией из
+  battery.js (cf1db053) - переводы в po/ru уже были на месте;
+- обе функции добавлены в экспорт модуля;
+- view/perenio/battery.js берёт их из общего модуля.
+
+Влияния на другие страницы нет: страница работает на общих данных,
+новых внешних вызовов не добавлено.
+---
+ .../luci-static/resources/perenio-battery.js  | 34 +++++++++++++++++++
+ .../resources/view/perenio/battery.js         |  2 ++
+ 2 files changed, 36 insertions(+)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/perenio-battery.js b/package/luci-app-perenio/htdocs/luci-static/resources/perenio-battery.js
+index cc41d6f6..65ae767b 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/perenio-battery.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/perenio-battery.js
+@@ -83,6 +83,38 @@ function chargeStatus(d) {
+ 	return 'not';
+ }
+ 
++/* Человеческие названия полей STM32 - чтобы таблица была понятна.
++ *
++ * Коды заряда: 0 - нет, 1 - заряжается, 2 - почти заряжена, 3 - заряжена;
++ * тип зарядного устройства и состояние адаптера - как в стоковом Pim.lua.
++ *
++ * ВАЖНО: эти функции жили в battery.js, но при выносе разбора в общий
++ * модуль perenio-battery (значок аккумулятора в шапке) они остались
++ * только в старом файле. Страница "Батарея и питание" вызывала
++ * paConnText()/paTypeText(), которых нигде не было => JS-ошибка
++ * ReferenceError, и последние две ячейки таблицы ("Зарядное устройство",
++ * "Батарея подключена") навсегда оставались со знаком "…".
++ */
++function paConnText(v) {
++	switch (v) {
++	case '0': return _('not connected');
++	case '1': return _('original adapter');
++	case '2': return _('foreign adapter');
++	case '3': return _('unknown adapter');
++	}
++	return v || '—';
++}
++
++function paTypeText(v) {
++	switch (v) {
++	case '0': return _('none');
++	case '1': return _('USB');
++	case '2': return _('DC');
++	case '3': return _('wireless');
++	}
++	return v || '—';
++}
++
+ /* Батарея определяется, если VBat не 2304 и BatPr не "No" */
+ function isDetected(d) {
+ 	if (d.vbat == 2304 || d.batPr == 'No')
+@@ -140,6 +172,8 @@ return baseclass.extend({
+ 	parseSys: parseSys,
+ 	levelStatus: levelStatus,
+ 	chargeStatus: chargeStatus,
++	paConnText: paConnText,
++	paTypeText: paTypeText,
+ 	isDetected: isDetected,
+ 	isOverheat: isOverheat,
+ 	isOriginalPA: isOriginalPA,
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+index 3199c2dd..001c5f3e 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+@@ -33,6 +33,8 @@ var ICON_BASE = perenio_battery.ICON_BASE;
+ var parseSys = perenio_battery.parseSys;
+ var levelStatus = perenio_battery.levelStatus;
+ var chargeStatus = perenio_battery.chargeStatus;
++var paConnText = perenio_battery.paConnText;
++var paTypeText = perenio_battery.paTypeText;
+ var isDetected = perenio_battery.isDetected;
+ var isOverheat = perenio_battery.isOverheat;
+ var isOriginalPA = perenio_battery.isOriginalPA;
+-- 
+2.39.5
+

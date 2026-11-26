@@ -71,51 +71,55 @@ else
 	fail "нет страницы прошивки ($OTA_PAGE)"
 fi
 
-# --- 2) LTE как резервный канал (mwan3) ----------------------------------
+# --- 2) LTE как резервный канал (без mwan3) -------------------------------
+#
+# mwan3 убран из образа (релиз .63): в OpenWrt 25.12 он работает
+# только через iptables и на старте со стоковым конфигом из образа
+# навешивал "устаревшие правила iptables". Резервный канал WAN/LTE
+# работает штатно: основной маршрут у network.wan, резервный (metric
+# 30) у network.lte - этим управляет netifd.
 MWAN3="$LTE/root/usr/libexec/pejir-mwan3"
 if [ ! -f "$MWAN3" ]; then
-	fail "нет helper'а pejir-mwan3 ($MWAN3)"
+	ok "helper pejir-mwan3 удалён из образа"
 else
-	sh -n "$MWAN3" 2>/dev/null || fail "синтаксис pejir-mwan3"
-	if grep -q "pejir-mwan3" "$LTE/Makefile"; then
-		ok "helper pejir-mwan3 ставится в образ"
-	else
-		fail "helper pejir-mwan3 не ставится в образ"
-	fi
-	if grep -q "mwan3" "$MWAN3" && grep -q "lte_backup" "$MWAN3"; then
-		ok "pejir-mwan3 настраивает LTE как резервный участник"
-	else
-		fail "pejir-mwan3 не настраивает LTE как резервный участник"
-	fi
-	# Интерфейсы mwan3 не должны ставить свой маршрут по умолчанию:
-	# иначе netifd и mwan3 спорят за default route. И remove должен
-	# возвращать это право, иначе роутер останется без интернета.
-	if grep -q 'network.\$i.defaultroute=0' "$MWAN3"; then
-		ok "pejir-mwan3: интерфейсам отдан маршрут по умолчанию (defaultroute=0)"
-	else
-		fail "pejir-mwan3: не отключает свой default route у интерфейсов mwan3"
-	fi
-	if grep -q 'delete "network.\$i.defaultroute"' "$MWAN3"; then
-		ok "pejir-mwan3: remove возвращает маршрут по умолчанию"
-	else
-		fail "pejir-mwan3: remove не возвращает default route - роутер останется без интернета"
-	fi
-	# Настройка должна быть ОПЦИОНАЛЬНОЙ: молча менять маршрутизацию нельзя.
-	if grep -q "cmd_setup" "$MWAN3" && grep -q "cmd_remove" "$MWAN3"; then
-		ok "настройка mwan3 включается и выключается по явной команде"
-	else
-		fail "у pejir-mwan3 нет команд setup/remove"
-	fi
+	fail "helper pejir-mwan3 всё ещё есть в пакете ($MWAN3)"
+fi
+if grep -q "pejir-mwan3" "$LTE/Makefile"; then
+	fail "helper pejir-mwan3 всё ещё ставится в образ"
+else
+	ok "helper pejir-mwan3 не ставится в образ"
 fi
 if grep -q '"/usr/libexec/pejir-mwan3"' "$LUCI/root/usr/share/rpcd/acl.d/luci-app-perenio.json"; then
-	ok "в ACL есть грант exec на pejir-mwan3"
+	fail "в ACL остался грант exec на pejir-mwan3"
 else
-	fail "в ACL нет гранта на pejir-mwan3"
+	ok "в ACL нет гранта на pejir-mwan3"
 fi
 if grep -q "pejir-mwan3" "$LUCI/htdocs/luci-static/resources/view/perenio/lte.js"; then
-	ok "на странице LTE есть блок резервного канала"
+	fail "страница LTE всё ещё вызывает pejir-mwan3"
 else
-	fail "на странице LTE нет блока резервного канала"
+	ok "страница LTE не вызывает pejir-mwan3"
+fi
+# Страница должна объяснять, как работает переключение на модем.
+if grep -q "LTE as a backup link" "$LUCI/htdocs/luci-static/resources/view/perenio/lte.js"; then
+	ok "на странице LTE есть справочный блок про резервный канал"
+else
+	fail "на странице LTE нет справочного блока про резервный канал"
+fi
+# Чистка остатков mwan3 из верхнего слоя - в скрипте чистки после
+# sysupgrade: без неё старый /etc/config/mwan3 и init-скрипт пережили
+# бы прошивку и mwan3 продолжал бы стартовать.
+PURGE="$OTA/files/pejir-upgrade-purge"
+if grep -q "mwan3" "$PURGE" 2>/dev/null; then
+	ok "скрипт чистки после прошивки убирает остатки mwan3"
+else
+	fail "скрипт чистки после прошивки не убирает остатки mwan3"
+fi
+# Возврат маршрута по умолчанию: прежний helper ставил defaultroute=0,
+# и без возврата интернет не пошёл бы через модем.
+if grep -q 'defaultroute' "$PURGE" 2>/dev/null; then
+	ok "скрипт чистки возвращает интерфейсам defaultroute"
+else
+	fail "скрипт чистки не возвращает интерфейсам defaultroute"
 fi
 
 # --- 3) страница Zigbee ---------------------------------------------------
@@ -240,6 +244,28 @@ else
 		ok "шаблон удаляется"
 	else
 		fail "шаблон не удалился: $out"
+	fi
+	# Команда log: хвост журнала smsd (её зовёт страница SMS).
+	# Журнал растёт без ограничения, поэтому helper отдаёт только хвост.
+	printf 'строка1\nстрока2\nстрока3\nстрока4\n' > "$WORK/smsd.log"
+	out="$(PEJIR_SMS_LOG="$WORK/smsd.log" sh "$SMSCTL" log 2 2>&1)"
+	if [ "$(printf '%s\n' "$out" | wc -l)" = "2" ] && \
+	   printf '%s' "$out" | grep -q 'строка4'; then
+		ok "log отдаёт только хвост журнала"
+	else
+		fail "log отдаёт неверный хвост журнала: $out"
+	fi
+	out="$(PEJIR_SMS_LOG="$WORK/smsd.log" sh "$SMSCTL" log 2 2>&1)"
+	if printf '%s' "$out" | grep -q 'строка1'; then
+		fail "log отдаёт больше строк, чем просили"
+	else
+		ok "log уважает заданное число строк"
+	fi
+	out="$(PEJIR_SMS_LOG="$WORK/no-such.log" sh "$SMSCTL" log 8 2>&1)"
+	if printf '%s' "$out" | grep -q 'не найден'; then
+		ok "log сообщает, что журнала нет"
+	else
+		fail "log не сообщает об отсутствии журнала: $out"
 	fi
 	rm -rf "$WORK"
 fi

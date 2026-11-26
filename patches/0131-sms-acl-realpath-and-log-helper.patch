@@ -1,0 +1,194 @@
+From aed22b04d2230bd32a44ff441ded6ff96805da7f Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 01:18:37 GMT
+Subject: =?utf-8?b?c21zOiDQs9GA0LDQvdGC0YsgQUNMINC90LAg0YDQtdCw0LvRjNC90YvQtSDQv9GD?=
+ =?utf-8?b?0YLQuCAoL3RtcC8uLi4pINC4INC20YPRgNC90LDQuyDRh9C10YDQtdC3IGhlbHBl?=
+ =?utf-8?b?cg==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Две жалобы на странице SMS: очень долгая проверка, входящие сообщения
+не видны, исходящие не сохраняются.
+
+ПРИЧИНА "НЕ ВИДНО". rpcd сверяет права доступа к файлу не по текстовому
+пути, а по РАЗЫМЕНОВАННОМУ (rpcd/file.c: rpc_check_symlink_access ->
+realpath()). В OpenWrt /var - симлинк на /tmp, поэтому:
+
+    /var/spool/sms/incoming  ->  /tmp/spool/sms/incoming
+    /var/log/smsd.log        ->  /tmp/log/smsd.log
+
+Гранты в ACL были выданы только на /var/... , поэтому из браузера
+не проходили ни list каталогов очереди, ни read файлов сообщений, ни
+чтение журнала. Скрипт проверки (root, shell) эти же файлы видел -
+отсюда расхождение "в консоли есть, в LuCI нет".
+
+ПРИЧИНА "ДОЛГО". Страница читала журнал smsd сама (fs.read) целиком
+при каждом опросе (раз в 20 с). Журнал растёт без ограничения
+(loglevel 5) и на устройстве набрал большой объём - чтение и разбор
+занимали секунды, страница подтормаживала.
+
+ИСПРАВЛЕНИЕ:
+- в ACL добавлены гранты на реальные пути: /tmp/log/smsd.log,
+  /tmp/log/smsd.log.1 (read) и /tmp/spool/sms/{incoming,outgoing,sent,
+  failed} (list) плюс /tmp/spool/sms/<подкаталог>/* (read);
+- в helper pejir-sms-ctl добавлена команда "log [строк]" - отдаёт хвост
+  журнала (по умолчанию 8 строк, максимум 200), ищет файл и по /var/...,
+  и по /tmp/...;
+- страница читает журнал через helper (fs.exec) вместо fs.read - так
+  чтение идёт от root (виден реальный путь), объём ограничен, а
+  тяжёлый файл не пересылается в браузер целиком.
+
+Строка в ACL write.file на "/usr/libexec/pejir-sms-ctl" уже была -
+гранта exec на вызов с аргументом "log" достаточно.
+---
+ .../luci-static/resources/view/perenio/sms.js | 24 ++++++++-----
+ .../share/rpcd/acl.d/luci-app-perenio.json    | 30 ++++++++++++++++
+ .../pejir-sms/root/usr/libexec/pejir-sms-ctl  | 34 ++++++++++++++++++-
+ 3 files changed, 79 insertions(+), 9 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 57b997e9..898635d9 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -72,15 +72,23 @@ function tail(txt, n) {
+ 	return lines.slice(-n).join('\n');
+ }
+ 
+-/* Последние строки журнала smsd */
++/* Последние строки журнала smsd.
++ *
++ * Журнал читает helper (/usr/libexec/pejir-sms-ctl log), а не сам
++ * браузер. Причины:
++ *
++ *   1) rpcd сверяет права по разыменованному пути: /var - симлинк на
++ *      /tmp, поэтому реальный путь журнала /tmp/log/smsd.log, а грант
++ *      в ACL был выдан на /var/log/smsd.log. Чтение из LuCI падало, и
++ *      страница показывала "журнала нет".
++ *   2) Журнал smsd растёт без ограничения (loglevel 5). Браузер тянул
++ *      весь файл через rpcd при каждом опросе страницы (раз в 20 с) -
++ *      страница заметно подтормаживала. Helper отдаёт только хвост.
++ */
+ function readLog() {
+-	return fs.read(LOG).then(function(t) {
+-		return tail(t, 8);
+-	}).catch(function() {
+-		return fs.read('/var/log/smsd.log.1').then(function(t) {
+-			return tail(t, 8);
+-		}).catch(function() { return ''; });
+-	});
++	return fs.exec(SMSCTL, [ 'log', '8' ]).then(function(r) {
++		return tail((r && r.stdout) ? r.stdout : '', 8);
++	}).catch(function() { return ''; });
+ }
+ 
+ /* Состояние демона, AT-порты и порт, прописанный в smsd.conf */
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 467daa14..59cb47df 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -12,12 +12,42 @@
+ 				"/etc/smsd.conf": [
+ 					"read"
+ 				],
++				"/tmp/log/smsd.log": [
++					"read"
++				],
++				"/tmp/log/smsd.log.1": [
++					"read"
++				],
+ 				"/tmp/pejir-battery": [
+ 					"read"
+ 				],
+ 				"/tmp/pejir-signal": [
+ 					"read"
+ 				],
++				"/tmp/spool/sms/failed": [
++					"list"
++				],
++				"/tmp/spool/sms/failed/*": [
++					"read"
++				],
++				"/tmp/spool/sms/incoming": [
++					"list"
++				],
++				"/tmp/spool/sms/incoming/*": [
++					"read"
++				],
++				"/tmp/spool/sms/outgoing": [
++					"list"
++				],
++				"/tmp/spool/sms/outgoing/*": [
++					"read"
++				],
++				"/tmp/spool/sms/sent": [
++					"list"
++				],
++				"/tmp/spool/sms/sent/*": [
++					"read"
++				],
+ 				"/var/log/smsd.log": [
+ 					"read"
+ 				],
+diff --git a/package/pejir-sms/root/usr/libexec/pejir-sms-ctl b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+index a27dfb0b..21a82919 100755
+--- a/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
++++ b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+@@ -3,6 +3,7 @@
+ #
+ # Команды:
+ #   status                 состояние SMS: smsd, журнал, очереди, порты;
++#   log [строк]            хвост журнала smsd (для веб-интерфейса);
+ #   export                 выгрузить все сообщения в /www/sms-export-<время>.txt
+ #                         (файл отдаёт uhttpd, его можно скачать из браузера);
+ #   templates              показать сохранённые шаблоны (нумерованные);
+@@ -117,14 +118,45 @@ cmd_status() {
+ 	echo "at_port=$(cat /etc/pejir/at-port 2>/dev/null | head -1)"
+ }
+ 
++# Хвост журнала smsd.
++#
++# ЗАЧЕМ. Веб-интерфейс раньше читал журнал сам: fs.read("/var/log/smsd.log")
++# и показывал последние 8 строк. Две проблемы:
++#
++#   1) rpcd сверяет права по РАЗЫМЕНОВАННОМУ пути: /var в OpenWrt -
++#      симлинк на /tmp, поэтому реальный путь журнала - /tmp/log/smsd.log,
++#      а грант был выдан на /var/log/smsd.log. Чтение из LuCI падало.
++#   2) Журнал smsd растёт без ограничения (loglevel 5), и LuCI тянул
++#      весь файл через rpcd при каждом опросе страницы (раз в 20 с) -
++#      страница "SMS" заметно подтормаживала, а на большом журнале
++#      чтение занимало секунды.
++#
++# Теперь хвост журнала отдаёт helper (он запускается от root и видит
++# реальный путь), а объём ограничен параметром.
++cmd_log() {
++	n="${1:-8}"
++	[ "$n" -ge 1 ] 2>/dev/null || n=8
++	[ "$n" -le 200 ] 2>/dev/null || n=200
++
++	for f in /var/log/smsd.log /tmp/log/smsd.log /var/log/smsd.log.1 /tmp/log/smsd.log.1; do
++		if [ -f "$f" ]; then
++			tail -n "$n" "$f" 2>/dev/null
++			exit 0
++		fi
++	done
++
++	echo "(журнал smsd не найден)"
++}
++
+ case "${1:-}" in
+ 	status)       cmd_status ;;
++	log)          shift; cmd_log "${1:-8}" ;;
+ 	export)       cmd_export ;;
+ 	templates)    cmd_templates ;;
+ 	template-add) shift; cmd_template_add "$@" ;;
+ 	template-del) shift; cmd_template_del "$1" ;;
+ 	*)
+-		echo "Использование: pejir-sms-ctl {status|export|templates|template-add <текст>|template-del <N>}" >&2
++		echo "Использование: pejir-sms-ctl {status|log [строк]|export|templates|template-add <текст>|template-del <N>}" >&2
+ 		exit 1
+ 		;;
+ esac
+-- 
+2.39.5
+

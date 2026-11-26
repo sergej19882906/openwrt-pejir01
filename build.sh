@@ -401,8 +401,22 @@ CONFIG_LUCI_LANG_ru=y
 # OTA: обновление прошивки кнопкой в LuCI (без автообновления)
 CONFIG_PACKAGE_pejir-ota=y
 # monitoring / traffic / diagnostics
-CONFIG_PACKAGE_mwan3=y
-CONFIG_PACKAGE_luci-app-mwan3=y
+# mwan3 убран из образа (релиз .63).
+#
+# ПРИЧИНА. В OpenWrt 25.12 mwan3 (2.12.0-r3) работает только через
+# iptables - поддержки nftables в нём нет (/lib/mwan3/mwan3.sh). Пакет
+# стартовал при загрузке со стоковым /etc/config/mwan3 из образа
+# (интерфейсы ни в одну WAN-группу не входят, участников нет) и
+# навешивал свои устаревшие правила iptables - пользователь видел их
+# в списке правил.
+#
+# ЗАМЕНА. Резервный канал WAN/LTE на устройстве уже работает штатно,
+# без mwan3: network.wan ставит основной маршрут по умолчанию, а у
+# network.lte метрика 30 (её ставит 47-pejir-lte / 40-pejir-lte).
+# netifd сам убирает основной маршрут, когда проводной канал пропадает,
+# и возвращает его при восстановлении.
+# CONFIG_PACKAGE_mwan3 is not set
+# CONFIG_PACKAGE_luci-app-mwan3 is not set
 CONFIG_PACKAGE_sqm-scripts=y
 CONFIG_PACKAGE_luci-app-sqm=y
 CONFIG_PACKAGE_collectd=y

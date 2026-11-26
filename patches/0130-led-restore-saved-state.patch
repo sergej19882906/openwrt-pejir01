@@ -1,0 +1,129 @@
+From 2f388cfb54e6acce28aced0cd0e05711be3ad7ac Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 01:18:09 GMT
+Subject: =?utf-8?b?bGVkOiDQstC+0YHRgdGC0LDQvdCw0LLQu9C40LLQsNGC0Ywg0YHQvtGF0YDQsNC9?=
+ =?utf-8?b?0ZHQvdC90L7QtSDRgdC+0YHRgtC+0Y/QvdC40LUg0LjQvdC00LjQutCw0YLQvtGA?=
+ =?utf-8?b?0L7QsiDQv9GA0Lgg0YHRgtCw0YDRgtC1?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Жалоба: после перезагрузки световая индикация "слетала" - часть
+индикаторов не загоралась или горела не тем цветом, который задал
+пользователь.
+
+Причина. Управление индикаторами разделено на два режима (led.conf,
+формат "<имя> <auto|manual> <цвет> [мигание]"):
+
+  auto   - цвет выбирает система по состоянию (интернет/LTE/Wi-Fi);
+  manual - цвет и режим мигания задаёт пользователь.
+
+Авто-цикл (auto_loop) красил ТОЛЬКО индикаторы в режиме auto.
+Индикаторы, переведённые в manual (кнопка "выключить всё" на странице
+LuCI ставит всем manual 0, либо ручной выбор цвета), в авто-цикл не
+попадали вообще. При этом stop_service() init-скрипта гасил железо
+(pejir-led blank), то есть перед перезагрузкой индикаторы были
+погашены, а поднять их в авто-цикле было уже некому - индикация
+терялась.
+
+Исправление:
+- добавлена функция restore_saved(): при старте применяет сохранённое
+  состояние ВСЕХ индикаторов - для auto берётся цвет по состоянию
+  системы, для manual возвращается заданный пользователем цвет и
+  режим мигания; индикаторы, которые пользователь погасил (manual 0),
+  остаются погашенными;
+- restore_saved вызывается в начале auto_loop, то есть при каждом
+  старте сервиса pejir-led;
+- добавлена команда "pejir-led restore" - применить сохранённое
+  состояние один раз (полезно вручную и используется в тестах);
+- если для индикатора нет записи в led.conf, его состояние не
+  трогаем.
+
+Взаимодействие с auto-циклом не изменилось: он по-прежнему следит
+только за auto-индикаторами и перекрашивает их при смене состояния.
+---
+ .../root/usr/libexec/pejir-led                | 47 ++++++++++++++++++-
+ 1 file changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-led b/package/luci-app-perenio/root/usr/libexec/pejir-led
+index 7816c0d5..db8c986f 100755
+--- a/package/luci-app-perenio/root/usr/libexec/pejir-led
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-led
+@@ -27,6 +27,7 @@
+ #   set <имя> <цвет> [режим]   - задать индикатор вручную
+ #   auto <имя> on|off          - авто-режим для индикатора
+ #   off                        - погасить все
++#   restore                    - применить сохранённое состояние индикаторов
+ #   demo [секунд]              - мигание (как стоковый blink3.sh)
+ #   auto                       - бесконечный цикл авто-режима (для init)
+ #   brightness <0-7>           - общая яркость индикаторов
+@@ -188,11 +189,54 @@ auto_color() {
+ 	esac
+ }
+ 
++# Восстановить состояние индикаторов при старте сервиса.
++#
++# ЗАЧЕМ. Авто-цикл ниже красит ТОЛЬКО индикаторы, помеченные в led.conf
++# как "auto". Индикаторы, переведённые пользователем вручную (кнопка
++# "выключить всё" на странице LuCI или ручной выбор цвета), в авто-цикл
++# не попадают - значит после перезагрузки их состояние не
++# восстанавливается: stop_service() погасил светодиоды (pejir-led blank),
++# а поднять их вручную забыли. В итоге индикация "слетала" при каждой
++# перезагрузке.
++#
++# Поэтому при старте мы применяем сохранённое состояние ВСЕХ
++# индикаторов: для "auto" - цвет по состоянию системы, для "manual" -
++# тот цвет, который пользователь задал.
++restore_saved() {
++	local l mode color blink val
++
++	for l in $LEDS; do
++		# Нет записи для индикатора - пропускаем, состояние не трогаем.
++		line="$(conf_get "$l")" || continue
++		set -- $line
++		mode="${1:-manual}"
++		color="${2:-0}"
++		blink="${3:-}"
++
++		[ -n "$color" ] || continue
++
++		if [ "$mode" = "auto" ]; then
++			color="$(auto_color "$l")"
++			[ -n "$color" ] || continue
++			# В авто-режиме мигание задаёт сам режим, сохранённый
++			# пользователем для ручного цвета, здесь не применяется.
++			blink=""
++		fi
++
++		val="$color"
++		[ -n "$blink" ] && val="$color,$blink"
++		apply "$l" "$val"
++	done
++}
++
+ auto_loop() {
+ 	conf_init
+ 	# Восстанавливаем общий уровень яркости: в заводской прошивке его
+ 	# выставляет /etc/init.d/stm32_setup при загрузке, у нас - здесь.
+ 	bright_apply >/dev/null 2>&1
++	# Возвращаем индикаторам то состояние, которое было до
++	# перезагрузки (см. комментарий к restore_saved).
++	restore_saved
+ 	last=""
+ 	while true; do
+ 		for l in $LEDS; do
+@@ -318,9 +362,10 @@ auto)
+ 	;;
+ off) cmd_off ;;
+ blank) cmd_blank ;;
++restore) conf_init; restore_saved; echo "OK restored" ;;
+ demo) shift; cmd_demo "$@" ;;
+ *)
+-	echo "Использование: pejir-led status|set <имя> <цвет> [режим]|auto <имя> on|off|off|blank|demo [сек]|brightness <0-7>|auto"
++	echo "Использование: pejir-led status|set <имя> <цвет> [режим]|auto <имя> on|off|off|blank|restore|demo [сек]|brightness <0-7>|auto"
+ 	exit 1
+ 	;;
+ esac
+-- 
+2.39.5
+

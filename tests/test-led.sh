@@ -180,6 +180,58 @@ else
 	fail "init-скрипт не вызывает blank при остановке"
 fi
 
+# --- 5b) восстановление состояния при старте --------------------------------
+# Дефект: авто-цикл красил ТОЛЬКО индикаторы в режиме auto. Ручные
+# (manual) индикаторы в него не попадали, а stop_service() перед
+# перезагрузкой гасил светодиоды - после перезагрузки индикация
+# "слетала". Теперь при старте применяется сохранённое состояние
+# ВСЕХ индикаторов.
+printf 'zb manual b\n' > "$CONF"
+printf 'i manual r 55\n' >> "$CONF"
+printf 'sh manual 0\n' >> "$CONF"
+printf '2 auto g\n' >> "$CONF"
+: > "$LOG"
+run_led restore >/dev/null
+if grep -q -- '-p l zb=b' "$LOG"; then
+	ok "restore вернул ручной цвет индикатора zb"
+else
+	fail "restore не вернул ручной цвет zb: $(cat "$LOG" | tr '\n' ' ')"
+fi
+if grep -q -- '-p l i=r,55' "$LOG"; then
+	ok "restore вернул ручной цвет и режим мигания"
+else
+	fail "restore не вернул ручной цвет и режим мигания: $(cat "$LOG" | tr '\n' ' ')"
+fi
+if grep -q -- '-p l sh=0' "$LOG"; then
+	ok "restore оставил погашенным индикатор, который пользователь погасил"
+else
+	fail "restore не вернул состояние погашенного индикатора sh"
+fi
+# Авто-индикатор должен получить цвет по состоянию системы.
+if grep -q -- '-p l 2=' "$LOG"; then
+	ok "restore перекрасил авто-индикатор по состоянию системы"
+else
+	fail "restore не тронул авто-индикатор: $(cat "$LOG" | tr '\n' ' ')"
+fi
+# Индикатор, для которого записи в led.conf нет, трогать нельзя.
+if grep -q -- '-p l 5=' "$LOG"; then
+	fail "restore тронул индикатор, которого нет в led.conf: $(cat "$LOG" | tr '\n' ' ')"
+else
+	ok "restore не трогает индикаторы без записи в led.conf"
+fi
+# Настройки при этом не меняются.
+if grep -q '^zb manual b *$' "$CONF" && grep -q '^sh manual 0 *$' "$CONF"; then
+	ok "restore не меняет сохранённые настройки"
+else
+	fail "restore изменил настройки: $(cat "$CONF" | tr '\n' '|')"
+fi
+# Функция restore_saved обязана вызываться при старте авто-цикла.
+if grep -q "restore_saved" "$HELPER"; then
+	ok "авто-цикл вызывает restore_saved при старте"
+else
+	fail "авто-цикл не вызывает restore_saved"
+fi
+
 # --- 6) упаковка в образ, ACL и меню -----------------------------------------
 if grep -qE 'pejir-led[[:space:]]+off' "$INITD"; then
 	fail "init-скрипт вызывает 'pejir-led off' - команда стирает настройки (conf_set manual 0)"

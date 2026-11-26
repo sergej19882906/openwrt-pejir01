@@ -1,0 +1,69 @@
+From 836c60063e9f9e683f8849ff8c4498f886166deb Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 01:21:33 GMT
+Subject: =?utf-8?b?b3RhOiDQv9C10YDQtdCy0L7QtCDRgdCy0L7Qv9CwINC90LAgVVVJRCDQuNC70Lgg?=
+ =?utf-8?b?TEFCRUwsINC/0L7QvdGP0YLQvdC+0LUg0YHQvtC+0LHRidC10L3QuNC1INC10YHQ?=
+ =?utf-8?b?u9C4INC90LUg0LLRi9C50LTQtdGC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Раздел свопа на устройстве прописан по имени устройства (/dev/sda2),
+а имя меняется при перенумерации разделов (флешка в другом порту -
+sdb2), и тогда своп не поднимется.
+
+fstools (block.c: swap_add) ищет раздел свопа по uuid, затем по
+label, и только потом по имени устройства. Прежняя версия скрипта
+чистки умела поставить только uuid и молчала, если uuid у раздела
+не нашлось (а у свопа, созданного без mkswap -U, uuid нет - только
+label или ничего).
+
+Теперь:
+- сначала пробуем UUID, потом LABEL - любой из них fstools понимает;
+- если у раздела нет ни UUID, ни LABEL - пишем прямо, что делать:
+  swapoff; mkswap -L swap <раздел>; swapon.
+---
+ package/pejir-ota/files/pejir-upgrade-purge | 24 ++++++++++++++++++---
+ 1 file changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/package/pejir-ota/files/pejir-upgrade-purge b/package/pejir-ota/files/pejir-upgrade-purge
+index 1f5142d7..92fdcda2 100755
+--- a/package/pejir-ota/files/pejir-upgrade-purge
++++ b/package/pejir-ota/files/pejir-upgrade-purge
+@@ -133,12 +133,30 @@ fi
+ # swap на UUID - так она переживает перенумерацию разделов.
+ for s in $(uci show fstab 2>/dev/null | grep -E "^fstab\..*=swap$" | sed 's/^fstab\.//; s/=swap$//'); do
+ 	[ -n "$(uci -q get "fstab.$s.uuid")" ] && continue
++	[ -n "$(uci -q get "fstab.$s.label")" ] && continue
+ 	dev="$(uci -q get "fstab.$s.device")"
+ 	[ -n "$dev" ] || continue
++
++	# UUID раздела берём через block (он читает blkid). Если у раздела
++	# UUID нет (своп создан без mkswap -U), пробуем LABEL: fstools
++	# ищет своп по uuid, потом по label, и только потом по имени
++	# устройства - а имя /dev/sda2 ломается при перенумерации.
+ 	uuid="$(block info "$dev" 2>/dev/null | sed -n 's/.*UUID="\([^"]*\)".*/\1/p' | head -1)"
+-	[ -n "$uuid" ] || continue
+-	uci set "fstab.$s.uuid=$uuid" && uci commit fstab &&
+-		echo "swap $dev прописан по UUID ($uuid)"
++	if [ -n "$uuid" ]; then
++		uci set "fstab.$s.uuid=$uuid" && uci commit fstab &&
++			echo "swap $dev прописан по UUID ($uuid)"
++		continue
++	fi
++
++	label="$(block info "$dev" 2>/dev/null | sed -n 's/.*LABEL="\([^"]*\)".*/\1/p' | head -1)"
++	if [ -n "$label" ]; then
++		uci set "fstab.$s.label=$label" && uci commit fstab &&
++			echo "swap $dev прописан по LABEL ($label)"
++		continue
++	fi
++
++	echo "swap $dev оставлен по имени устройства: у раздела нет ни UUID, ни LABEL"
++	echo "  (пересоздайте своп с меткой: swapoff $dev; mkswap -L swap $dev; swapon $dev)"
+ done
+ 
+ # Проверка Zigbee: модуль EFR32 виден как /dev/umxtty1 - его создаёт
+-- 
+2.39.5
+

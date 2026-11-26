@@ -100,6 +100,47 @@ for p in "/var/spool/sms/outgoing" "/var/spool/sms/sent" "/var/spool/sms/failed"
 	fi
 done
 
+# --- 1b) ACL: права по РАЗЫМЕНОВАННОМУ пути (/tmp/...) ----------------------
+# rpcd сверяет права доступа к файлу не по текстовому пути, а по
+# разыменованному (rpcd/file.c: rpc_check_symlink_access -> realpath()).
+# В OpenWrt /var - симлинк на /tmp, поэтому реальные пути очереди и
+# журнала - /tmp/spool/sms/... и /tmp/log/smsd.log. Без грантов на них
+# LuCI не видела ни входящих, ни исходящих сообщений.
+for p in "/tmp/spool/sms/incoming" "/tmp/spool/sms/outgoing" \
+	 "/tmp/spool/sms/sent" "/tmp/spool/sms/failed"; do
+	if grep -qF "\"$p\"" "$ACL"; then
+		ok "ACL: есть доступ к $p (реальный путь)"
+	else
+		fail "ACL: нет доступа к $p - LuCI отдаст Permission denied"
+	fi
+	if grep -qF "\"$p/*\"" "$ACL"; then
+		ok "ACL: есть доступ к файлам $p/* (реальный путь)"
+	else
+		fail "ACL: нет доступа к файлам $p/* (реальный путь)"
+	fi
+done
+for p in "/tmp/log/smsd.log" "/tmp/log/smsd.log.1"; do
+	if grep -qF "\"$p\"" "$ACL"; then
+		ok "ACL: есть доступ к журналу $p (реальный путь)"
+	else
+		fail "ACL: нет доступа к журналу $p (реальный путь)"
+	fi
+done
+
+# Журнал читает helper, а не браузер: файл растёт без ограничения
+# (loglevel 5), и LuCI тянул его целиком при каждом опросе страницы
+# (раз в 20 с) - страница заметно подтормаживала.
+if grep -q "SMSCTL, \[ 'log'" "$JS" || grep -q "SMSCTL, \['log'" "$JS"; then
+	ok "sms.js: журнал читается через helper (pejir-sms-ctl log)"
+else
+	fail "sms.js: журнал читается не через helper - страница будет подтормаживать"
+fi
+if grep -q "fs.read(LOG)" "$JS"; then
+	fail "sms.js: журнал всё ещё читается браузером (fs.read)"
+else
+	ok "sms.js: браузер не тянет журнал целиком"
+fi
+
 # ACL должен оставаться валидным JSON
 if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$ACL" 2>/dev/null; then
 	ok "ACL: валидный JSON"
