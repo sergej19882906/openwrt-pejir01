@@ -145,6 +145,7 @@ jobs:
           sh tests/test-telegram.sh
           sh tests/test-header-indicators.sh
           sh tests/test-lte-saved-values.sh
+          sh tests/test-mwan.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый
@@ -282,6 +283,7 @@ jobs:
           check_pkg "pejir-sms"
           check_pkg "pejir-lte-base"
           check_pkg "perenio-mcu"
+          check_pkg "pejir-mwan"
 
           # sing-box убран из образа намеренно (релиз .26): пакет весит
           # 50 МБ, из-за чего rootfs не помещался в UBI-том устройства

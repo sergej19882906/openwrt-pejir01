@@ -1,0 +1,783 @@
+From 509e8d0cf59fb678ff636f4634bdcf701698843f Mon Sep 17 00:00:00 2001
+From: pejir <pejir@local>
+Date: Thu, 26 Nov 2026 04:00:17 GMT
+Subject: =?utf-8?b?bmV0OiDRgdCy0L7QuSDQvNC+0LTRg9C70YwgbXVsdGktV0FOIChXQU4gKyBMVEUp?=
+ =?utf-8?b?INCy0LzQtdGB0YLQviBtd2FuMw==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Пакет pejir-mwan - своя реализация балансировки и резервирования между
+проводным WAN и LTE-модемом. mwan3 в OpenWrt 25.12 работает только
+через iptables и тянул за собой стоковый конфиг из образа (в релиз .63
+он убран, патч 0132), поэтому режимы нужны свои.
+
+Что внутри:
+- pejir-mwan: демон. Держит две таблицы маршрутизации (100 - WAN,
+  200 - LTE) с маршрутом по умолчанию через шлюз каждого канала, и
+  правила ip rule, которые направляют трафик в нужную таблицу.
+  Разметку делает nftables: новому соединению ставится метка 0x1 (WAN)
+  или 0x2 (LTE) через numgen random, метка сохраняется в conntrack,
+  поэтому уже открытые сессии не перепрыгивают между каналами.
+- Три режима:
+    balance  - новые соединения делятся между WAN и LTE (доля WAN -
+               wan_weight, шаг 10%);
+    failover - WAN основной, LTE резервный, переключение по health-чеку;
+    pbr      - адреса из pbr_list идут через LTE, остальные через WAN.
+- Health-чек: источник истины - ubus (data.up/data.gateway/
+  data.l3_device), проверка - ping шлюза или внешнего IP (check_target)
+  Через сам интерфейс (-I), чтобы проверка не ушла в другой канал.
+  Порог check_count неудач подряд переводит канал в down.
+- Основная таблица main не меняется никогда: если модуль не работает,
+  роутер живёт как раньше. Разметка делается только для клиентского
+  трафика (цепочка prerouting): трафик самого роутера идёт через main,
+  где маршруты расставляет netifd, и потому следует за интерфейсами.
+- Правила модуля живут в префиксах 100..999 и снимаются при остановке
+  вместе с nft-таблицей и маршрутами из своих таблиц.
+- Модуль выключен по умолчанию (option enabled '0'): пока он выключен,
+  маршрутизация не меняется совсем.
+- Поддержка nft numgen проверяется при старте: если её нет в ядре,
+  режим balance недоступен и модуль работает как failover.
+
+Зависимости: ip-full (busybox ip не умеет ip rule fwmark и таблицы
+маршрутизации) и nftables (уже есть в образе через firewall4).
+---
+ package/pejir-mwan/Makefile                   |  56 ++
+ package/pejir-mwan/root/etc/config/pejir_mwan |  26 +
+ .../pejir-mwan/root/etc/init.d/50-pejir-mwan  |  29 ++
+ .../pejir-mwan/root/usr/libexec/pejir-mwan    | 479 ++++++++++++++++++
+ .../root/usr/libexec/pejir-mwan-ctl           | 104 ++++
+ 5 files changed, 694 insertions(+)
+ create mode 100644 package/pejir-mwan/Makefile
+ create mode 100644 package/pejir-mwan/root/etc/config/pejir_mwan
+ create mode 100755 package/pejir-mwan/root/etc/init.d/50-pejir-mwan
+ create mode 100755 package/pejir-mwan/root/usr/libexec/pejir-mwan
+ create mode 100755 package/pejir-mwan/root/usr/libexec/pejir-mwan-ctl
+
+diff --git a/package/pejir-mwan/Makefile b/package/pejir-mwan/Makefile
+new file mode 100644
+index 00000000..dd731b31
+--- /dev/null
++++ b/package/pejir-mwan/Makefile
+@@ -0,0 +1,56 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=pejir-mwan
++PKG_VERSION:=1.0.0
++PKG_RELEASE:=1
++
++PKG_LICENSE:=GPL-2.0
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/pejir-mwan
++  SECTION:=net
++  CATEGORY:=Network
++  TITLE:=Multi-WAN (WAN + LTE) policy routing for PEJIR01
++  DEPENDS:=+ip-full +nftables
++endef
++
++define Package/pejir-mwan/description
++  Balances client traffic between the wired WAN and the LTE modem, and
++  switches to the surviving link when one of them goes down.
++
++  Three modes:
++    balance  - new connections are split between WAN and LTE (nft numgen
++               marks a new connection, ip rule sends it to its own routing
++               table);
++    failover - WAN is primary, LTE is the backup, the switch happens on
++               the health check result;
++    pbr      - addresses from the list are sent through LTE, the rest
++               through WAN.
++
++  The module is disabled by default: while it is off it does not touch
++  the routing at all. The main routing table is never modified, so if the
++  module fails the router keeps working as before.
++endef
++
++define Package/pejir-mwan/conffiles
++/etc/config/pejir_mwan
++endef
++
++define Build/Prepare
++endef
++
++define Build/Compile
++endef
++
++define Package/pejir-mwan/install
++	$(INSTALL_DIR) $(1)/etc/config
++	$(INSTALL_CONF) ./root/etc/config/pejir_mwan $(1)/etc/config/pejir_mwan
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/50-pejir-mwan $(1)/etc/init.d/50-pejir-mwan
++	$(INSTALL_DIR) $(1)/usr/libexec
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-mwan $(1)/usr/libexec/pejir-mwan
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-mwan-ctl $(1)/usr/libexec/pejir-mwan-ctl
++endef
++
++$(eval $(call BuildPackage,pejir-mwan))
+diff --git a/package/pejir-mwan/root/etc/config/pejir_mwan b/package/pejir-mwan/root/etc/config/pejir_mwan
+new file mode 100644
+index 00000000..2c00528a
+--- /dev/null
++++ b/package/pejir-mwan/root/etc/config/pejir_mwan
+@@ -0,0 +1,26 @@
++# Multi-WAN (WAN + LTE) для Perenio PEJIR01.
++#
++# Модуль выключен по умолчанию: пока enabled=0, он не меняет маршрутизацию
++# вообще. Основную таблицу маршрутизации (main) модуль тоже не трогает -
++# если что-то пойдёт не так, роутер продолжит работать как раньше.
++#
++# mode:
++#   balance  - новые соединения клиентов делятся между WAN и LTE
++#              (доля WAN задаётся wan_weight, шаг 10%);
++#   failover - WAN основной, LTE резервный, переключение по health-чеку;
++#   pbr      - адреса из pbr_list идут через LTE, остальные через WAN.
++
++config mwan 'main'
++	option enabled '0'
++	option mode 'balance'
++	option wan_iface 'wan'
++	option wan_device 'eth0'
++	option lte_iface 'lte'
++	option lte_device 'eth1'
++	option wan_table '100'
++	option lte_table '200'
++	option wan_weight '50'
++	option check_interval '10'
++	option check_count '3'
++	option check_target ''
++	option pbr_list ''
+diff --git a/package/pejir-mwan/root/etc/init.d/50-pejir-mwan b/package/pejir-mwan/root/etc/init.d/50-pejir-mwan
+new file mode 100755
+index 00000000..0a9557e3
+--- /dev/null
++++ b/package/pejir-mwan/root/etc/init.d/50-pejir-mwan
+@@ -0,0 +1,29 @@
++#!/bin/sh /etc/rc.common
++# Инициализация модуля multi-WAN (WAN + LTE) для PEJIR01.
++#
++# Пока pejir_mwan.main.enabled не равен 1, демон не стартует и
++# маршрутизация не меняется. При остановке снимаются все правила,
++# таблицы и nft-таблица модуля.
++
++USE_PROCD=1
++START=96
++STOP=05
++
++start_service() {
++	[ "$(uci -q get pejir_mwan.main.enabled)" = "1" ] || return 0
++
++	procd_open_instance
++	procd_set_param command /usr/libexec/pejir-mwan run
++	procd_set_param respawn 3600 5 5
++	procd_set_param stdout 1
++	procd_set_param stderr 1
++	procd_close_instance
++}
++
++stop_service() {
++	/usr/libexec/pejir-mwan cleanup >/dev/null 2>&1
++}
++
++service_triggers() {
++	procd_add_reload_trigger pejir_mwan
++}
+diff --git a/package/pejir-mwan/root/usr/libexec/pejir-mwan b/package/pejir-mwan/root/usr/libexec/pejir-mwan
+new file mode 100755
+index 00000000..2e51ed57
+--- /dev/null
++++ b/package/pejir-mwan/root/usr/libexec/pejir-mwan
+@@ -0,0 +1,479 @@
++#!/bin/sh
++# pejir-mwan - multi-WAN (WAN + LTE) для Perenio PEJIR01.
++#
++# Демон держит две таблицы маршрутизации (по умолчанию 100 - WAN,
++# 200 - LTE) и правила ip rule, которые направляют трафик в нужную
++# таблицу. Разметку делает nftables: новому соединению ставится метка
++# (0x1 - WAN, 0x2 - LTE), метка запоминается в conntrack, поэтому уже
++# установленные сессии не перепрыгивают между каналами.
++#
++# Основная таблица main не меняется никогда: если модуль не работает,
++# роутер живёт как раньше. Все свои правила модуль держит в диапазоне
++# префиксов 100..999 и снимает их при остановке.
++#
++# Разметка делается только для клиентского трафика (цепочка prerouting).
++# Трафик самого роутера (DNS-resolver, telegram-мост, OTA) намеренно не
++# помечается: он идёт через main, где маршруты расставляет netifd, и
++# потому следует за интерфейсами сам. Иначе проверка живости канала
++# сама улетела бы в другой канал и врала.
++
++set -u
++
++CFG="pejir_mwan"
++
++# Пути можно переопределить переменными окружения - так тест
++# (tests/test-mwan.sh) не пишет в общий /tmp.
++STATE="${PEJIR_MWAN_STATE:-/tmp/pejir-mwan.state}"
++PIDFILE="${PEJIR_MWAN_PID:-/tmp/pejir-mwan.pid}"
++APPLIED="${PEJIR_MWAN_APPLIED:-/tmp/pejir-mwan.applied}"
++LOGFILE="${PEJIR_MWAN_LOG:-/tmp/pejir-mwan.log}"
++NFT_FILE="${PEJIR_MWAN_NFT:-/tmp/pejir-mwan.nft}"
++
++NFT_TABLE="pejir_mwan"
++
++# Каталог со списком сетевых устройств. Переопределяется в тесте:
++# на сборочной машине eth0/eth1 не существуют, и проверка "устройство
++# есть" иначе считала бы оба канала мёртвыми.
++SYSNET="${PEJIR_MWAN_SYSNET:-/sys/class/net}"
++
++PREF_LO=100
++PREF_HI=999
++
++MARK_WAN="0x1"
++MARK_LTE="0x2"
++
++# Значения по умолчанию; ниже перезаписываются из конфига.
++TAB_WAN=100
++TAB_LTE=200
++WAN_IFACE=wan
++WAN_DEV=eth0
++LTE_IFACE=lte
++LTE_DEV=eth1
++MODE=balance
++WEIGHT=50
++INTERVAL=10
++COUNT=3
++TARGET=""
++PBR_LIST=""
++
++WAN_UP=0; WAN_GW=""; WAN_LDEV=""; WAN_HEALTH=0; WAN_FAIL=0
++LTE_UP=0; LTE_GW=""; LTE_LDEV=""; LTE_HEALTH=0; LTE_FAIL=0
++NUMGEN=1
++
++log() {
++	logger -t pejir-mwan "$*"
++	echo "$(date '+%F %T') $*" >> "$LOGFILE" 2>/dev/null
++}
++
++cfg_get() {
++	uci -q get "$CFG.main.$1" 2>/dev/null
++}
++
++# Значения одного интерфейса из ubus.
++# load_iface <секция network> <запасное устройство>
++# Результат: IF_UP, IF_GW, IF_DEV, IF_DNS
++load_iface() {
++	raw="$(ubus call "network.interface.$1" status 2>/dev/null)"
++	IF_UP="$(printf '%s' "$raw" | jsonfilter -e '@.data.up' 2>/dev/null)"
++	IF_GW="$(printf '%s' "$raw" | jsonfilter -e '@.data.gateway' 2>/dev/null)"
++	IF_DEV="$(printf '%s' "$raw" | jsonfilter -e '@.data.l3_device' 2>/dev/null)"
++	IF_DNS="$(printf '%s' "$raw" | jsonfilter -e '@.data.dns[*]' 2>/dev/null | tr '\n' ' ')"
++
++	[ "$IF_UP" = "true" ] && IF_UP=1 || IF_UP=0
++	[ -n "$IF_DEV" ] || IF_DEV="$2"
++	return 0
++}
++
++# Проверка живости канала: пингуем шлюз (или check_target) через сам
++# интерфейс (-I), чтобы проверка не ушла в другой канал.
++chan_alive() {
++	dev="$1"; gw="$2"; tgt="$3"
++	addr="$tgt"
++	[ -n "$addr" ] || addr="$gw"
++	[ -n "$addr" ] || return 1
++	if [ -n "$dev" ] && [ ! -d "$SYSNET/$dev" ]; then
++		return 1
++	fi
++	if [ -n "$dev" ]; then
++		ping -I "$dev" -c 1 -W 2 "$addr" >/dev/null 2>&1
++	else
++		ping -c 1 -W 2 "$addr" >/dev/null 2>&1
++	fi
++}
++
++# Поддержка nft numgen: без неё режим balance невозможен.
++check_numgen() {
++	nft list ruleset >/dev/null 2>&1 || return 1
++	tmp="/tmp/pejir-mwan-numgen-test.$$"
++	cat > "$tmp" <<'NFT'
++table inet pejir_numgen_test {
++	chain t {
++		type filter hook output priority mangle; policy accept;
++		numgen random mod 10 vmap { 0 : accept, 1 : accept }
++	}
++}
++NFT
++	if nft -f "$tmp" >/dev/null 2>&1; then
++		nft delete table inet pejir_numgen_test >/dev/null 2>&1
++		rm -f "$tmp"
++		return 0
++	fi
++	rm -f "$tmp"
++	nft delete table inet pejir_numgen_test >/dev/null 2>&1
++	return 1
++}
++
++# Снять все правила модуля (префиксы 100..999).
++flush_rules() {
++	ip -4 rule show 2>/dev/null | while IFS= read -r line; do
++		# Реальный ip печатает правило как "100:\tfrom all fwmark 0x1 lookup 100"
++		pref="$(printf '%s' "$line" | sed -n 's/^\([0-9][0-9]*\):.*/\1/p')"
++		[ -n "$pref" ] || continue
++		[ "$pref" -ge "$PREF_LO" ] && [ "$pref" -le "$PREF_HI" ] || continue
++		ip -4 rule del pref "$pref" 2>/dev/null
++	done
++}
++
++# Полностью убрать всё, что наделал модуль.
++cleanup_all() {
++	nft delete table inet "$NFT_TABLE" >/dev/null 2>&1
++	flush_rules
++	ip -4 route flush table "$TAB_WAN" >/dev/null 2>&1
++	ip -4 route flush table "$TAB_LTE" >/dev/null 2>&1
++	rm -f "$APPLIED" "$NFT_FILE"
++}
++
++# Наполнить таблицу маршрутизации: подсеть интерфейса + маршрут по
++# умолчанию через его шлюз.
++setup_table() {
++	tbl="$1"; dev="$2"; gw="$3"
++	ip -4 route flush table "$tbl" >/dev/null 2>&1
++	[ -n "$dev" ] || return 0
++	for s in $(ip -4 route show dev "$dev" scope link 2>/dev/null | awk '{ print $1 }'); do
++		ip -4 route replace "$s" dev "$dev" scope link table "$tbl" 2>/dev/null
++	done
++	[ -n "$gw" ] || return 0
++	ip -4 route replace default via "$gw" dev "$dev" table "$tbl" 2>/dev/null
++}
++
++# Карта разметки: доля новых соединений, уходящих в WAN (шаг 10%).
++vmap_split() {
++	out=""
++	i=0
++	while [ "$i" -lt 10 ]; do
++		if [ "$((i * 10))" -lt "$WEIGHT" ]; then
++			t="jump to_wan"
++		else
++			t="jump to_lte"
++		fi
++		if [ -z "$out" ]; then
++			out="$i : $t"
++		else
++			out="$out, $i : $t"
++		fi
++		i=$((i + 1))
++	done
++	printf '%s' "$out"
++}
++
++vmap_all() {
++	out=""
++	i=0
++	while [ "$i" -lt 10 ]; do
++		if [ -z "$out" ]; then
++			out="$i : jump $1"
++		else
++			out="$out, $i : jump $1"
++		fi
++		i=$((i + 1))
++	done
++	printf '%s' "$out"
++}
++
++# Записать набор nft и применить его.
++# write_nft <split|wan|lte>
++write_nft() {
++	map="$1"
++	case "$map" in
++	split) vm="$(vmap_split)" ;;
++	wan)   vm="$(vmap_all to_wan)" ;;
++	lte)   vm="$(vmap_all to_lte)" ;;
++	*)     return 1 ;;
++	esac
++
++	{
++		echo "table inet $NFT_TABLE {"
++		echo "	chain prerouting {"
++		echo "		type filter hook prerouting priority mangle; policy accept;"
++		echo "		ct state established,related meta mark set ct mark"
++		echo "		ct state new numgen random mod 10 vmap { $vm }"
++		echo "		ct state new ct mark set meta mark"
++		echo "	}"
++		echo "	chain to_wan {"
++		echo "		meta mark set $MARK_WAN counter"
++		echo "		return"
++		echo "	}"
++		echo "	chain to_lte {"
++		echo "		meta mark set $MARK_LTE counter"
++		echo "		return"
++		echo "	}"
++		echo "}"
++	} > "$NFT_FILE"
++
++	nft delete table inet "$NFT_TABLE" >/dev/null 2>&1
++	nft -f "$NFT_FILE" >/dev/null 2>&1
++}
++
++remove_nft() {
++	nft delete table inet "$NFT_TABLE" >/dev/null 2>&1
++}
++
++# Счётчики пакетов по каналам из таблицы nft.
++read_counters() {
++	WAN_PKTS=0
++	LTE_PKTS=0
++	out="$(nft list table inet "$NFT_TABLE" 2>/dev/null)"
++	printf '%s' "$out" | awk '
++		/chain to_wan \{/ { w = 1; l = 0; next }
++		/chain to_lte \{/ { l = 1; w = 0; next }
++		/^\t*\}/ { w = 0; l = 0 }
++		w && /counter packets/ { print "wan_packets=" $3 }
++		l && /counter packets/ { print "lte_packets=" $3 }
++	' > "${NFT_FILE}.ctr" 2>/dev/null
++	if [ -f "${NFT_FILE}.ctr" ]; then
++		. "${NFT_FILE}.ctr"
++		rm -f "${NFT_FILE}.ctr"
++	fi
++}
++
++# Применить правила под текущее состояние каналов.
++# $1 - режим, $2 - состояние каналов ("both", "wan", "lte", "none")
++apply_rules() {
++	mode="$1"; active="$2"
++
++	flush_rules
++	remove_nft
++
++	case "$mode" in
++	balance)
++		case "$active" in
++		both)
++			setup_table "$TAB_WAN" "$WAN_LDEV" "$WAN_GW"
++			setup_table "$TAB_LTE" "$LTE_LDEV" "$LTE_GW"
++			write_nft split
++			ip -4 rule add pref 100 fwmark "$MARK_WAN" lookup "$TAB_WAN" 2>/dev/null
++			ip -4 rule add pref 101 fwmark "$MARK_LTE" lookup "$TAB_LTE" 2>/dev/null
++			ip -4 rule add pref 900 lookup "$TAB_WAN" 2>/dev/null
++			;;
++		wan)
++			setup_table "$TAB_WAN" "$WAN_LDEV" "$WAN_GW"
++			write_nft wan
++			ip -4 rule add pref 100 fwmark "$MARK_WAN" lookup "$TAB_WAN" 2>/dev/null
++			ip -4 rule add pref 101 fwmark "$MARK_LTE" lookup "$TAB_WAN" 2>/dev/null
++			ip -4 rule add pref 900 lookup "$TAB_WAN" 2>/dev/null
++			;;
++		lte)
++			setup_table "$TAB_LTE" "$LTE_LDEV" "$LTE_GW"
++			write_nft lte
++			ip -4 rule add pref 100 fwmark "$MARK_WAN" lookup "$TAB_LTE" 2>/dev/null
++			ip -4 rule add pref 101 fwmark "$MARK_LTE" lookup "$TAB_LTE" 2>/dev/null
++			ip -4 rule add pref 900 lookup "$TAB_LTE" 2>/dev/null
++			;;
++		*)
++			# Оба канала мертвы: ничего не трогаем, трафик идёт как умеет.
++			ip -4 route flush table "$TAB_WAN" >/dev/null 2>&1
++			ip -4 route flush table "$TAB_LTE" >/dev/null 2>&1
++			;;
++		esac
++		;;
++	failover)
++		case "$active" in
++		both)
++			# Оба канала живы - работает основной (WAN).
++			setup_table "$TAB_WAN" "$WAN_LDEV" "$WAN_GW"
++			ip -4 rule add pref 100 lookup "$TAB_WAN" 2>/dev/null
++			ip -4 rule add pref 101 lookup "$TAB_WAN" 2>/dev/null
++			;;
++		wan)
++			setup_table "$TAB_WAN" "$WAN_LDEV" "$WAN_GW"
++			ip -4 rule add pref 100 lookup "$TAB_WAN" 2>/dev/null
++			ip -4 rule add pref 101 lookup "$TAB_WAN" 2>/dev/null
++			;;
++		lte)
++			setup_table "$TAB_LTE" "$LTE_LDEV" "$LTE_GW"
++			ip -4 rule add pref 100 lookup "$TAB_LTE" 2>/dev/null
++			ip -4 rule add pref 101 lookup "$TAB_LTE" 2>/dev/null
++			;;
++		*)
++			ip -4 route flush table "$TAB_WAN" >/dev/null 2>&1
++			ip -4 route flush table "$TAB_LTE" >/dev/null 2>&1
++			;;
++		esac
++		;;
++	pbr)
++		setup_table "$TAB_WAN" "$WAN_LDEV" "$WAN_GW"
++		setup_table "$TAB_LTE" "$LTE_LDEV" "$LTE_GW"
++		pref=100
++		for cidr in $(printf '%s' "$PBR_LIST" | tr ',;' '  '); do
++			[ -n "$cidr" ] || continue
++			ip -4 rule add pref "$pref" to "$cidr" lookup "$TAB_LTE" 2>/dev/null
++			pref=$((pref + 1))
++			[ "$pref" -lt 900 ] || break
++		done
++		ip -4 rule add pref 900 lookup "$TAB_WAN" 2>/dev/null
++		;;
++	esac
++}
++
++write_state() {
++	read_counters
++	active="$1"
++	{
++		echo "enabled=$(cfg_get enabled)"
++		echo "mode=$MODE"
++		echo "weight=$WEIGHT"
++		echo "numgen=$NUMGEN"
++		echo "wan_up=$WAN_UP"
++		echo "wan_gw=$WAN_GW"
++		echo "wan_dev=$WAN_LDEV"
++		echo "wan_health=$WAN_HEALTH"
++		echo "lte_up=$LTE_UP"
++		echo "lte_gw=$LTE_GW"
++		echo "lte_dev=$LTE_LDEV"
++		echo "lte_health=$LTE_HEALTH"
++		echo "active=$active"
++		echo "wan_packets=$WAN_PKTS"
++		echo "lte_packets=$LTE_PKTS"
++		echo "updated=$(date '+%F %T')"
++	} > "$STATE"
++}
++
++read_config() {
++	MODE="$(cfg_get mode)"; [ -n "$MODE" ] || MODE=balance
++	WAN_IFACE="$(cfg_get wan_iface)"; [ -n "$WAN_IFACE" ] || WAN_IFACE=wan
++	WAN_DEV="$(cfg_get wan_device)"; [ -n "$WAN_DEV" ] || WAN_DEV=eth0
++	LTE_IFACE="$(cfg_get lte_iface)"; [ -n "$LTE_IFACE" ] || LTE_IFACE=lte
++	LTE_DEV="$(cfg_get lte_device)"; [ -n "$LTE_DEV" ] || LTE_DEV=eth1
++	TAB_WAN="$(cfg_get wan_table)"; [ -n "$TAB_WAN" ] || TAB_WAN=100
++	TAB_LTE="$(cfg_get lte_table)"; [ -n "$TAB_LTE" ] || TAB_LTE=200
++	WEIGHT="$(cfg_get wan_weight)"; [ -n "$WEIGHT" ] || WEIGHT=50
++	INTERVAL="$(cfg_get check_interval)"; [ -n "$INTERVAL" ] || INTERVAL=10
++	COUNT="$(cfg_get check_count)"; [ -n "$COUNT" ] || COUNT=3
++	TARGET="$(cfg_get check_target)"
++	PBR_LIST="$(cfg_get pbr_list)"
++
++	case "$WEIGHT" in
++	''|*[!0-9]*) WEIGHT=50 ;;
++	esac
++	[ "$WEIGHT" -ge 0 ] && [ "$WEIGHT" -le 100 ] || WEIGHT=50
++	# Доля округляем к шагу 10% (карта numgen mod 10).
++	WEIGHT=$(( (WEIGHT / 10) * 10 ))
++}
++
++run_checks() {
++	load_iface "$WAN_IFACE" "$WAN_DEV"
++	WAN_UP=$IF_UP; WAN_GW=$IF_GW; WAN_LDEV=$IF_DEV
++	load_iface "$LTE_IFACE" "$LTE_DEV"
++	LTE_UP=$IF_UP; LTE_GW=$IF_GW; LTE_LDEV=$IF_DEV
++
++	if [ "$WAN_UP" = "1" ] && chan_alive "$WAN_LDEV" "$WAN_GW" "$TARGET"; then
++		WAN_FAIL=0
++		WAN_HEALTH=1
++	else
++		WAN_FAIL=$((WAN_FAIL + 1))
++		[ "$WAN_FAIL" -ge "$COUNT" ] && WAN_HEALTH=0
++	fi
++
++	if [ "$LTE_UP" = "1" ] && chan_alive "$LTE_LDEV" "$LTE_GW" "$TARGET"; then
++		LTE_FAIL=0
++		LTE_HEALTH=1
++	else
++		LTE_FAIL=$((LTE_FAIL + 1))
++		[ "$LTE_FAIL" -ge "$COUNT" ] && LTE_HEALTH=0
++	fi
++}
++
++active_state() {
++	if [ "$WAN_HEALTH" = "1" ] && [ "$LTE_HEALTH" = "1" ]; then
++		echo "both"
++	elif [ "$WAN_HEALTH" = "1" ]; then
++		echo "wan"
++	elif [ "$LTE_HEALTH" = "1" ]; then
++		echo "lte"
++	else
++		echo "none"
++	fi
++}
++
++# Один проход: читаем конфиг, проверяем каналы и применяем правила.
++# Возвращает 0, если модуль включён, и 1, если выключен.
++iterate() {
++	read_config
++
++	if [ "$(cfg_get enabled)" != "1" ]; then
++		return 1
++	fi
++
++	run_checks
++	active="$(active_state)"
++
++	sig="$MODE|$active|$WEIGHT|$WAN_GW|$LTE_GW|$WAN_LDEV|$LTE_LDEV|$PBR_LIST|$NUMGEN"
++	oldsig=""
++	[ -f "$APPLIED" ] && oldsig="$(cat "$APPLIED" 2>/dev/null)"
++
++	if [ "$sig" != "$oldsig" ]; then
++		apply_rules "$MODE" "$active"
++		printf '%s' "$sig" > "$APPLIED"
++		log "правила обновлены: режим $MODE, канал $active"
++	fi
++
++	write_state "$active"
++	return 0
++}
++
++main_loop() {
++	log "демон запущен"
++	echo $$ > "$PIDFILE"
++	NUMGEN=1
++	check_numgen || NUMGEN=0
++
++	while true; do
++		if ! iterate; then
++			# Модуль выключили: снимаем всё и выходим. Включение делает
++			# pejir-mwan-ctl enable (рестарт сервиса), так что демон
++			# не должен висеть вхолостую.
++			cleanup_all
++			write_state "off"
++			rm -f "$PIDFILE"
++			log "модуль выключен, демон остановлен"
++			exit 0
++		fi
++
++		sleep "$INTERVAL"
++	done
++}
++
++case "${1:-run}" in
++run)
++	trap 'rm -f "$PIDFILE"' EXIT INT TERM
++	main_loop
++	;;
++once)
++	# Один проход без демона: используется тестом и для ручной проверки.
++	NUMGEN=1
++	check_numgen || NUMGEN=0
++	if iterate; then
++		exit 0
++	fi
++	cleanup_all
++	write_state "off"
++	exit 1
++	;;
++cleanup)
++	cleanup_all
++	;;
++*)
++	echo "usage: $0 run|once|cleanup" >&2
++	exit 1
++	;;
++esac
+diff --git a/package/pejir-mwan/root/usr/libexec/pejir-mwan-ctl b/package/pejir-mwan/root/usr/libexec/pejir-mwan-ctl
+new file mode 100755
+index 00000000..1d23a2cb
+--- /dev/null
++++ b/package/pejir-mwan/root/usr/libexec/pejir-mwan-ctl
+@@ -0,0 +1,104 @@
++#!/bin/sh
++# pejir-mwan-ctl - управление модулем multi-WAN (PEJIR01).
++#
++# Команды:
++#   status   - текущее состояние (файл /tmp/pejir-mwan.state)
++#   enable   - включить модуль и применить
++#   disable  - выключить модуль и снять все его правила
++#   apply    - переприменить настройки (рестарт демона)
++#   check    - разовая проверка каналов
++#   cleanup  - снять правила, не трогая конфиг
++
++set -u
++
++CFG="pejir_mwan"
++INIT="/etc/init.d/50-pejir-mwan"
++STATE="/tmp/pejir-mwan.state"
++PIDFILE="/tmp/pejir-mwan.pid"
++
++cfg_get() {
++	uci -q get "$CFG.main.$1" 2>/dev/null
++}
++
++daemon_state() {
++	if [ -f "$PIDFILE" ] && [ -d "/proc/$(cat "$PIDFILE" 2>/dev/null)" ]; then
++		echo "running"
++	else
++		echo "stopped"
++	fi
++}
++
++do_status() {
++	if [ -f "$STATE" ]; then
++		cat "$STATE"
++	else
++		echo "enabled=$(cfg_get enabled)"
++		echo "mode=$(cfg_get mode)"
++		echo "weight=$(cfg_get wan_weight)"
++	fi
++	echo "daemon=$(daemon_state)"
++}
++
++do_check() {
++	wan_iface="$(cfg_get wan_iface)"; [ -n "$wan_iface" ] || wan_iface=wan
++	wan_dev="$(cfg_get wan_device)"; [ -n "$wan_dev" ] || wan_dev=eth0
++	lte_iface="$(cfg_get lte_iface)"; [ -n "$lte_iface" ] || lte_iface=lte
++	lte_dev="$(cfg_get lte_device)"; [ -n "$lte_dev" ] || lte_dev=eth1
++	target="$(cfg_get check_target)"
++
++	raw="$(ubus call "network.interface.$wan_iface" status 2>/dev/null)"
++	gw="$(printf '%s' "$raw" | jsonfilter -e '@.data.gateway' 2>/dev/null)"
++	up="$(printf '%s' "$raw" | jsonfilter -e '@.data.up' 2>/dev/null)"
++	[ "$up" = "true" ] && up=1 || up=0
++	addr="$target"; [ -n "$addr" ] || addr="$gw"
++	if [ "$up" = "1" ] && [ -n "$addr" ] && ping -I "$wan_dev" -c 1 -W 2 "$addr" >/dev/null 2>&1; then
++		echo "wan=up"
++	else
++		echo "wan=down"
++	fi
++
++	raw="$(ubus call "network.interface.$lte_iface" status 2>/dev/null)"
++	gw="$(printf '%s' "$raw" | jsonfilter -e '@.data.gateway' 2>/dev/null)"
++	up="$(printf '%s' "$raw" | jsonfilter -e '@.data.up' 2>/dev/null)"
++	[ "$up" = "true" ] && up=1 || up=0
++	addr="$target"; [ -n "$addr" ] || addr="$gw"
++	if [ "$up" = "1" ] && [ -n "$addr" ] && ping -I "$lte_dev" -c 1 -W 2 "$addr" >/dev/null 2>&1; then
++		echo "lte=up"
++	else
++		echo "lte=down"
++	fi
++}
++
++case "${1:-status}" in
++status)
++	do_status
++	;;
++enable)
++	uci set "$CFG.main.enabled=1"
++	uci commit "$CFG"
++	"$INIT" restart >/dev/null 2>&1
++	echo "enabled"
++	;;
++disable)
++	uci set "$CFG.main.enabled=0"
++	uci commit "$CFG"
++	"$INIT" stop >/dev/null 2>&1
++	/usr/libexec/pejir-mwan cleanup >/dev/null 2>&1
++	echo "disabled"
++	;;
++apply)
++	"$INIT" restart >/dev/null 2>&1
++	echo "applied"
++	;;
++check)
++	do_check
++	;;
++cleanup)
++	/usr/libexec/pejir-mwan cleanup >/dev/null 2>&1
++	echo "cleaned"
++	;;
++*)
++	echo "usage: $0 status|enable|disable|apply|check|cleanup" >&2
++	exit 1
++	;;
++esac
+-- 
+2.39.5
+

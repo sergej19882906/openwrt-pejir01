@@ -117,17 +117,18 @@ fi
 # ВАЖНО: rpcd сверяет в scope "uci" ИМЯ КОНФИГА, а не "конфиг.секция":
 # запись вида "network.lte" не даёт никаких прав (fnmatch не совпадёт с
 # именем "network"), и uci/set отвечает "Permission denied". Поэтому
-# здесь именно имена конфигов: network и pejir_telegram.
+# здесь именно имена конфигов: network, pejir_telegram и pejir_mwan
+# (конфиг модуля multi-WAN, релиз .65).
 if python3 - "$ACL" <<'PYEOF'
 import json,sys
 a=json.load(open(sys.argv[1]))
 w=sorted(a['luci-app-perenio']['write']['uci'])
-sys.exit(0 if w==['network','pejir_telegram'] else 1)
+sys.exit(0 if w==['network','pejir_mwan','pejir_telegram'] else 1)
 PYEOF
 then
-	ok "ACL: write.uci = network + pejir_telegram (имена конфигов)"
+	ok "ACL: write.uci = network + pejir_telegram + pejir_mwan (имена конфигов)"
 else
-	fail "ACL: write.uci не равен именам конфигов network и pejir_telegram"
+	fail "ACL: write.uci не равен именам конфигов network, pejir_telegram и pejir_mwan"
 fi
 
 # --- F16a: read.uci покрывает все конфиги, которые читают страницы ---------

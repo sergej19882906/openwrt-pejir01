@@ -105,10 +105,6 @@ table inet pejir_mwan {
     ct state new numgen random mod 2 vmap { 0 : jump to_wan, 1 : jump to_lte }
     ct state new ct mark set meta mark
   }
-  chain output {
-    type filter hook output priority mangle; policy accept;
-    ... та же логика ...
-  }
   chain to_wan { meta mark set 0x1; return; }
   chain to_lte { meta mark set 0x2; return; }
 }
@@ -117,8 +113,11 @@ table inet pejir_mwan {
 - `numgen random mod 2` даёт честные 50/50 на каждое **новое** соединение;
 - `ct mark` запоминает выбор, поэтому уже установленные сессии не «прыгают»
   между каналами;
-- цепочка `output` включает трафик самого роутера (telegram-мост, OTA,
-  проверки) — иначе резервирование не работает для внутренних процессов;
+- цепочки `output` НЕТ: помечается только клиентский трафик. Трафик самого
+  роутера (резолвер, telegram-мост, OTA) идёт через `main`, где маршруты
+  расставляет netifd, и потому следует за интерфейсами сам. Если бы мы
+  помечали и его, то проверка живости канала сама улетала бы в другой
+  канал (`ping -I` не мешает `ip rule` по метке) и врала;
 - при недоступности `nft numgen` (ядро без `CONFIG_NFT_NUMGEN`) режим
   `balance` недоступен, демон работает в `failover`, UI показывает причину.
 
@@ -129,7 +128,7 @@ table inet pejir_mwan {
 | balance, оба канала живы | `pref 100 fwmark 0x1 lookup 100`, `pref 101 fwmark 0x2 lookup 200`, `pref 900 lookup 100` |
 | balance, жив только LTE | `pref 100 fwmark 0x1 lookup 200`, `pref 101 fwmark 0x2 lookup 200`; карта `numgen` в nft переключается на `to_lte` для обоих значений |
 | balance, жив только WAN | симметрично, `lookup 100` |
-| failover | `pref 100 lookup <активная таблица>`, `pref 900 lookup <вторая таблица>` |
+| failover | `pref 100 lookup <активная таблица>`, `pref 900 lookup <вторая таблица>`; пока оба канала живы, активна таблица WAN |
 | pbr | `pref 100 to <CIDR> lookup 200` для каждого адреса списка + `pref 900 lookup 100` |
 
 Правила модуля используют префиксы 100–999; `stop` снимает именно их.
@@ -137,30 +136,36 @@ table inet pejir_mwan {
 ### 5.4 Health-чек
 
 - источник истины — `ubus`: `data.up`, `data.gateway`, `data.l3_device`;
-- проверка живости: `ping -c1 -W2 <gateway>`; при заданном `check_target`:
-  IP → ping, `http(s)://` → `uclient-fetch -q -O- --timeout=5`;
+- проверка живости: `ping -I <устройство> -c1 -W2 <gateway>`; при заданном
+  `check_target` пингуется внешний IP вместо шлюза. `-I` обязателен: иначе
+  проверка ушла бы в другой канал. Проверка по URL не поддерживается —
+  `uclient-fetch` не умеет привязаться к интерфейсу, а именно это здесь и
+  нужно;
 - `check_count` неудач подряд ⇒ канал `down` ⇒ переключение; один успех ⇒ `up`;
 - для LTE дополнительно требуется наличие `eth1` и `data.up`.
 
 ### 5.5 DNS
 
-DNS-запрос не должен уходить в мёртвый канал. Демон добавляет в `main`
-маршруты к DNS-серверам обоих каналов:
+Основную таблицу `main` модуль не меняет - в том числе DNS-маршруты в неё
+не добавляет. Резолв и так устроен правильно: netifd ставит DNS-серверы
+интерфейса в `main` вместе с его маршрутом и убирает, когда интерфейс
+падает, поэтому DNS следует за каналами сам.
 
-```
-ip route add <dns_wan>/32 via <gw_wan> dev eth0
-ip route add <dns_lte>/32 via <gw_lte> dev eth1
-```
-
-DNS-серверы берём из `ubus` (`data.dns[]`) и из `resolv.conf.auto`.
-При переключении активного канала приоритет его DNS-маршрута выше
-(меньшая метрика).
+Что модуль делает для DNS: `check_target` позволяет отличить «канал жив»
+(шлюз пингуется) от «интернет есть» (пингуется внешний IP). Если провайдер
+WAN не отдаёт интернет, но шлюз доступен, health-чек с внешним адресом
+правильно переключит трафик на LTE; с проверкой только шлюза этого не
+произойдёт.
 
 ### 5.6 Управление состоянием
 
 - демон — shell-цикл: опрос → пересчёт состояния → применение правил;
 - состояние в `/tmp/pejir-mwan.state` (режим, каналы, активная таблица,
-  uptime, счётчики);
+  uptime, счётчики); пути состояния и список сетевых устройств
+  переопределяются переменными окружения (`PEJIR_MWAN_STATE`,
+  `PEJIR_MWAN_APPLIED`, `PEJIR_MWAN_LOG`, `PEJIR_MWAN_NFT`,
+  `PEJIR_MWAN_PID`, `PEJIR_MWAN_SYSNET`) - это нужно тесту, который
+  работает на сборочной машине, где `eth0`/`eth1` не существуют;
 - procd-автоперезапуск; повторная установка правил при рестарте сети
   (init-скрипт слушает hotplug через `netifd`/ubus или вызывается из
   `50-pejir-mwan` при `start`).
@@ -223,9 +228,12 @@ pejir-mwan-ctl check      # однократная проверка канало
 | Патч | Содержание |
 |---|---|
 | 0142 | пакет `pejir-mwan`: Makefile, демон, ctl, init, дефолтный конфиг |
-| 0143 | `build.sh`: `CONFIG_PACKAGE_pejir-mwan=y`, `CONFIG_PACKAGE_ip-full=y` |
-| 0144 | LuCI: `perenio/mwan.js`, меню, ACL-гранты, русские переводы |
-| 0145 | `tests/test-mwan.sh` + подключение в `.github/workflows/build.yml` |
+| 0143 | LuCI: `perenio/mwan.js`, меню, ACL-гранты, русские переводы |
+
+Правки репозитория (не патчи дерева OpenWrt): `build.sh`
+(`CONFIG_PACKAGE_pejir-mwan=y`, `CONFIG_PACKAGE_ip-full=y`, проверка файлов
+модуля в rootfs), `tests/test-mwan.sh` + подключение в
+`.github/workflows/build.yml`, `VERSION`, `README.md`, `docs/CHANGELOG.md`.
 
 Плюс `docs/CHANGELOG.md` и README (раздел про multi-WAN).
 

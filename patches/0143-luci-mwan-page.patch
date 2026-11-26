@@ -1,0 +1,546 @@
+From af740b16f9817444eba8781a77714bb55eaf68a5 Mon Sep 17 00:00:00 2001
+From: pejir <pejir@local>
+Date: Thu, 26 Nov 2026 04:00:17 GMT
+Subject: =?utf-8?b?bHVjaTog0YHRgtGA0LDQvdC40YbQsCBtdWx0aS1XQU4gKFdBTiArIExURSkg0Lgg?=
+ =?utf-8?b?0YDQsNC30LzQtdGC0LrQsCDQv9Cw0LrQtdGC0LAgcGVqaXItbXdhbg==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Страница perenio/mwan.js - настройка собственного модуля балансировки
+и резервирования между проводным WAN и LTE-модемом.
+
+На странице:
+- тумблер "Включено" (модуль по умолчанию выключен);
+- выбор режима: баланс соединений / резерв / по адресам (PBR);
+- доля новых соединений через WAN (шаг 10%), интерфейсы и устройства
+  WAN и LTE, интервал и порог health-чека, цель проверки, список сетей
+  для PBR;
+- кнопки "Сохранить", "Применить", "Включить", "Выключить";
+- блок состояния: режим, состояние обоих каналов, активный канал,
+  счётчики пакетов по меткам, время обновления.
+
+Данные состояния берёт helper /usr/libexec/pejir-mwan-ctl (в ACL есть
+грант exec), конфиг - через uci-скоуп pejir_mwan (в ACL добавлены
+pejir_mwan в read и write).
+
+В меню добавлен пункт "Multi-WAN: WAN и LTE (PEJIR01)".
+В po/ru добавлены русские переводы новых строк (исходные msgid
+английские, как принято в этом пакете).
+---
+ .../resources/view/perenio/mwan.js            | 322 ++++++++++++++++++
+ .../po/ru/luci-app-perenio.po                 |  79 +++++
+ .../share/luci/menu.d/luci-app-perenio.json   |  13 +
+ .../share/rpcd/acl.d/luci-app-perenio.json    |  36 +-
+ 4 files changed, 448 insertions(+), 2 deletions(-)
+ create mode 100644 package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js
+new file mode 100644
+index 00000000..840dc98f
+--- /dev/null
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js
+@@ -0,0 +1,322 @@
++'use strict';
++'require view';
++'require fs';
++'require uci';
++'require ui';
++'require poll';
++
++/*
++ * Multi-WAN (WAN + LTE) для Perenio PEJIR01.
++ *
++ * Своя реализация вместо mwan3 (в OpenWrt 25.12 mwan3 работает только
++ * через iptables и тянул за собой стоковый конфиг из образа).
++ *
++ * Как это устроено:
++ *   - две таблицы маршрутизации: WAN (100) и LTE (200), в каждой
++ *     маршрут по умолчанию через свой шлюз;
++ *   - nftables помечает НОВОЕ соединение (numgen random) меткой
++ *     0x1 (WAN) или 0x2 (LTE), метка сохраняется в conntrack, поэтому
++ *     уже открытые сессии не перепрыгивают между каналами;
++ *   - ip rule отправляет помеченный трафик в свою таблицу;
++ *   - при падении канала весь трафик уходит на оставшийся;
++ *   - основная таблица main не меняется: если модуль не работает,
++ *     роутер живёт как раньше.
++ *
++ * Модуль выключен по умолчанию и включается только здесь.
++ */
++
++var CTL = '/usr/libexec/pejir-mwan-ctl';
++
++var MODES = [
++	[ 'balance',  _('Balance connections between WAN and LTE') ],
++	[ 'failover', _('Failover: WAN is primary, LTE is backup') ],
++	[ 'pbr',      _('By address: listed networks go through LTE') ]
++];
++
++var WEIGHTS = [ 10, 20, 30, 40, 50, 60, 70, 80, 90 ];
++
++function run(args) {
++	return fs.exec(CTL, args).then(function(r) {
++		return (r && r.stdout ? r.stdout : '') +
++			(r && r.stderr ? r.stderr : '');
++	}).catch(function(e) {
++		return _('Failed to run: ') + (e && e.message ? e.message : String(e || ''));
++	});
++}
++
++function parseState(text) {
++	var st = {};
++
++	(String(text || '')).split('\n').forEach(function(line) {
++		var i = line.indexOf('=');
++
++		if (i > 0)
++			st[line.substring(0, i).trim()] = line.substring(i + 1).trim();
++	});
++
++	return st;
++}
++
++function field(id, label, node, hint) {
++	return E('div', { 'class': 'cbi-value' }, [
++		E('label', { 'class': 'cbi-value-title', 'for': id }, label),
++		E('div', { 'class': 'cbi-value-field' }, [
++			node,
++			hint ? E('div', { 'class': 'cbi-value-description' }, hint) : ''
++		])
++	]);
++}
++
++function textInput(id, value) {
++	return E('input', { 'type': 'text', 'id': id, 'value': value || '', 'class': 'cbi-input-text' });
++}
++
++function numberInput(id, value) {
++	return E('input', { 'type': 'text', 'id': id, 'value': value || '', 'class': 'cbi-input-text' });
++}
++
++function selectInput(id, options, value) {
++	var opts = [];
++
++	options.forEach(function(o) {
++		opts.push(E('option', { 'value': o[0], 'selected': (o[0] == value) }, o[1]));
++	});
++
++	return E('select', { 'id': id, 'class': 'cbi-input-select' }, opts);
++}
++
++function setText(id, text) {
++	var e = document.getElementById(id);
++
++	if (e)
++		e.textContent = text;
++}
++
++function statusRow(label, id) {
++	return E('tr', { 'class': 'tr' }, [
++		E('td', { 'class': 'td', 'width': '35%' }, label),
++		E('td', { 'class': 'td', 'id': id }, '…')
++	]);
++}
++
++function refreshStatus(text) {
++	var st = parseState(text);
++
++	setText('mwan-st-mode', st.mode || '?');
++	setText('mwan-st-enabled', (st.enabled == '1') ? _('yes') : _('no'));
++	setText('mwan-st-daemon', (st.daemon == 'running') ? _('running') : _('stopped'));
++	setText('mwan-st-wan', st.wan_health == '1' ? _('alive') :
++		(st.wan_up == '1' ? _('no answer') : _('link down')) +
++		' (' + (st.wan_dev || '-') + (st.wan_gw ? ', ' + st.wan_gw : '') + ')');
++	setText('mwan-st-lte', st.lte_health == '1' ? _('alive') :
++		(st.lte_up == '1' ? _('no answer') : _('link down')) +
++		' (' + (st.lte_dev || '-') + (st.lte_gw ? ', ' + st.lte_gw : '') + ')');
++	setText('mwan-st-active', st.active || '?');
++	setText('mwan-st-wan-pkts', st.wan_packets || '0');
++	setText('mwan-st-lte-pkts', st.lte_packets || '0');
++	setText('mwan-st-updated', st.updated || '-');
++
++	if (st.numgen == '0')
++		setText('mwan-st-note', _('The kernel has no nftables numgen support, so balancing is unavailable and the module works as failover.'));
++	else
++		setText('mwan-st-note', '');
++}
++
++return view.extend({
++	load: function() {
++		return Promise.all([
++			run([ 'status' ]),
++			uci.load('pejir_mwan').catch(function() {})
++		]);
++	},
++
++	render: function(data) {
++		var status = (data && data[0]) ? data[0] : '';
++
++		var body = E('div', { 'class': 'pejir-mwan' }, [
++			E('h2', {}, _('Multi-WAN: WAN and LTE (PEJIR01)')),
++			E('div', { 'class': 'cbi-map' }, [
++				E('h3', {}, _('Mode')),
++				E('div', { 'class': 'cbi-section' }, [
++					E('div', { 'class': 'cbi-value' }, [
++						E('label', { 'class': 'cbi-value-title' }, _('Enabled')),
++						E('div', { 'class': 'cbi-value-field' }, [
++							E('input', { 'type': 'checkbox', 'id': 'mwan-enabled', 'class': 'cbi-input-checkbox' }),
++							E('div', { 'class': 'cbi-value-description' },
++								_('The module is disabled by default. While it is off it does not change the routing at all.'))
++						])
++					]),
++					field('mwan-mode', _('Mode'), selectInput('mwan-mode', MODES, 'balance')),
++					field('mwan-weight', _('Share of new connections via WAN'),
++						selectInput('mwan-weight', WEIGHTS.map(function(w) {
++							return [ String(w), w + '%' ];
++						}), '50'),
++						_('Used in the balance mode only.')),
++					field('mwan-wan-iface', _('WAN interface (network section)'), textInput('mwan-wan-iface', 'wan')),
++					field('mwan-wan-device', _('WAN device'), textInput('mwan-wan-device', 'eth0')),
++					field('mwan-lte-iface', _('LTE interface (network section)'), textInput('mwan-lte-iface', 'lte')),
++					field('mwan-lte-device', _('LTE device'), textInput('mwan-lte-device', 'eth1')),
++					field('mwan-interval', _('Check interval, seconds'), numberInput('mwan-interval', '10')),
++					field('mwan-count', _('Checks before the link is considered dead'), numberInput('mwan-count', '3')),
++					field('mwan-target', _('Check target'),
++						textInput('mwan-target', ''),
++						_('Empty: ping the gateway of the link. Set an external IP address (for example 1.1.1.1) to check the real Internet access.')),
++					field('mwan-pbr', _('Networks through LTE'),
++						E('textarea', { 'id': 'mwan-pbr', 'class': 'cbi-input-textarea', 'rows': '3' }, ''),
++						_('Used in the "by address" mode only. One CIDR per line, for example 77.88.8.0/21.'))
++				])
++			]),
++
++			E('div', { 'class': 'cbi-map' }, [
++				E('h3', {}, _('State')),
++				E('div', { 'class': 'cbi-section' }, [
++					E('table', { 'class': 'table' }, [
++						statusRow(_('Mode'), 'mwan-st-mode'),
++						statusRow(_('Enabled'), 'mwan-st-enabled'),
++						statusRow(_('Daemon'), 'mwan-st-daemon'),
++						statusRow(_('WAN'), 'mwan-st-wan'),
++						statusRow(_('LTE'), 'mwan-st-lte'),
++						statusRow(_('Active link'), 'mwan-st-active'),
++						statusRow(_('Packets via WAN'), 'mwan-st-wan-pkts'),
++						statusRow(_('Packets via LTE'), 'mwan-st-lte-pkts'),
++						statusRow(_('Updated'), 'mwan-st-updated')
++					]),
++					E('div', { 'class': 'cbi-value-description', 'id': 'mwan-st-note' }, '')
++				])
++			]),
++
++			E('div', { 'class': 'cbi-page-actions' }, [
++				E('button', { 'class': 'cbi-button cbi-button-save important', 'id': 'mwan-save' },
++					_('Save')),
++				E('button', { 'class': 'cbi-button cbi-button-apply', 'id': 'mwan-apply' },
++					_('Apply')),
++				E('button', { 'class': 'cbi-button', 'id': 'mwan-enable' },
++					_('Enable')),
++				E('button', { 'class': 'cbi-button', 'id': 'mwan-disable' },
++					_('Disable'))
++			]),
++
++			E('div', { 'class': 'cbi-section' }, [
++				E('div', { 'class': 'cbi-value-description', 'id': 'mwan-log' }, '')
++			])
++		]);
++
++		/* Заполняем поля текущими значениями конфига. */
++		uci.load('pejir_mwan').then(function() {
++			var val = function(key, dflt) {
++				var v = uci.get('pejir_mwan', 'main', key);
++
++				return (v == null || v === '') ? dflt : String(v);
++			};
++			var put = function(id, v) {
++				var e = document.getElementById(id);
++
++				if (e)
++					e.value = v;
++			};
++
++			put('mwan-mode', val('mode', 'balance'));
++			put('mwan-weight', val('wan_weight', '50'));
++			put('mwan-wan-iface', val('wan_iface', 'wan'));
++			put('mwan-wan-device', val('wan_device', 'eth0'));
++			put('mwan-lte-iface', val('lte_iface', 'lte'));
++			put('mwan-lte-device', val('lte_device', 'eth1'));
++			put('mwan-interval', val('check_interval', '10'));
++			put('mwan-count', val('check_count', '3'));
++			put('mwan-target', val('check_target', ''));
++			put('mwan-pbr', val('pbr_list', ''));
++
++			var en = document.getElementById('mwan-enabled');
++
++			if (en)
++				en.checked = (val('enabled', '0') == '1');
++		}).catch(function() {});
++
++		refreshStatus(status);
++
++		poll.add(function() {
++			return run([ 'status' ]).then(function(t) {
++				refreshStatus(t);
++				return '';
++			});
++		}, 5);
++
++		var self = this;
++
++		document.getElementById('mwan-save').addEventListener('click', L.bind(self.handleSave, self));
++		document.getElementById('mwan-apply').addEventListener('click', L.bind(self.handleApply, self));
++		document.getElementById('mwan-enable').addEventListener('click', L.bind(self.handleEnable, self));
++		document.getElementById('mwan-disable').addEventListener('click', L.bind(self.handleDisable, self));
++
++		return body;
++	},
++
++	handleSave: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++
++		var en = document.getElementById('mwan-enabled');
++		var pbr = document.getElementById('mwan-pbr');
++
++		uci.set('pejir_mwan', 'main', 'enabled', (en && en.checked) ? '1' : '0');
++		uci.set('pejir_mwan', 'main', 'mode', document.getElementById('mwan-mode').value);
++		uci.set('pejir_mwan', 'main', 'wan_weight', document.getElementById('mwan-weight').value);
++		uci.set('pejir_mwan', 'main', 'wan_iface', document.getElementById('mwan-wan-iface').value);
++		uci.set('pejir_mwan', 'main', 'wan_device', document.getElementById('mwan-wan-device').value);
++		uci.set('pejir_mwan', 'main', 'lte_iface', document.getElementById('mwan-lte-iface').value);
++		uci.set('pejir_mwan', 'main', 'lte_device', document.getElementById('mwan-lte-device').value);
++		uci.set('pejir_mwan', 'main', 'check_interval', document.getElementById('mwan-interval').value);
++		uci.set('pejir_mwan', 'main', 'check_count', document.getElementById('mwan-count').value);
++		uci.set('pejir_mwan', 'main', 'check_target', document.getElementById('mwan-target').value);
++		uci.set('pejir_mwan', 'main', 'pbr_list', pbr ? pbr.value : '');
++
++		return uci.save().then(function() {
++			btn.disabled = false;
++			ui.addNotification(null, E('p', {}, _('Saved. Press "Apply" to restart the module.')), 'info');
++		}).catch(function(e) {
++			btn.disabled = false;
++			ui.addNotification(null, E('p', {}, _('Failed to save: ') + (e && e.message ? e.message : e)), 'error');
++		});
++	},
++
++	handleApply: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('mwan-log', _('Applying...'));
++
++		return run([ 'apply' ]).then(function(out) {
++			setText('mwan-log', String(out).trim() || _('Done'));
++			btn.disabled = false;
++		});
++	},
++
++	handleEnable: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('mwan-log', _('Enabling...'));
++
++		return run([ 'enable' ]).then(function(out) {
++			setText('mwan-log', String(out).trim() || _('Done'));
++			btn.disabled = false;
++			return run([ 'status' ]).then(function(t) { refreshStatus(t); return ''; });
++		});
++	},
++
++	handleDisable: function(ev) {
++		var btn = ev.currentTarget;
++
++		btn.disabled = true;
++		setText('mwan-log', _('Disabling...'));
++
++		return run([ 'disable' ]).then(function(out) {
++			setText('mwan-log', String(out).trim() || _('Done'));
++			btn.disabled = false;
++			return run([ 'status' ]).then(function(t) { refreshStatus(t); return ''; });
++		});
++	},
++
++	handleSaveApply: null
++});
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 14dd6495..41440c10 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -598,3 +598,82 @@ msgid "Clean modem memory"
+ msgstr "Очистить память модема"
+ msgid "Show modem memory"
+ msgstr "Показать память модема"
++
++msgid "Balance connections between WAN and LTE"
++msgstr "Балансировка соединений между WAN и LTE"
++msgid "Failover: WAN is primary, LTE is backup"
++msgstr "Резерв: WAN основной, LTE запасной"
++msgid "By address: listed networks go through LTE"
++msgstr "По адресам: указанные сети идут через LTE"
++msgid "running"
++msgstr "работает"
++msgid "stopped"
++msgstr "остановлен"
++msgid "alive"
++msgstr "жив"
++msgid "no answer"
++msgstr "не отвечает"
++msgid "link down"
++msgstr "канала нет"
++msgid "The kernel has no nftables numgen support, so balancing is unavailable and the module works as failover."
++msgstr "В ядре нет поддержки nftables numgen, поэтому балансировка недоступна и модуль работает как резерв."
++msgid "Multi-WAN: WAN and LTE (PEJIR01)"
++msgstr "Multi-WAN: WAN и LTE (PEJIR01)"
++msgid "Enabled"
++msgstr "Включено"
++msgid "The module is disabled by default. While it is off it does not change the routing at all."
++msgstr "Модуль по умолчанию выключен. Пока он выключен, маршрутизация не меняется совсем."
++msgid "Share of new connections via WAN"
++msgstr "Доля новых соединений через WAN"
++msgid "Used in the balance mode only."
++msgstr "Используется только в режиме балансировки."
++msgid "WAN interface (network section)"
++msgstr "Интерфейс WAN (секция network)"
++msgid "WAN device"
++msgstr "Устройство WAN"
++msgid "LTE interface (network section)"
++msgstr "Интерфейс LTE (секция network)"
++msgid "LTE device"
++msgstr "Устройство LTE"
++msgid "Check interval, seconds"
++msgstr "Интервал проверки, секунд"
++msgid "Checks before the link is considered dead"
++msgstr "Сколько неудачных проверок до отключения канала"
++msgid "Check target"
++msgstr "Что проверяем"
++msgid "Empty: ping the gateway of the link. Set an external IP address (for example 1.1.1.1) to check the real Internet access."
++msgstr "Пусто: пинг шлюза канала. Укажите внешний IP (например 1.1.1.1), чтобы проверять реальный доступ в интернет."
++msgid "Networks through LTE"
++msgstr "Сети через LTE"
++msgid "Used in the \"by address\" mode only. One CIDR per line, for example 77.88.8.0/21."
++msgstr "Используется только в режиме «по адресам». По одному CIDR в строке, например 77.88.8.0/21."
++msgid "State"
++msgstr "Состояние"
++msgid "Daemon"
++msgstr "Демон"
++msgid "WAN"
++msgstr "WAN"
++msgid "LTE"
++msgstr "LTE"
++msgid "Active link"
++msgstr "Активный канал"
++msgid "Packets via WAN"
++msgstr "Пакетов через WAN"
++msgid "Packets via LTE"
++msgstr "Пакетов через LTE"
++msgid "Updated"
++msgstr "Обновлено"
++msgid "Apply"
++msgstr "Применить"
++msgid "Enable"
++msgstr "Включить"
++msgid "Disable"
++msgstr "Отключить"
++msgid "Saved. Press \"Apply\" to restart the module."
++msgstr "Сохранено. Нажмите «Применить», чтобы перезапустить модуль."
++msgid "Applying..."
++msgstr "Применяем..."
++msgid "Enabling..."
++msgstr "Включаем..."
++msgid "Disabling..."
++msgstr "Выключаем..."
+diff --git a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+index d3e37081..dcaf0045 100644
+--- a/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/luci/menu.d/luci-app-perenio.json
+@@ -87,5 +87,18 @@
+ 				"luci-app-perenio"
+ 			]
+ 		}
++	},
++	"admin/status/perenio-mwan": {
++		"title": "Multi-WAN: WAN и LTE (PEJIR01)",
++		"order": 72,
++		"action": {
++			"type": "view",
++			"path": "perenio/mwan"
++		},
++		"depends": {
++			"acl": [
++				"luci-app-perenio"
++			]
++		}
+ 	}
+ }
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 6e9d36db..0f5c03e3 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -83,6 +83,12 @@
+ 				],
+ 				"/var/spool/sms/sent/*": [
+ 					"read"
++				],
++				"/etc/config/pejir_mwan": [
++					"read"
++				],
++				"/tmp/pejir-mwan.state": [
++					"read"
+ 				]
+ 			},
+ 			"ubus": {
+@@ -93,7 +99,8 @@
+ 			},
+ 			"uci": [
+ 				"network",
+-				"pejir_telegram"
++				"pejir_telegram",
++				"pejir_mwan"
+ 			]
+ 		},
+ 		"write": {
+@@ -187,6 +194,30 @@
+ 				],
+ 				"/usr/sbin/idata_load --force": [
+ 					"exec"
++				],
++				"/usr/libexec/pejir-mwan-ctl": [
++					"exec"
++				],
++				"/usr/libexec/pejir-mwan-ctl status": [
++					"exec"
++				],
++				"/usr/libexec/pejir-mwan-ctl enable": [
++					"exec"
++				],
++				"/usr/libexec/pejir-mwan-ctl disable": [
++					"exec"
++				],
++				"/usr/libexec/pejir-mwan-ctl apply": [
++					"exec"
++				],
++				"/usr/libexec/pejir-mwan-ctl check": [
++					"exec"
++				],
++				"/etc/init.d/50-pejir-mwan restart": [
++					"exec"
++				],
++				"/etc/init.d/50-pejir-mwan stop": [
++					"exec"
+ 				]
+ 			},
+ 			"ubus": {
+@@ -196,7 +227,8 @@
+ 			},
+ 			"uci": [
+ 				"network",
+-				"pejir_telegram"
++				"pejir_telegram",
++				"pejir_mwan"
+ 			]
+ 		}
+ 	}
+-- 
+2.39.5
+

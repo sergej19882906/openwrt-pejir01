@@ -424,6 +424,17 @@ CONFIG_BUSYBOX_CONFIG_FEATURE_MKSWAP_UUID=y
 # и возвращает его при восстановлении.
 # CONFIG_PACKAGE_mwan3 is not set
 # CONFIG_PACKAGE_luci-app-mwan3 is not set
+#
+# Свой multi-WAN вместо mwan3 (релиз .65): пакет pejir-mwan
+# (балансировка соединений WAN/LTE, резерв по health-чеку, PBR) плюс
+# ip-full.
+#
+# ip-full обязателен: модулю нужны таблицы маршрутизации и правила
+# "ip rule ... fwmark ... lookup", а в образе по умолчанию лежит
+# busybox ip (ip-tiny), который такой синтаксис не понимает.
+# nftables в образе уже есть (его ставит firewall4).
+CONFIG_PACKAGE_pejir-mwan=y
+CONFIG_PACKAGE_ip-full=y
 CONFIG_PACKAGE_sqm-scripts=y
 CONFIG_PACKAGE_luci-app-sqm=y
 CONFIG_PACKAGE_collectd=y
@@ -574,6 +585,23 @@ if [ -n "$SU" ]; then
           ann error "build.sh: mkswap" "в образе нет mkswap - своп нельзя пересоздать с меткой"
           echo "ОШИБКА: в образе нет mkswap (bin/mkswap)"
           exit 1
+        fi
+        # Модуль multi-WAN (pejir-mwan) обязан попасть в образ вместе
+        # с ip-full: без /usr/libexec/ip-full правила "ip rule fwmark"
+        # не работают, и балансировка молча не включается.
+        MWAN_MISSING=""
+        for f in usr/libexec/pejir-mwan usr/libexec/pejir-mwan-ctl \
+                 etc/init.d/50-pejir-mwan etc/config/pejir_mwan \
+                 usr/libexec/ip-full \
+                 www/luci-static/resources/view/perenio/mwan.js; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || MWAN_MISSING="$MWAN_MISSING $f"
+        done
+        if [ -n "$MWAN_MISSING" ]; then
+          ann error "build.sh: pejir-mwan" "В образе нет файлов multi-WAN:$MWAN_MISSING"
+          echo "ОШИБКА: пакет pejir-mwan не попал в образ ($MWAN_MISSING)"
+          exit 1
+        else
+          echo "  модуль multi-WAN в образе: OK"
         fi
         OTA_MISSING=""
         for f in usr/bin/pejir-ota usr/bin/pejir-ovl-purge usr/lib/pejir/version \
