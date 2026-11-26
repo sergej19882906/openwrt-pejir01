@@ -1,0 +1,142 @@
+From 29e607b6fd5eb1758e03d9c49ff1074e09f2f022 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 21:57:30 GMT
+Subject: =?utf-8?b?ZmlyZXdhbGw6IEFXRy3QuNC90YLQtdGA0YTQtdC50YEg0LIg0L7RgtC00LXQu9GM?=
+ =?utf-8?b?0L3QvtC5INC30L7QvdC1INGBIG1hc3F1ZXJhZGluZw==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Симптом: с включённым WG у телефона перестали открываться страницы,
+хотя собственный трафик роутера шёл через туннель нормально.
+
+Причина: интерфейс amneziawg был в зоне lan. Трафик клиентов LAN
+(телефон, ноутбук) уходил в туннель с адресом 192.168.2.x, а сервер
+AmneziaWG такую подсеть не знает и по ней не делает NAT - пакеты
+терялись. Собственный трафик роутера работал: у него адрес
+интерфейса туннеля (172.16.6.2), и NAT делает ядро.
+
+Теперь у AWG-интерфейса своя зона "awg": masq=1 (клиентский трафик
+NAT-ится в адрес туннеля) и mtu_fix=1 (обрезка MSS под MTU
+туннеля), а из зоны lan интерфейс убирается.
+
+Проверено на устройстве: до правки клиентский трафик выходил с
+адреса LTE (46.56.182.143), после - с адреса выхода туннеля
+(213.165.38.243).
+
+Helper pejir-awg-zone идемпотентен и вызывается из init-скрипта
+pejir-awg при старте, поэтому зона настраивается сама и после
+перезагрузки, и если интерфейс создан позже.
+---
+ package/pejir-awg/Makefile                    |  1 +
+ package/pejir-awg/root/etc/init.d/pejir-awg   |  5 ++
+ .../pejir-awg/root/usr/libexec/pejir-awg-zone | 69 +++++++++++++++++++
+ 3 files changed, 75 insertions(+)
+ create mode 100755 package/pejir-awg/root/usr/libexec/pejir-awg-zone
+
+diff --git a/package/pejir-awg/Makefile b/package/pejir-awg/Makefile
+index 4c707441..2dbafed2 100644
+--- a/package/pejir-awg/Makefile
++++ b/package/pejir-awg/Makefile
+@@ -52,6 +52,7 @@ define Package/pejir-awg/install
+ 	$(INSTALL_BIN) ./root/etc/init.d/50-pejir-awg-watch $(1)/etc/init.d/50-pejir-awg-watch
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-awg-watch $(1)/usr/libexec/pejir-awg-watch
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-awg-zone $(1)/usr/libexec/pejir-awg-zone
+ endef
+ 
+ $(eval $(call BuildPackage,pejir-awg))
+diff --git a/package/pejir-awg/root/etc/init.d/pejir-awg b/package/pejir-awg/root/etc/init.d/pejir-awg
+index f64457c5..5e03b7ca 100644
+--- a/package/pejir-awg/root/etc/init.d/pejir-awg
++++ b/package/pejir-awg/root/etc/init.d/pejir-awg
+@@ -39,6 +39,11 @@ awg_interfaces() {
+ 
+ start_service() {
+ 	load_awg_modules
++	# AWG-интерфейс должен быть в отдельной зоне файрвола с
++	# masquerading, иначе трафик клиентов LAN не NAT-ится в туннель и
++	# страницы у них не открываются (собственный трафик роутера при
++	# этом работает - его NAT-ит ядро).
++	[ -x /usr/libexec/pejir-awg-zone ] && /usr/libexec/pejir-awg-zone
+ 	[ -d /sys/module/amneziawg ] || return 0
+ 	local iface
+ 	for iface in $(awg_interfaces); do
+diff --git a/package/pejir-awg/root/usr/libexec/pejir-awg-zone b/package/pejir-awg/root/usr/libexec/pejir-awg-zone
+new file mode 100755
+index 00000000..769d357a
+--- /dev/null
++++ b/package/pejir-awg/root/usr/libexec/pejir-awg-zone
+@@ -0,0 +1,69 @@
++#!/bin/sh
++# Привести AWG-интерфейс в отдельную зону файрвола с masquerading.
++#
++# Зачем: интерфейс amneziawg по умолчанию попадает в зону lan. Тогда
++# трафик клиентов LAN (телефон, ноутбук) уходит в туннель с адресом
++# 192.168.2.x, а сервер AmneziaWG такой подсети не знает и не делает по
++# ней NAT - пакеты теряются, и страницы не открываются. Собственный трафик
++# роутера при этом работает: у него адрес интерфейса туннеля, и он
++# NAT-ится ядром.
++#
++# Решение: своя зона "awg" с masq=1 (клиентский трафик NAT-ится в адрес
++# туннеля) и mtu_fix=1 (обрезка MSS под MTU туннеля). И интерфейс
++# убирается из зоны lan.
++#
++# Скрипт идемпотентен: если зона уже настроена - ничего не делает.
++
++set -u
++
++ZONE="awg"
++
++awg_interfaces() {
++	local iface proto
++	for iface in $(uci -q show network 2>/dev/null | sed -n "s/^network\.\([^.=]*\)=interface$/\1/p"); do
++		[ -n "$iface" ] || continue
++		proto="$(uci -q get network."$iface".proto)"
++		case "$proto" in
++			amneziawg|wireguard)
++				echo "$iface"
++				;;
++		esac
++	done
++}
++
++changed=0
++first=""
++
++for iface in $(awg_interfaces); do
++	[ -n "$first" ] || first="$iface"
++
++	# убираем интерфейс из зоны lan
++	for z in $(uci -q show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.network=.*/\1/p"); do
++		if uci -q get firewall."$z".network | tr " " "\n" | grep -qx "$iface"; then
++			uci -q del_list firewall."$z".network="$iface"
++			changed=1
++		fi
++	done
++
++	# добавляем в свою зону
++	if ! uci -q get firewall."$ZONE".network | tr " " "\n" | grep -qx "$iface"; then
++		uci -q delete firewall."$ZONE" 2>/dev/null
++		uci set firewall."$ZONE"=zone
++		uci set firewall."$ZONE".name="$ZONE"
++		uci set firewall."$ZONE".input="REJECT"
++		uci set firewall."$ZONE".output="ACCEPT"
++		uci set firewall."$ZONE".forward="ACCEPT"
++		uci set firewall."$ZONE".masq="1"
++		uci set firewall."$ZONE".mtu_fix="1"
++		uci set firewall."$ZONE".network="$iface"
++		changed=1
++	fi
++done
++
++if [ "$changed" = "1" ]; then
++	uci commit firewall
++	logger -t pejir-awg "AWG-интерфейс переведён в зону $ZONE с masquerading"
++	/etc/init.d/firewall reload >/dev/null 2>&1
++fi
++
++exit 0
+-- 
+2.39.5
+

@@ -1,0 +1,131 @@
+From a64841f7655be87a6d5ae033de1ee2b6cc046271 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 21:54:50 GMT
+Subject: =?utf-8?b?aW5pdDog0YHQstC+0Lggc3RhcnQoKSDRgyDQvdC+0LLRi9GFINGB0LrRgNC40L/R?=
+ =?utf-8?b?gtC+0LIsINCx0LXQt9C+0L/QsNGB0L3QsNGPINGB0YHRi9C70LrQsCDQvdCwIEFU?=
+ =?utf-8?b?X0RSQUlO?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Два дефекта, найденные тестами после патчей 0151 и 0152:
+
+1. В /etc/rc.common start_service() вызывается только если скрипт
+   объявил USE_PROCD=1. Без этого флага rc.common выполняет свой
+   start() { return 0; } - и наши скрипты pejir-awg и pejir-lanhost
+   не сделали бы ровно ничего: модуль AWG не загрузился бы, а
+   openwrt.lan так и не появился бы в /etc/hosts. Теперь у обоих
+   свой start(), который зовёт start_service().
+
+2. В 47-pejir-lte обращение к AT_DRAIN шло как "$AT_DRAIN" - при
+   set -u и отсутствующей переменной скрипт падал на undefined
+   variable. Теперь это "${AT_DRAIN:-/usr/libexec/pejir-at-drain}".
+---
+ package/pejir-awg/root/etc/init.d/pejir-awg        |  7 +++++--
+ .../pejir-lanhost/root/etc/init.d/pejir-lanhost    |  6 ++++--
+ .../pejir-lte-base/root/etc/init.d/47-pejir-lte    | 14 +++++++-------
+ 3 files changed, 16 insertions(+), 11 deletions(-)
+
+diff --git a/package/pejir-awg/root/etc/init.d/pejir-awg b/package/pejir-awg/root/etc/init.d/pejir-awg
+index 529fd7b2..f64457c5 100644
+--- a/package/pejir-awg/root/etc/init.d/pejir-awg
++++ b/package/pejir-awg/root/etc/init.d/pejir-awg
+@@ -47,8 +47,11 @@ start_service() {
+ 	done
+ }
+ 
+-stop_service() {
+-	rmmod amneziawg 2>/dev/null
++# Свой start(): в /etc/rc.common start_service() вызывается только при
++# USE_PROCD=1, а без него rc.common выполнит свой start() { return 0; } -
++# и скрипт не сделал бы ничего.
++start() {
++	start_service
+ }
+ 
+ service_triggers() {
+diff --git a/package/pejir-lanhost/root/etc/init.d/pejir-lanhost b/package/pejir-lanhost/root/etc/init.d/pejir-lanhost
+index 20877577..17e7c353 100644
+--- a/package/pejir-lanhost/root/etc/init.d/pejir-lanhost
++++ b/package/pejir-lanhost/root/etc/init.d/pejir-lanhost
+@@ -22,6 +22,8 @@ start_service() {
+ 	return 0
+ }
+ 
+-service_triggers() {
+-	procd_add_reload_trigger network
++# Свой start(): без USE_PROCD=1 rc.common выполнит свой start()
++# { return 0; } и start_service() не вызовется.
++start() {
++	start_service
+ }
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index f2c3e583..68cdc6c0 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -120,7 +120,7 @@ at_ask() {
+ 	# Чистим буфер порта: иначе atinout отдаст ответ на предыдущую
+ 	# команду, а настоящий ответ придёт позже (и дождётся следующего
+ 	# вызова). Из-за этого первая попытка выглядела пустой.
+-	"$AT_DRAIN" "$p" 0.15 >/dev/null 2>&1
++	"${AT_DRAIN:-/usr/libexec/pejir-at-drain}" "$p" 0.15 >/dev/null 2>&1
+ 
+ 	printf "$fmt" > "$script"
+ 	set_port_speed "$p"
+@@ -302,7 +302,7 @@ sync_apn() {
+ 	/usr/libexec/pejir-lte-apn 2>/dev/null | awk '{ printf "%s\r\n", $0 }' > "$script" || : > "$script"
+ 	[ -s "$script" ] || { rm -f "$script"; return 0; }
+ 	set_port_speed "$port"
+-	"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
++	"${AT_DRAIN:-/usr/libexec/pejir-at-drain}" "$port" 0.15 >/dev/null 2>&1
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "APN отправлен модему: $apn"
+@@ -352,7 +352,7 @@ sync_bands() {
+ 		fi
+ 		printf 'AT+QCFG="band",1,%s\r\n' "$q_bands" > "$script"
+ 		set_port_speed "$port"
+-		"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
++		"${AT_DRAIN:-/usr/libexec/pejir-at-drain}" "$port" 0.15 >/dev/null 2>&1
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 		rm -f "$script"
+ 		log "диапазоны модема заданы (Quectel QCFG=band,1,$q_bands)"
+@@ -378,7 +378,7 @@ sync_bands() {
+ 		fi
+ 		printf 'AT+XACT=2,,,%s\r\n' "$fb_bands" > "$script"
+ 		set_port_speed "$port"
+-		"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
++		"${AT_DRAIN:-/usr/libexec/pejir-at-drain}" "$port" 0.15 >/dev/null 2>&1
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 		rm -f "$script"
+ 		log "диапазоны модема заданы (Fibocom XACT=2,,,$fb_bands)"
+@@ -395,7 +395,7 @@ sync_bands() {
+ 
+ 	printf 'AT+ZBAND=%s,0,0,%s\r\n' "$umts" "$lte" > "$script"
+ 	set_port_speed "$port"
+-	"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
++	"${AT_DRAIN:-/usr/libexec/pejir-at-drain}" "$port" 0.15 >/dev/null 2>&1
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "диапазоны модема заданы: $bands (ZBAND=$umts,0,0,$lte)"
+@@ -439,7 +439,7 @@ ecm_call() {
+ 	   [ "$(modem_family)" = "generic" ]; then
+ 		printf 'AT+CGACT=1,1\r\n' > "$script"
+ 		set_port_speed "$port"
+-		"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
++		"${AT_DRAIN:-/usr/libexec/pejir-at-drain}" "$port" 0.15 >/dev/null 2>&1
+ 	timeout "$ECM_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 		rm -f "$script"
+ 		log "PDP-контекст активирован (AT+CGACT=1,1) - данные идут по USB-NCM"
+@@ -459,7 +459,7 @@ ecm_call() {
+ 	# Ошибку игнорируем: на модемах без ECM-поддержки вызов не нужен,
+ 	# а AT+CGDCONT уже отработал.
+ 	set_port_speed "$port"
+-	"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
++	"${AT_DRAIN:-/usr/libexec/pejir-at-drain}" "$port" 0.15 >/dev/null 2>&1
+ 	timeout "$ECM_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "ECM data call (AT+ZECMCALL=1${apn:+,}$apn) отправлен модему"
+-- 
+2.39.5
+
