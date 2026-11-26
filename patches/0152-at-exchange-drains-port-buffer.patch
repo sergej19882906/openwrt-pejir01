@@ -1,0 +1,286 @@
+From a0f8380d3867b524d1176964359eccd375e3a805 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 21:49:41 GMT
+Subject: =?utf-8?b?bHRlOiBBVC3QvtCx0LzQtdC9INC90LUg0LfQsNC70LjQv9Cw0LXRgiAtINCx0YPR?=
+ =?utf-8?b?hNC10YAg0L/QvtGA0YLQsCDQvtGH0LjRidCw0LXRgtGB0Y8g0L/QtdGA0LXQtCDQ?=
+ =?utf-8?b?utC+0LzQsNC90LTQvtC5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Дефект: страница LuCI висдела на 7 секунд. Измерено на устройстве:
+pejir-modem-ctl pin-status - 7.15 с, при том что mdm-at AT+CSQ
+отвечает за 0.19 с.
+
+Причина в том, как работает atinout: он читает из порта всё, что там
+уже лежит, и сразу выходит. В порт ходят модем, сторож AT-порта,
+smsd и демон сигнала, поэтому в буфере почти всегда есть хвост от
+предыдущей команды. atinout отдавал этот хвост (то есть ответ на
+ПРЕДЫДУЩУЮ команду) и выходил, а настоящий ответ приходил позже и
+оставался в буфере до следующего вызова. Итог: первая попытка
+выглядела пустой, helper делал ещё две с паузой по 2 с, и в LuCI
+показывались данные от предыдущей команды.
+
+Новый helper pejir-at-drain очищает буфер порта перед обменом
+(читает и выбрасывает накопленное, ничего модему не отправляя,
+строго по времени). Его зовут pejir-modem-ctl, mdm-at, pejir-band
+и init-скрипт 47-pejir-lte.
+
+Заодно:
+- остановка smsd больше не ждёт фиксированные 2 с, а ждёт реального
+  выхода процесса (обычно доли секунды);
+- пауза между попытками AT уменьшена с 2 с до 1 с.
+
+После правки на устройстве: pin-status 1.2-1.6 с вместо 7.15 с,
+AT+CSQ 0.04 с, ответы модема приходят свежими.
+---
+ package/pejir-lte-base/Makefile               |  1 +
+ .../root/etc/init.d/47-pejir-lte              | 20 +++++++++--
+ package/pejir-lte-base/root/usr/bin/mdm-at    |  7 ++++
+ .../root/usr/libexec/pejir-at-drain           | 34 +++++++++++++++++++
+ .../root/usr/libexec/pejir-band               |  4 +++
+ .../root/usr/libexec/pejir-modem-ctl          | 19 +++++++++--
+ 6 files changed, 79 insertions(+), 6 deletions(-)
+ create mode 100755 package/pejir-lte-base/root/usr/libexec/pejir-at-drain
+
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index 9f225e4d..0b84b723 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -39,6 +39,7 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_DATA) ./root/usr/share/pejir/bands.sh $(1)/usr/share/pejir/bands.sh
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-band $(1)/usr/libexec/pejir-band
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-at-drain $(1)/usr/libexec/pejir-at-drain
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-lte-apn $(1)/usr/libexec/pejir-lte-apn
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-family $(1)/usr/libexec/pejir-modem-family
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-at-watch $(1)/usr/libexec/pejir-at-watch
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 9fa69174..f2c3e583 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -78,6 +78,9 @@ detect_ifname() {
+ # init-скрипт не доходит до конца. Поэтому каждый вызов обёрнут в
+ # timeout: порт, который не ответил, просто пропускаем.
+ AT_TIMEOUT="${AT_TIMEOUT:-5}"
++
++# Очистка буфера AT-порта перед обменом (см. pejir-at-drain).
++AT_DRAIN="${PEJIR_AT_DRAIN:-/usr/libexec/pejir-at-drain}"
+ # AT+ZECMCALL может набирать сеанс заметно дольше обычных AT-опросов:
+ # общий AT_TIMEOUT=5 режет вызов на полуобороте, поэтому набор сеанса живёт на собственном таймауте.
+ ECM_TIMEOUT="${ECM_TIMEOUT:-30}"
+@@ -114,6 +117,11 @@ DEFAULT_APN="${PEJIR_LTE_APN:-internet}"
+ at_ask() {
+ 	local p="$1" fmt="$2" out script="/tmp/pejir-ask.$$"
+ 
++	# Чистим буфер порта: иначе atinout отдаст ответ на предыдущую
++	# команду, а настоящий ответ придёт позже (и дождётся следующего
++	# вызова). Из-за этого первая попытка выглядела пустой.
++	"$AT_DRAIN" "$p" 0.15 >/dev/null 2>&1
++
+ 	printf "$fmt" > "$script"
+ 	set_port_speed "$p"
+ 	out="$(timeout "$AT_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
+@@ -294,6 +302,7 @@ sync_apn() {
+ 	/usr/libexec/pejir-lte-apn 2>/dev/null | awk '{ printf "%s\r\n", $0 }' > "$script" || : > "$script"
+ 	[ -s "$script" ] || { rm -f "$script"; return 0; }
+ 	set_port_speed "$port"
++	"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "APN отправлен модему: $apn"
+@@ -343,7 +352,8 @@ sync_bands() {
+ 		fi
+ 		printf 'AT+QCFG="band",1,%s\r\n' "$q_bands" > "$script"
+ 		set_port_speed "$port"
+-		timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
++		"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
++	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 		rm -f "$script"
+ 		log "диапазоны модема заданы (Quectel QCFG=band,1,$q_bands)"
+ 		return 0
+@@ -368,7 +378,8 @@ sync_bands() {
+ 		fi
+ 		printf 'AT+XACT=2,,,%s\r\n' "$fb_bands" > "$script"
+ 		set_port_speed "$port"
+-		timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
++		"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
++	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 		rm -f "$script"
+ 		log "диапазоны модема заданы (Fibocom XACT=2,,,$fb_bands)"
+ 		return 0
+@@ -384,6 +395,7 @@ sync_bands() {
+ 
+ 	printf 'AT+ZBAND=%s,0,0,%s\r\n' "$umts" "$lte" > "$script"
+ 	set_port_speed "$port"
++	"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
+ 	timeout "$AT_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "диапазоны модема заданы: $bands (ZBAND=$umts,0,0,$lte)"
+@@ -427,7 +439,8 @@ ecm_call() {
+ 	   [ "$(modem_family)" = "generic" ]; then
+ 		printf 'AT+CGACT=1,1\r\n' > "$script"
+ 		set_port_speed "$port"
+-		timeout "$ECM_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
++		"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
++	timeout "$ECM_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 		rm -f "$script"
+ 		log "PDP-контекст активирован (AT+CGACT=1,1) - данные идут по USB-NCM"
+ 		return 0
+@@ -446,6 +459,7 @@ ecm_call() {
+ 	# Ошибку игнорируем: на модемах без ECM-поддержки вызов не нужен,
+ 	# а AT+CGDCONT уже отработал.
+ 	set_port_speed "$port"
++	"$AT_DRAIN" "$port" 0.15 >/dev/null 2>&1
+ 	timeout "$ECM_TIMEOUT" atinout "$script" "$port" - >/dev/null 2>&1
+ 	rm -f "$script"
+ 	log "ECM data call (AT+ZECMCALL=1${apn:+,}$apn) отправлен модему"
+diff --git a/package/pejir-lte-base/root/usr/bin/mdm-at b/package/pejir-lte-base/root/usr/bin/mdm-at
+index 755d394e..04f40347 100755
+--- a/package/pejir-lte-base/root/usr/bin/mdm-at
++++ b/package/pejir-lte-base/root/usr/bin/mdm-at
+@@ -36,6 +36,9 @@ PROBE_TIMEOUT="${MDM_AT_TIMEOUT:-5}"
+ # Поэтому перед каждой AT-командой выставляем скорость через stty.
+ AT_BAUD="${MDM_AT_BAUD:-115200}"
+ 
++# Очистка буфера AT-порта перед обменом (см. pejir-at-drain).
++AT_DRAIN="${PEJIR_AT_DRAIN:-$(dirname "$0")/../libexec/pejir-at-drain}"
++
+ set_port_speed() {
+ 	[ -c "$1" ] || return 1
+ 	stty -F "$1" "$AT_BAUD" raw -echo 2>/dev/null
+@@ -49,6 +52,9 @@ detect_port() {
+ 	for p in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyUSB3 \
+ 	         /dev/ttyACM1 /dev/ttyACM0; do
+ 		[ -c "$p" ] || continue
++		# Чистим буфер: иначе проба заберёт ответ от предыдущей
++		# команды и найдёт "порт" там, где модем уже не отвечает.
++		"$AT_DRAIN" "$p" 0.15 >/dev/null 2>&1
+ 		set_port_speed "$p"
+ 		out="$(timeout "$PROBE_TIMEOUT" atinout "$script" "$p" - 2>/dev/null)"
+ 		case "$out" in
+@@ -67,6 +73,7 @@ detect_port() {
+ run_command() {
+ 	local cmd="$1" dev="$2" out script="/tmp/mdm-at-cmd.$$"
+ 
++	"$AT_DRAIN" "$dev" 0.15 >/dev/null 2>&1
+ 	printf '%s\r\n' "$cmd" > "$script"
+ 	set_port_speed "$dev"
+ 	out="$(timeout "$PROBE_TIMEOUT" atinout "$script" "$dev" - 2>/dev/null)"
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-at-drain b/package/pejir-lte-base/root/usr/libexec/pejir-at-drain
+new file mode 100755
+index 00000000..0285dfcd
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-at-drain
+@@ -0,0 +1,34 @@
++#!/bin/sh
++# Очистить буфер AT-порта модема.
++#
++#   pejir-at-drain <порт> [таймаут]
++#
++# Зачем. atinout читает из порта всё, что там уже лежит, и сразу
++# выходит. Хвост от предыдущей команды (а он есть почти всегда: в порт
++# ходят модем, сторож AT-порта, smsd и демон сигнала) приводит к тому,
++# что мы получаем ответ на ПРЕДЫДУЩУЮ команду, а настоящий ответ
++# приходит позже и остаётся в буфере до следующего вызова.
++#
++# На практике это выглядело так: первый ответ пустой, helper делал ещё
++# две попытки с паузой по 2 с - и страница LuCI висела 7 секунд,
++# показывая данные от предыдущей команды. Сейчас AT+CSQ на устройстве
++# отвечает за 0.04 с.
++#
++# Ничего не отправляем модему: только читаем и выбрасываем накопленное.
++set -u
++
++PORT="${1:-}"
++TMO="${2:-0.15}"
++
++[ -n "$PORT" ] || {
++	echo "использование: pejir-at-drain <порт> [таймаут]" >&2
++	exit 1
++}
++[ -e "$PORT" ] || exit 0
++
++# Неблокирующее чтение: порт не должен висеть в read() вечно.
++[ -c "$PORT" ] && stty -F "$PORT" 115200 raw -echo min 0 time 1 2>/dev/null
++
++timeout "$TMO" cat "$PORT" >/dev/null 2>&1
++
++exit 0
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-band b/package/pejir-lte-base/root/usr/libexec/pejir-band
+index 8a85b0c0..0a5bb30f 100644
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-band
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-band
+@@ -20,6 +20,9 @@ BANDS_SH="/usr/share/pejir/bands.sh"
+ 
+ AT_TIMEOUT="${AT_TIMEOUT:-8}"
+ 
++# Очистка буфера AT-порта перед обменом (см. pejir-at-drain).
++AT_DRAIN="${PEJIR_AT_DRAIN:-$(dirname "$0")/pejir-at-drain}"
++
+ # --- AT-обмен --------------------------------------------------------------
+ # $1 - порт, $2 - команда (без \r). Печатает ответ модема.
+ at_ask() {
+@@ -27,6 +30,7 @@ at_ask() {
+ 	_acmd="$2"
+ 	_script="/tmp/pejir-band.$$"
+ 
++	"$AT_DRAIN" "$_aport" 0.15 >/dev/null 2>&1
+ 	printf '%s\r\n' "$_acmd" > "$_script"
+ 	stty -F "$_aport" 115200 raw -echo 2>/dev/null || true
+ 	_out=$(timeout "$AT_TIMEOUT" atinout "$_script" "$_aport" - 2>/dev/null)
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+index 71a8705d..deef40ef 100755
+--- a/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-modem-ctl
+@@ -33,6 +33,9 @@ AT_TIMEOUT="${AT_TIMEOUT:-12}"
+ # модем не готов. С одной попытки такой обмен выглядит как поломка.
+ AT_RETRIES="${AT_RETRIES:-3}"
+ 
++# Очистка буфера AT-порта перед обменом (см. pejir-at-drain).
++AT_DRAIN="${PEJIR_AT_DRAIN:-$(dirname "$0")/pejir-at-drain}"
++
+ # Общий файл с масками диапазонов. Путь можно переопределить -
+ # так helper проверяется без устройства.
+ BANDS_SH="${PEJIR_BANDS_SH:-/usr/share/pejir/bands.sh}"
+@@ -46,6 +49,10 @@ at_ask() {
+ 	_acmd="$2"
+ 	_script="/tmp/pejir-modem-ctl.$$"
+ 
++	# Перед командой чистим буфер порта: иначе atinout отдаст ответ на
++	# предыдущую команду (или пустоту), а настоящий ответ придёт позже.
++	"$AT_DRAIN" "$_aport" 0.15 >/dev/null 2>&1
++
+ 	printf '%s\r\n' "$_acmd" > "$_script"
+ 	stty -F "$_aport" 115200 raw -echo 2>/dev/null || true
+ 	_out=$(timeout "$AT_TIMEOUT" atinout "$_script" "$_aport" - 2>/dev/null)
+@@ -75,7 +82,13 @@ smsd_stop() {
+ 	[ -x /etc/init.d/smstools3 ] || return 0
+ 	pidof smsd >/dev/null 2>&1 || return 0
+ 	/etc/init.d/smstools3 stop >/dev/null 2>&1
+-	sleep 2
++	# Ждём реального выхода smsd вместо фиксированной паузы: обычно он
++	# останавливается за доли секунды, и страница LuCI не должна ждать.
++	_n=0
++	while [ "$_n" -lt 2 ] && pidof smsd >/dev/null 2>&1; do
++		sleep 1
++		_n=$((_n + 1))
++	done
+ 	SMSD_WAS=1
+ 	return 0
+ }
+@@ -118,9 +131,9 @@ modem_cmd() {
+ 	while [ "$_n" -le "$AT_RETRIES" ]; do
+ 		_out=$(at_ask "$_p" "$1")
+ 		[ -n "$(printf '%s' "$_out" | tr -d ' \r\n')" ] && break
+-		# Ответа нет: ждём пару секунд и пробуем ещё раз. Номер SIM
++		# Ответа нет: ждём секунду и пробуем ещё раз. Номер SIM
+ 		# (AT+CNUM) модем отдаёт медленно - он читает его с карты.
+-		[ "$_n" -lt "$AT_RETRIES" ] && sleep 2
++		[ "$_n" -lt "$AT_RETRIES" ] && sleep 1
+ 		_n=$((_n + 1))
+ 	done
+ 
+-- 
+2.39.5
+
