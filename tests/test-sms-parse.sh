@@ -128,6 +128,41 @@ check('пустая строка в теле не ломает разбор (т�
 const r4 = parseMessage('');
 check('пустой файл не ломает разбор', r4.from === '' && r4.text === '', JSON.stringify(r4));
 
+// 5) Реальный файл с устройства (GM510, 26-11-26): заголовки со
+//    служебными полями, пустая строка, тело. Дата лежит в "Sent:".
+const real = [
+	'From: 375293146555',
+	'From_TOA: 91 international, ISDN/telephone',
+	'From_SMSC: 375296009014',
+	'Sent: 26-11-26 01:24:27',
+	'Received: 26-11-26 01:24:35',
+	'Subject: GM510',
+	'Modem: GM510',
+	'IMSI: 257010017540604',
+	'IMEI: 862784042920880',
+	'Report: no',
+	'Alphabet: UTF-8',
+	'Length: 13',
+	'',
+	'Текст сообщения'
+].join('\n');
+
+const r5 = parseMessage(real);
+check('реальный формат: номер взят из From', r5.from === '375293146555', r5.from);
+check('реальный формат: дата взта из Sent', r5.date === '26-11-26 01:24:27', r5.date);
+check('реальный формат: текст - только тело', r5.text === 'Текст сообщения', JSON.stringify(r5.text));
+check('реальный формат: служебные заголовки не в тексте',
+	r5.text.indexOf('IMSI') === -1 && r5.text.indexOf('Alphabet') === -1, r5.text);
+
+// 6) Служебный файл smstools3 "<модем>-concatenated" - это сборка
+//    многочастевых PDU, а не сообщение: номера и даты у него нет.
+const concatenated = [
+	'06 08 04 21 A9 03 03 07917325690009416006D0C118083408621152114483213906080421CA030300630063007000610079002D006D0079006100310020002804400430043704340435043B0020042104470435044204300029'
+].join('\n');
+const r6 = parseMessage(concatenated);
+check('concatenated-файл: номер пустой', r6.from === '', r6.from);
+check('concatenated-файл: дата пустая', r6.date === '', r6.date);
+
 process.exit(fails ? 1 : 0);
 JS
 
@@ -143,6 +178,15 @@ if grep -q "from: lines\[0\]" "$JS" || grep -q "date: lines\[1\]" "$JS"; then
 	fail "в странице номер и дата по-прежнему берутся из первых строк файла"
 else
 	ok "страница не берёт номер и дату из первых строк файла"
+fi
+
+# Служебный файл smstools3 "<модем>-concatenated" (сборка многочастевых
+# PDU) не должен попадать в переписку: на устройстве он выглядел как
+# мусорный элемент без номера и даты.
+if grep -q "concatenated" "$JS"; then
+	ok "страница отсекает служебный файл *-concatenated"
+else
+	fail "страница не отсекает служебный файл *-concatenated (в переписке будет мусор)"
 fi
 
 if [ "$FAILED" -gt 0 ]; then

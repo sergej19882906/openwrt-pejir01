@@ -1,0 +1,64 @@
+From a87318859bea1c43d525d00701a6033269a3f1e7 Mon Sep 17 00:00:00 2001
+From: pejir <pejir@local>
+Date: Thu, 26 Nov 2026 15:52:02 GMT
+Subject: =?utf-8?b?c21zOiDRgdC70YPQttC10LHQvdGL0Lkg0YTQsNC50Lsgc21zdG9vbHMzIDzQvNC+?=
+ =?utf-8?b?0LTQtdC8Pi1jb25jYXRlbmF0ZWQg0L3QtSDQv9C+0LrQsNC30YvQstCw0LXRgtGB?=
+ =?utf-8?b?0Y8g0LIg0L/QtdGA0LXQv9C40YHQutC1?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Проверка релиза .65 на устройстве показала: в /var/spool/sms/incoming
+лежит не только два сообщения, но и служебный файл GM510-concatenated -
+это сборка многочастевых PDU, которую smstools3 держит для склейки
+длинных сообщений. Сообщением он не является: ни номера, ни даты, ни
+текста в нем нет, только hex-PDU, и в переписке он выглядел как
+мусорный элемент.
+
+Теперь такие файлы пропускаются при чтении очереди. Заодно отбрасываются
+файлы, из которых не удалось получить ни номера, ни даты, ни текста, -
+на случай других служебных файлов smstools3.
+
+Разбор сообщений проверен на РЕАЛЬНОМ файле с устройства (GM510,
+заголовки From/From_TOA/Sent/Alphabet/Length, пустая строка, тело):
+номер берётся из From, дата из Sent, текст - только из тела.
+---
+ .../luci-static/resources/view/perenio/sms.js     | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 0368881c..a50d6abb 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -192,7 +192,15 @@ function parseMessage(txt) {
+ /* Чтение сообщений из каталога spool smstools3. */
+ function readSpool(dir) {
+ 	return fs.list(dir).catch(function() { return []; }).then(L.bind(function(list) {
+-		var files = (list || []).filter(function(f) { return f.type == 'file'; });
++		/* smstools3 кладёт рядом с сообщениями служебный файл
++		 * "<модем>-concatenated" - это сборка многочастевых PDU, а не
++		 * сообщение. В переписке он выглядел как мусорный элемент без
++		 * номера и даты, поэтому такие файлы пропускаем. */
++		var files = (list || []).filter(function(f) {
++			if (f.type != 'file')
++				return false;
++			return !/-concatenated$/.test(f.name);
++		});
+ 
+ 		files.sort(function(a, b) { return b.mtime - a.mtime; });
+ 		files = files.slice(0, 50);
+@@ -201,6 +209,11 @@ function readSpool(dir) {
+ 			return fs.read(dir + '/' + f.name).then(function(txt) {
+ 				var m = parseMessage(txt);
+ 
++				/* Файл без номера, без даты и без текста - не
++				 * сообщение (служебный мусор smstools3). */
++				if (!m.from && !m.date && !m.text)
++					return null;
++
+ 				return { name: f.name, mtime: f.mtime,
+ 					from: m.from, date: m.date, text: m.text };
+ 			}).catch(function() { return null; });
+-- 
+2.39.5
+
