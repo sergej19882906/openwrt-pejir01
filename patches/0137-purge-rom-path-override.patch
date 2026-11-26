@@ -1,0 +1,44 @@
+From dc4cb4786b3130db36c0c4f6fffea9b5ad1f69cf Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 03:11:26 GMT
+Subject: =?utf-8?b?b3RhOiDQv9GD0YLRjCDQuiDRgdCy0LXQttC10Lkg0LrQvtC/0LjQuCDRgdC60YDQ?=
+ =?utf-8?b?uNC/0YLQsCDQsiAvcm9tINC80L7QttC90L4g0L/QtdGA0LXQvtC/0YDQtdC00LXQ?=
+ =?utf-8?b?u9C40YLRjCAo0LTQu9GPINGC0LXRgdGC0L7Qsik=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Перезапуск с чистым кодом из /rom - ключевая часть чистки (иначе
+приведения конфигурации из новой версии молча не выполняются). Чтобы
+её можно было проверить тестом без устройства, путь к /rom вынесен в
+переменную PEJIR_ROM_PURGE.
+
+На устройстве переменная не задаётся - поведение прежнее: сверяем
+запущенный файл с /rom/usr/bin/pejir-upgrade-purge и перезапускаемся
+из /rom при расхождении.
+---
+ package/pejir-ota/files/pejir-upgrade-purge | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/package/pejir-ota/files/pejir-upgrade-purge b/package/pejir-ota/files/pejir-upgrade-purge
+index 8695b562..4152e751 100755
+--- a/package/pejir-ota/files/pejir-upgrade-purge
++++ b/package/pejir-ota/files/pejir-upgrade-purge
+@@ -26,10 +26,11 @@
+ # конфигурации - и приведение молча не выполняется. Поэтому сравниваем
+ # запущенный файл с тем, что лежит в /rom (в образе он всегда свежий), и
+ # при расхождении перезапускаемся из /rom.
+-if [ -x /rom/usr/bin/pejir-upgrade-purge ] && \
+-   ! cmp -s "$0" /rom/usr/bin/pejir-upgrade-purge 2>/dev/null; then
++ROM_PURGE="${PEJIR_ROM_PURGE:-/rom/usr/bin/pejir-upgrade-purge}"
++if [ -x "$ROM_PURGE" ] && \
++   ! cmp -s "$0" "$ROM_PURGE" 2>/dev/null; then
+ 	echo "pejir-upgrade-purge: запущена протухшая копия - перезапускаюсь из /rom"
+-	exec /rom/usr/bin/pejir-upgrade-purge "$@"
++	exec "$ROM_PURGE" "$@"
+ fi
+ 
+ VERSION_FILE="${PEJIR_PURGE_VERSION_FILE:-/usr/lib/pejir/version}"
+-- 
+2.39.5
+

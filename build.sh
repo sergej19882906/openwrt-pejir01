@@ -401,6 +401,13 @@ CONFIG_LUCI_LANG_ru=y
 # OTA: обновление прошивки кнопкой в LuCI (без автообновления)
 CONFIG_PACKAGE_pejir-ota=y
 # monitoring / traffic / diagnostics
+# busybox: mkswap нужен, чтобы пересоздать раздел свопа с меткой (LABEL).
+# Без него у пользователя нет способа дать разделу свопа идентификатор,
+# и своп остаётся прописанным по имени устройства (/dev/sda2) - оно
+# меняется при перенумерации разделов. FEATURE_MKSWAP_UUID заодно пишет
+# в заголовок свопа UUID, который fstools умеет искать.
+CONFIG_BUSYBOX_CONFIG_MKSWAP=y
+CONFIG_BUSYBOX_CONFIG_FEATURE_MKSWAP_UUID=y
 # mwan3 убран из образа (релиз .63).
 #
 # ПРИЧИНА. В OpenWrt 25.12 mwan3 (2.12.0-r3) работает только через

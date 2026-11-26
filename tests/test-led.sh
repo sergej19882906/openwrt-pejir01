@@ -225,6 +225,18 @@ if grep -q '^zb manual b *$' "$CONF" && grep -q '^sh manual 0 *$' "$CONF"; then
 else
 	fail "restore изменил настройки: $(cat "$CONF" | tr '\n' '|')"
 fi
+# Индикатор в авто-режиме, у которого система не может вычислить цвет
+# (служебные zb/sh/a), должен получать сохранённый пользователем цвет,
+# а не оставаться погашенным.
+printf 'zb auto b\n' > "$CONF"
+: > "$LOG"
+run_led restore >/dev/null
+if grep -q -- '-p l zb=b' "$LOG"; then
+	ok "restore вернул сохранённый цвет авто-индикатора без вычислимого цвета"
+else
+	fail "restore не вернул сохранённый цвет zb: $(cat "$LOG" | tr '\n' ' ')"
+fi
+
 # Функция restore_saved обязана вызываться при старте авто-цикла.
 if grep -q "restore_saved" "$HELPER"; then
 	ok "авто-цикл вызывает restore_saved при старте"

@@ -169,6 +169,17 @@ rm -f "$WORK/uci.calls" "$WORK/watch.calls"
 # приведение конфигурации (иначе он выйдет раньше).
 rm -f "$WORK/upper/pejir/purge-version"
 
+# Остатки mwan3 в верхнем слое (в образе .63 пакета уже нет, но файлы
+# могли остаться: ставили из LuCI или пережили прошивку).
+mkdir -p "$WORK/upper/etc/init.d" "$WORK/upper/etc/rc.d" "$WORK/upper/etc/config" \
+	 "$WORK/upper/usr/sbin" "$WORK/upper/lib/mwan3" "$WORK/upper/usr/share/luci/menu.d" \
+	 "$WORK/upper/www/luci-static/resources/view/mwan3" "$WORK/upper/lib/apk/packages"
+for f in etc/init.d/mwan3 etc/rc.d/S19mwan3 etc/config/mwan3 usr/sbin/mwan3 \
+	 lib/mwan3/mwan3.sh usr/share/luci/menu.d/luci-app-mwan3.json \
+	 www/luci-static/resources/view/mwan3/status.js lib/apk/packages/mwan3.list; do
+	printf '#!/bin/sh\n' > "$WORK/upper/$f"
+done
+
 out_mig="$(PATH="$WORK/stub:$PATH" \
 	PEJIR_PURGE_VERSION_FILE="$WORK/version" \
 	PEJIR_PURGE_MARKER="$WORK/upper/pejir/purge-version" \
@@ -215,6 +226,46 @@ if grep -q "/rom/usr/bin/pejir-ovl-purge" "$HELPER"; then
 	ok "helper: чистку запускает из /rom (свежая версия)"
 else
 	fail "helper: чистка запускается не из /rom"
+fi
+
+# Остатки mwan3 должны быть убраны из верхнего слоя: в образе пакета
+# уже нет, поэтому его init-скрипт больше не должен запускаться, а меню
+# LuCI - показывать страницу mwan3.
+MWAN_LEFT=""
+for f in etc/init.d/mwan3 etc/rc.d/S19mwan3 etc/config/mwan3 usr/sbin/mwan3 \
+	 lib/mwan3/mwan3.sh usr/share/luci/menu.d/luci-app-mwan3.json \
+	 www/luci-static/resources/view/mwan3/status.js lib/apk/packages/mwan3.list; do
+	[ -e "$WORK/upper/$f" ] && MWAN_LEFT="$MWAN_LEFT $f"
+done
+if [ -z "$MWAN_LEFT" ]; then
+	ok "helper: остатки mwan3 убраны из верхнего слоя"
+else
+	fail "helper: остатки mwan3 остались:$MWAN_LEFT"
+fi
+
+# --- запуск протухшей копии: свежий код берётся из /rom --------------------
+# Именно из-за этого остался mwan3 в .63: в верхнем слое лежала копия
+# скрипта из прежней версии, и запускалась именно она.
+cat > "$WORK/rom-purge" <<'EOF'
+#!/bin/sh
+echo "СВЕЖАЯ КОПИЯ ИЗ /ROM"
+exit 0
+EOF
+chmod 755 "$WORK/rom-purge"
+out_rom="$(PEJIR_ROM_PURGE="$WORK/rom-purge" \
+	PEJIR_PURGE_VERSION_FILE="$WORK/version" \
+	PEJIR_PURGE_MARKER="$WORK/upper/pejir/purge-version" \
+	PEJIR_PURGE_CMD="$WORK/purge" \
+	PEJIR_PURGE_UPPER_DIR="$WORK/upper" \
+		sh "$HELPER" 2>&1)"
+if grep -q "СВЕЖАЯ КОПИЯ" <<EOF
+$out_rom
+EOF
+then
+	ok "helper: протухшая копия перезапускает свежий код из /rom"
+else
+	fail "helper: протухшая копия не перезапускает свежий код из /rom"
+	echo "$out_rom" | sed 's/^/     /'
 fi
 
 # --- повторный запуск при той же версии - ничего не делает -----------------

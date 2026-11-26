@@ -1,0 +1,94 @@
+From 129474c57d57b7017194363847b87e041532e6c7 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 03:10:41 GMT
+Subject: =?utf-8?b?b3RhOiDRh9C40YHRgtC60LAgbXdhbjMg0LLRi9C/0L7Qu9C90Y/QtdGC0YHRjyDR?=
+ =?utf-8?b?gdCy0LXQttC40Lwg0LrQvtC00L7QvCDQuCDRg9Cx0LjRgNCw0LXRgiDQktCh0JUg?=
+ =?utf-8?b?0LXQs9C+INGE0LDQudC70Ys=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Проверка релиза .63 на устройстве показала: в образе mwan3 нет (проверено
+- ни пакета в apk, ни init-скрипта), но на устройстве остались
+/etc/init.d/mwan3, /etc/rc.d/S19mwan3 и /etc/config/mwan3, то есть они
+лежат в верхнем слое.
+
+ПРИЧИНА ПЕРВАЯ - КОД БЫЛ ПРОТУХШИЙ. sysupgrade не пересоздаёт overlay, и
+в верхнем слое лежала копия pejir-upgrade-purge из прежней версии.
+Запускался ИМЕННО ОН (init-скрипт берёт файл из merged-вида, где верхний
+слой перекрывает squashfs) - а в нём блока чистки mwan3 ещё не было.
+Файл из образа (/rom) был свежим, но его никто не запускал.
+
+Исправление: в самом начале скрипта сравниваем запущенный файл с
+/rom/usr/bin/pejir-upgrade-purge и при расхождении перезапускаемся из
+/rom (exec). Теперь любые приведения конфигурации, добавленные в новой
+версии, выполняются всегда - независимо от того, какая копия скрипта
+лежит в верхнем слое.
+
+ПРИЧИНА ВТОРАЯ - СПИСОК БЫЛ НЕПОЛНЫМ. Чистились только четыре пути
+(/etc/config/mwan3, /etc/init.d/mwan3, /etc/rc.d/S19mwan3, /etc/mwan3).
+Если пакет ставился из LuCI (apk add mwan3), в верхнем слое лежат ВСЕ его
+файлы, и после чистки оставались /usr/sbin/mwan3, /lib/mwan3/*, хотplug-скрипты
+и меню LuCI.
+
+Теперь удаляются все файлы обоих пакетов (mwan3 и luci-app-mwan3) по
+спискам из apk в образе .62, включая каталоги, hotplug-скрипты,
+uci-defaults, меню и страницы LuCI, а также списки самих пакетов в apk.
+
+Заодно сам скрипт останавливает и отключает сервис mwan3, если он ещё
+жив (init-скрипт из верхнего слоя мог быть запущен procd на этой
+загрузке).
+---
+ package/pejir-ota/files/pejir-upgrade-purge | 29 ++++++++++++++++++++-
+ 1 file changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/package/pejir-ota/files/pejir-upgrade-purge b/package/pejir-ota/files/pejir-upgrade-purge
+index 92fdcda2..8695b562 100755
+--- a/package/pejir-ota/files/pejir-upgrade-purge
++++ b/package/pejir-ota/files/pejir-upgrade-purge
+@@ -20,6 +20,18 @@
+ # Переменные (для тестов): PEJIR_PURGE_VERSION_FILE, PEJIR_PURGE_MARKER,
+ # PEJIR_PURGE_CMD, PEJIR_PURGE_UPPER_DIR.
+ 
++# Копия этого скрипта может лежать в верхнем слое (sysupgrade не пересоздаёт
++# overlay, а ранние "горячие фиксы" копировали туда файлы наших пакетов).
++# Если запущена ПРОТУХШАЯ копия, её код не знает про новые приведения
++# конфигурации - и приведение молча не выполняется. Поэтому сравниваем
++# запущенный файл с тем, что лежит в /rom (в образе он всегда свежий), и
++# при расхождении перезапускаемся из /rom.
++if [ -x /rom/usr/bin/pejir-upgrade-purge ] && \
++   ! cmp -s "$0" /rom/usr/bin/pejir-upgrade-purge 2>/dev/null; then
++	echo "pejir-upgrade-purge: запущена протухшая копия - перезапускаюсь из /rom"
++	exec /rom/usr/bin/pejir-upgrade-purge "$@"
++fi
++
+ VERSION_FILE="${PEJIR_PURGE_VERSION_FILE:-/usr/lib/pejir/version}"
+ MARKER="${PEJIR_PURGE_MARKER:-/overlay/pejir/purge-version}"
+ PURGE_CMD="${PEJIR_PURGE_CMD:-/usr/bin/pejir-ovl-purge}"
+@@ -104,7 +116,22 @@ if [ -x /etc/init.d/mwan3 ]; then
+ 	/etc/init.d/mwan3 disable >/dev/null 2>&1
+ fi
+ 
+-for f in etc/config/mwan3 etc/init.d/mwan3 etc/rc.d/S19mwan3 etc/mwan3; do
++# Полный список файлов пакетов mwan3 и luci-app-mwan3 (взят из списков
++# apk в образе .62). Если пользователь ставил mwan3 из LuCI (apk add),
++# все эти файлы лежат в верхнем слое - иначе остался бы только его
++# init-скрипт, который procd продолжает запускать.
++for f in etc/config/mwan3 etc/mwan3.user etc/init.d/mwan3 etc/rc.d/S19mwan3 \
++	 etc/mwan3 etc/hotplug.d/iface/15-mwan3 \
++	 etc/hotplug.d/iface/16-mwan3-user \
++	 etc/uci-defaults/mwan3-migrate-flush_conntrack \
++	 etc/uci-defaults/60_luci-mwan3 \
++	 lib/mwan3 usr/sbin/mwan3 usr/sbin/mwan3rtmon usr/sbin/mwan3track \
++	 usr/share/rpcd/ucode/mwan3 usr/libexec/luci-mwan3 \
++	 usr/share/luci/menu.d/luci-app-mwan3.json \
++	 usr/share/rpcd/acl.d/luci-app-mwan3.json \
++	 www/luci-static/resources/view/mwan3 \
++	 www/luci-static/resources/view/status/include/90_mwan3.js \
++	 lib/apk/packages/mwan3.list lib/apk/packages/luci-app-mwan3.list; do
+ 	if [ -e "$UPPER/$f" ] || [ -L "$UPPER/$f" ]; then
+ 		rm -rf "$UPPER/$f" 2>/dev/null && echo "mwan3: удалён остаток $f из верхнего слоя"
+ 	fi
+-- 
+2.39.5
+

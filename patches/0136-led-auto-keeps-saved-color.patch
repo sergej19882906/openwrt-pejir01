@@ -1,0 +1,58 @@
+From b266c16c7dd126b5629b840306caf33215df852b Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 03:11:00 GMT
+Subject: =?utf-8?b?bGVkOiDQsiDQsNCy0YLQvi3RgNC10LbQuNC80LUg0YHQvtGF0YDQsNC90Y/QtdGC?=
+ =?utf-8?b?0YHRjyDRhtCy0LXRgiwg0LXRgdC70Lgg0YHQuNGB0YLQtdC80LAg0LXQs9C+INC9?=
+ =?utf-8?b?0LUg0LLRi9GH0LjRgdC70LjQu9Cw?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Проверка .63 на устройстве показала, что /etc/pejir/led.conf у пользователя
+пережил несколько версий и в нём ВСЕ семь индикаторов в режиме auto с
+сохранённым цветом (b - синий).
+
+Для индикаторов i, l, 2, 5 авто-режим вычисляет цвет по состоянию
+системы, и сохранённый цвет там не нужен. А для служебных zb, sh, a
+состояния нет - auto_color() для них ничего не возвращает. Раньше
+restore_saved в этом случае просто пропускал индикатор, и он оставался
+погашенным, хотя пользователь задавал ему цвет (в настройках он есть).
+
+Теперь: если система не смогла вычислить цвет, индикатор получает
+сохранённый пользователем цвет - то есть восстанавливается ровно то, что
+пользователь настроил. Если система вычислила цвет (i, l, 2, 5) - как и
+раньше, применяется цвет по состоянию.
+---
+ .../luci-app-perenio/root/usr/libexec/pejir-led  | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/package/luci-app-perenio/root/usr/libexec/pejir-led b/package/luci-app-perenio/root/usr/libexec/pejir-led
+index db8c986f..a94e59de 100755
+--- a/package/luci-app-perenio/root/usr/libexec/pejir-led
++++ b/package/luci-app-perenio/root/usr/libexec/pejir-led
+@@ -216,11 +216,17 @@ restore_saved() {
+ 		[ -n "$color" ] || continue
+ 
+ 		if [ "$mode" = "auto" ]; then
+-			color="$(auto_color "$l")"
+-			[ -n "$color" ] || continue
+-			# В авто-режиме мигание задаёт сам режим, сохранённый
+-			# пользователем для ручного цвета, здесь не применяется.
+-			blink=""
++			acolor="$(auto_color "$l")"
++			if [ -n "$acolor" ]; then
++				color="$acolor"
++				# В авто-режиме мигание задаёт сам режим,
++				# сохранённый пользователем для ручного цвета,
++				# здесь не применяется.
++				blink=""
++			fi
++			# Если система не может вычислить цвет (служебные
++			# индикаторы zb/sh/a - состояния у них нет), остаётся
++			# сохранённый цвет пользователя, а не пустота.
+ 		fi
+ 
+ 		val="$color"
+-- 
+2.39.5
+
