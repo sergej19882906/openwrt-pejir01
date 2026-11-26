@@ -1,0 +1,372 @@
+From 19bf7e760a496e8ba694bbfff99d872a0816587e Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 03:32:22 GMT
+Subject: =?utf-8?b?c21zOiDQvtGH0LjRgdGC0LrQsCDQv9Cw0LzRj9GC0Lgg0LzQvtC00LXQvNCwIChT?=
+ =?utf-8?b?SU0pIC0g0LLRhdC+0LTRj9GJ0LjQtSBTTVMg0L3QtSDQtNC+0YXQvtC00Y/RgiDQ?=
+ =?utf-8?b?v9GA0Lgg0LfQsNCx0LjRgtC+0Lkg0L/QsNC80Y/RgtC4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+В журнале smsd на устройстве каждые 33 секунды:
+
+    GM510: Message 0, not enough storage space.
+
+Это сообщение smstools3 (src/pdu.c, pdu_to_text): модем не может
+перечислить хранящиеся в нём сообщения - список не помещается в буфер.
+Причина - память SIM забита старыми SMS: модем принимает входящие
+сообщения в память SIM (smsd.conf: init = AT+CPMS="SM","SM","SM"), и
+при заполненной памяти НОВОЕ сообщение он принять не может - оно
+остаётся в модеме, до роутера не доходит.
+
+Именно поэтому входящие SMS не видны, хотя в очереди на флешке лежат
+старые файлы.
+
+ЧТО СДЕЛАНО:
+- новый helper pejir-modem-sms-clean (пакет pejir-lte-base, где уже
+  есть зависимость на atinout - источник mdm-at):
+    status - сколько сообщений в памяти модема (AT+CPMS?);
+    clean  - удалить все сообщения из памяти модема (AT+CMGD=1,4).
+  Удаление идёт по явной команде, молча память не чистится;
+- на странице SMS в карточке "Состояние службы" добавлены кнопки
+  "Показать память модема" и "Очистить память модема" с пояснением,
+  почему входящие могут не доходить;
+- грант exec на helper в ACL.
+
+ВНИМАНИЕ: clean удаляет то, что лежит В МОДЕМЕ. Очередь smstools3 на
+флешке (то, что показывает веб-интерфейс) при этом не трогается.
+---
+ .../luci-static/resources/view/perenio/sms.js |  36 +++++-
+ .../po/ru/luci-app-perenio.po                 |   9 ++
+ .../share/rpcd/acl.d/luci-app-perenio.json    |  59 +++++----
+ package/pejir-lte-base/Makefile               |   1 +
+ .../root/usr/libexec/pejir-modem-sms-clean    | 121 ++++++++++++++++++
+ 5 files changed, 197 insertions(+), 29 deletions(-)
+ create mode 100755 package/pejir-lte-base/root/usr/libexec/pejir-modem-sms-clean
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index a21dfd5e..0368881c 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -775,7 +775,41 @@ return view.extend({
+ 					E('div', { 'class': 'v', 'id': 'sms-state' }, _('checking…'))
+ 				]),
+ 				E('div', { 'class': 'pejir-sms-note' }, _('smsd log')),
+-				E('pre', { 'id': 'sms-log', 'class': 'pejir-sms-log' }, '')
++				E('pre', { 'id': 'sms-log', 'class': 'pejir-sms-log' }, ''),
++				E('div', { 'class': 'pejir-sms-note' }, _('Modem memory (SIM)')),
++				E('div', { 'class': 'pejir-sms-note' },
++					_('Incoming SMS are stored in the modem memory (SIM). If it is full, the modem cannot accept new messages and they never reach the router. The button below shows how many messages are stored there and deletes them.')),
++				E('div', { 'class': 'cbi-value' }, [
++					E('div', { 'class': 'cbi-value-title' }, ''),
++					E('div', { 'class': 'cbi-value-field' }, [
++						E('button', {
++							'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++							'click': ui.createHandlerFn(this, function() {
++								var box = document.getElementById('sms-modem-mem-out');
++								if (box) box.textContent = _('Working...');
++								return fs.exec('/usr/libexec/pejir-modem-sms-clean', [ 'clean' ]).then(function(r) {
++									var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++									if (box) box.textContent = out.trim() || _('Done');
++								});
++							})
++						}, _('Clean modem memory')),
++						' ',
++						E('button', {
++							'class': 'cbi-button cbi-button-neutral', 'type': 'button',
++							'click': ui.createHandlerFn(this, function() {
++								var box = document.getElementById('sms-modem-mem-out');
++								if (box) box.textContent = _('Working...');
++								return fs.exec('/usr/libexec/pejir-modem-sms-clean', [ 'status' ]).then(function(r) {
++									var out = (r && r.stdout ? r.stdout : '') + (r && r.stderr ? r.stderr : '');
++									if (box) box.textContent = out.trim() || _('Done');
++								});
++							})
++						}, _('Show modem memory'))
++					])
++				]),
++				E('pre', { 'id': 'sms-modem-mem-out',
++					'style': 'white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:12px; max-height:30vh; overflow:auto; border:1px solid #ccc; padding:8px;' },
++					'')
+ 			])
+ 		]);
+ 
+diff --git a/package/luci-app-perenio/po/ru/luci-app-perenio.po b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+index 39a92c4b..14dd6495 100644
+--- a/package/luci-app-perenio/po/ru/luci-app-perenio.po
++++ b/package/luci-app-perenio/po/ru/luci-app-perenio.po
+@@ -589,3 +589,12 @@ msgid "LTE as a backup link"
+ msgstr "LTE как резервный канал"
+ msgid "The router switches to the modem on its own: the wired WAN has the main default route, and LTE has a backup route with a higher metric. If the wired link goes down, traffic goes through the modem, and it returns back when the link recovers. Nothing has to be installed or configured for that."
+ msgstr "Роутер переключается на модем сам: у проводного WAN основной маршрут по умолчанию, а у LTE - резервный с большей метрикой. Если проводная связь пропала, трафик идёт через модем, а при восстановлении возвращается обратно. Ничего устанавливать и настраивать не нужно."
++
++msgid "Modem memory (SIM)"
++msgstr "Память модема (SIM)"
++msgid "Incoming SMS are stored in the modem memory (SIM). If it is full, the modem cannot accept new messages and they never reach the router. The button below shows how many messages are stored there and deletes them."
++msgstr "Входящие SMS хранятся в памяти модема (SIM). Если она забита, модем не может принять новые сообщения, и до роутера они не доходят. Кнопка ниже показывает, сколько сообщений там лежит, и удаляет их."
++msgid "Clean modem memory"
++msgstr "Очистить память модема"
++msgid "Show modem memory"
++msgstr "Показать память модема"
+diff --git a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+index 117f8b28..6e9d36db 100644
+--- a/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
++++ b/package/luci-app-perenio/root/usr/share/rpcd/acl.d/luci-app-perenio.json
+@@ -98,52 +98,46 @@
+ 		},
+ 		"write": {
+ 			"file": {
+-				"/usr/bin/mcu getvolt": [
+-					"exec"
+-				],
+-				"/usr/bin/mcu getsys": [
+-					"exec"
+-				],
+-				"/usr/bin/mcu getver": [
++				"/etc/init.d/47-pejir-lte restart": [
+ 					"exec"
+ 				],
+-				"/usr/sbin/idata_load --force": [
++				"/etc/init.d/homed-zigbee restart": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-send-sms": [
++				"/etc/init.d/homed-zigbee status": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-at-watch": [
++				"/etc/init.d/smstools3 status": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-sms-clean": [
++				"/rom/usr/libexec/perenio-diag": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-sms-ctl": [
++				"/usr/bin/mcu getsys": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-sms-ctl export": [
++				"/usr/bin/mcu getver": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-sms-ctl templates": [
++				"/usr/bin/mcu getvolt": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-sms-ctl template-add": [
++				"/usr/bin/pejir-zigbee-ncp": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-sms-ctl template-del": [
++				"/usr/bin/pejir-zigbee-ncp ensure": [
+ 					"exec"
+ 				],
+-				"/etc/init.d/smstools3 status": [
++				"/usr/bin/pejir-zigbee-ncp flash-bg": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/perenio-diag": [
++				"/usr/bin/pejir-zigbee-ncp log": [
+ 					"exec"
+ 				],
+-				"/rom/usr/libexec/perenio-diag": [
++				"/usr/bin/pejir-zigbee-ncp status": [
+ 					"exec"
+ 				],
+-				"/usr/libexec/pejir-ussd": [
++				"/usr/libexec/pejir-at-watch": [
+ 					"exec"
+ 				],
+ 				"/usr/libexec/pejir-band": [
+@@ -158,31 +152,40 @@
+ 				"/usr/libexec/pejir-modem-ctl": [
+ 					"exec"
+ 				],
+-				"/etc/init.d/homed-zigbee restart": [
++				"/usr/libexec/pejir-modem-sms-clean": [
+ 					"exec"
+ 				],
+-				"/etc/init.d/homed-zigbee status": [
++				"/usr/libexec/pejir-send-sms": [
+ 					"exec"
+ 				],
+-				"/etc/init.d/47-pejir-lte restart": [
++				"/usr/libexec/pejir-sms-clean": [
+ 					"exec"
+ 				],
+-				"/usr/bin/pejir-zigbee-ncp": [
++				"/usr/libexec/pejir-sms-ctl": [
+ 					"exec"
+ 				],
+-				"/usr/bin/pejir-zigbee-ncp status": [
++				"/usr/libexec/pejir-sms-ctl export": [
+ 					"exec"
+ 				],
+-				"/usr/bin/pejir-zigbee-ncp ensure": [
++				"/usr/libexec/pejir-sms-ctl template-add": [
++					"exec"
++				],
++				"/usr/libexec/pejir-sms-ctl template-del": [
++					"exec"
++				],
++				"/usr/libexec/pejir-sms-ctl templates": [
+ 					"exec"
+ 				],
+ 				"/usr/libexec/pejir-tg": [
+ 					"exec"
+ 				],
+-				"/usr/bin/pejir-zigbee-ncp flash-bg": [
++				"/usr/libexec/pejir-ussd": [
+ 					"exec"
+ 				],
+-				"/usr/bin/pejir-zigbee-ncp log": [
++				"/usr/libexec/perenio-diag": [
++					"exec"
++				],
++				"/usr/sbin/idata_load --force": [
+ 					"exec"
+ 				]
+ 			},
+diff --git a/package/pejir-lte-base/Makefile b/package/pejir-lte-base/Makefile
+index 2d70096d..9f225e4d 100644
+--- a/package/pejir-lte-base/Makefile
++++ b/package/pejir-lte-base/Makefile
+@@ -42,6 +42,7 @@ define Package/pejir-lte-base/install
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-lte-apn $(1)/usr/libexec/pejir-lte-apn
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-family $(1)/usr/libexec/pejir-modem-family
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-at-watch $(1)/usr/libexec/pejir-at-watch
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-sms-clean $(1)/usr/libexec/pejir-modem-sms-clean
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-modem-ctl $(1)/usr/libexec/pejir-modem-ctl
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-signal $(1)/usr/libexec/pejir-signal
+ 	$(INSTALL_BIN) ./root/etc/init.d/46-pejir-signal $(1)/etc/init.d/46-pejir-signal
+diff --git a/package/pejir-lte-base/root/usr/libexec/pejir-modem-sms-clean b/package/pejir-lte-base/root/usr/libexec/pejir-modem-sms-clean
+new file mode 100755
+index 00000000..3bc7f2ac
+--- /dev/null
++++ b/package/pejir-lte-base/root/usr/libexec/pejir-modem-sms-clean
+@@ -0,0 +1,121 @@
++#!/bin/sh
++# Память модема (SIM) для SMS: сколько там сообщений и как её освободить.
++#
++# ЗАЧЕМ. Модем принимает входящие SMS в память SIM: в smsd.conf стоит
++# init = AT+CPMS="SM","SM","SM" (хранение в SIM). Если память забита
++# старыми сообщениями, модем НЕ МОЖЕТ принять новое сообщение: в журнале
++# smsd каждые 33 секунды появляется
++#
++#     GM510: Message 0, not enough storage space.
++#
++# и входящие SMS не доходят (очередь smstools3 на флешке пустая, а
++# сообщения остаются в модеме).
++#
++# Команды:
++#   status - сколько сообщений в памяти модема (и сколько всего места);
++#   clean  - удалить ВСЕ сообщения из памяти модема.
++#
++# ВАЖНО: clean удаляет сообщения, которые лежат В МОДЕМЕ (в SIM). Это не
++# очередь smstools3 на флешке - её clean не трогает. Всё, что было
++# принято модемом и не прочитано smsd, при очистке пропадёт.
++#
++# Команда удаления всегда вызывается по явному запросу пользователя
++# (кнопка в веб-интерфейсе), молча память модема не чистится.
++
++set -u
++
++PORT_FILE="${PEJIR_AT_PORT_FILE:-/etc/pejir/at-port}"
++TIMEOUT="${PEJIR_MODEM_SMS_TIMEOUT:-6}"
++
++port() {
++	[ -f "$PORT_FILE" ] || return 1
++	head -n 1 "$PORT_FILE" 2>/dev/null
++}
++
++at() {
++	local p
++
++	p="$(port)" || return 1
++	[ -n "$p" ] || return 1
++	MDM_AT_TIMEOUT="$TIMEOUT" mdm-at "$1" "$p" 2>/dev/null
++}
++
++# Ответ AT+CPMS? разбираем на два числа: сколько занято и сколько всего
++# места в первом хранилище (обычно SIM).
++#
++# Форматы ответа разные:
++#   "+CPMS: 12,30,12,30,12,30"
++#   "+CPMS: "SM",12,30"
++#   "+CPMS: 0,30"
++# Берём первые два числа, состоящие только из цифр.
++#
++# LC_ALL=C обязателен: в UTF-8-локали awk перекодирует байты.
++mem_pair() {
++	printf '%s' "$1" | tr -d ' "' | LC_ALL=C awk -F'[:,]' '
++		/\+CPMS:/ {
++			n = 0
++			for (i = 1; i <= NF; i++) {
++				if ($i ~ /^[0-9]+$/) {
++					n++
++					if (n == 1) u = $i
++					if (n == 2) { print u " " $i; exit }
++				}
++			}
++		}'
++}
++
++mem_used() {
++	mem_pair "$1" | cut -d' ' -f1
++}
++
++mem_total() {
++	mem_pair "$1" | cut -d' ' -f2
++}
++
++cmd_status() {
++	local out used total
++
++	out="$(at 'AT+CPMS?')" || {
++		echo "ERROR: модем не ответил на AT+CPMS?"
++		return 1
++	}
++
++	used="$(mem_used "$out")"
++	total="$(mem_total "$out")"
++	echo "RAW=$out"
++	echo "USED=${used:-}"
++	echo "TOTAL=${total:-}"
++	return 0
++}
++
++cmd_clean() {
++	local before after used total
++
++	before="$(at 'AT+CPMS?')"
++	if [ -z "$before" ]; then
++		echo "ERROR: модем не ответил на AT+CPMS? - чистить нечего"
++		return 1
++	fi
++
++	used="$(mem_used "$before")"
++	total="$(mem_total "$before")"
++	echo "до:    ${used:-?}/${total:-?} сообщений в памяти модема"
++
++	# AT+CMGD=1,4 - удалить все сообщения (delflag 4) во всех папках.
++	at 'AT+CMGD=1,4' >/dev/null
++
++	after="$(at 'AT+CPMS?')"
++	used="$(mem_used "$after")"
++	total="$(mem_total "$after")"
++	echo "после: ${used:-?}/${total:-?} сообщений в памяти модема"
++	return 0
++}
++
++case "${1:-}" in
++status) cmd_status ;;
++clean)  cmd_clean ;;
++*)
++	echo "Использование: pejir-modem-sms-clean {status|clean}" >&2
++	exit 1
++	;;
++esac
+-- 
+2.39.5
+

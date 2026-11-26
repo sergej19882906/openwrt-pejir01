@@ -118,6 +118,7 @@ jobs:
           sh tests/test-ota-acl.sh
           sh tests/test-sms-outbox.sh
           sh tests/test-sms-parse.sh
+          sh tests/test-modem-mem.sh
           sh tests/test-ussd.sh
           sh tests/test-bands.sh
           sh tests/test-battery.sh
