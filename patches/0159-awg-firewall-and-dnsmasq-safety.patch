@@ -1,0 +1,158 @@
+From 8d730f27ec872588580b2c3be0e0631168f6ad6e Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 03:35:43 GMT
+Subject: =?utf-8?b?YXdnOiDRhNCw0LnRgNCy0L7QuyDQuCBkbnNtYXNxINCx0L7Qu9GM0YjQtSDQvdC1?=
+ =?utf-8?b?INC80L7Qs9GD0YIg0L7RgdGC0LDRgtGM0YHRjyDQsdC10Lcg0LTQvtGB0YLRg9C/?=
+ =?utf-8?b?0LAg0L/QviBMQU4=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Симптом после установки .71: роутер включается, Wi-Fi работает, но LuCI
+не отвечает и интернета нет. Похоже, на старте ломается файрвол: зона
+wan ссылается на устройство Home, которого в момент загрузки ещё нет,
+fw4 собирает нерабочие правила - и вместе с ними умирает доступ по LAN
+(Wi-Fi при этом продолжает работать, он не часть fw4).
+
+Исправлено:
+- перенос AWG-интерфейса в зону wan теперь только по явному флагу
+  network.<интерфейс>.perenio_awg_wan_zone=1; по умолчанию файрвол не
+  трогается вообще;
+- добавлена страховка от пустого имени интерфейса (grep -qx "" совпал бы
+  с любой строкой и мог удалить br-lan из зоны lan);
+- если после reload файрвол не поднялся - автоматический откат
+  конфигурации и рестарт;
+- перезапуск туннеля сторожем (ifdown+ifup) - только по флагу
+  network.<интерфейс>.perenio_awg_watch_restart=1;
+- pejir-lanhost перечитывает /etc/hosts через поддерживаемый reload
+  dnsmasq (а не голый SIGHUP) и проверяет, что dnsmasq жив: если он не
+  поднялся, поднимает его заново, иначе пропал бы и DHCP.
+---
+ .../root/usr/libexec/pejir-awg-watch          | 17 +++++---
+ .../pejir-awg/root/usr/libexec/pejir-awg-zone | 40 +++++++++++++++++++
+ .../root/etc/init.d/pejir-lanhost             | 12 +++++-
+ 3 files changed, 61 insertions(+), 8 deletions(-)
+
+diff --git a/package/pejir-awg/root/usr/libexec/pejir-awg-watch b/package/pejir-awg/root/usr/libexec/pejir-awg-watch
+index c9d2f813..33bdf0e8 100755
+--- a/package/pejir-awg/root/usr/libexec/pejir-awg-watch
++++ b/package/pejir-awg/root/usr/libexec/pejir-awg-watch
+@@ -124,12 +124,17 @@ check_once() {
+ 			log "интерфейс $iface не поднят - поднимаем"
+ 			ifup "$iface" >/dev/null 2>&1
+ 		else
+-			# Интерфейс жив, но хендшейка нет - перезапускаем
+-			# полным циклом.
+-			log "интерфейс $iface жив, но хендшейка нет - перезапускаем"
+-			ifdown "$iface" >/dev/null 2>&1
+-			sleep 2
+-			ifup "$iface" >/dev/null 2>&1
++			# Интерфейс жив, но хендшейка нет. Полный перезапуск
++			# (ifdown+ifup) - разрушительная операция, поэтому делаем
++			# его только по явному флагу.
++			if [ "$(uci -q get network."$iface".perenio_awg_watch_restart)" = "1" ]; then
++				log "интерфейс $iface жив, но хендшейка нет - перезапускаем"
++				ifdown "$iface" >/dev/null 2>&1
++				sleep 2
++				ifup "$iface" >/dev/null 2>&1
++			else
++				log "интерфейс $iface жив, но хендшейка нет - ждём (перезапуск по флагу не включён)"
++			fi
+ 		fi
+ 	done
+ }
+diff --git a/package/pejir-awg/root/usr/libexec/pejir-awg-zone b/package/pejir-awg/root/usr/libexec/pejir-awg-zone
+index d8e175ef..75969405 100755
+--- a/package/pejir-awg/root/usr/libexec/pejir-awg-zone
++++ b/package/pejir-awg/root/usr/libexec/pejir-awg-zone
+@@ -38,6 +38,18 @@ wan_section() {
+ 		head -1
+ }
+ 
++# Действие включается только явным флагом: без него скрипт ничего не
++# меняет. Перенос интерфейса в зону wan затрагивает файрвол целиком,
++# и если что-то пойдёт не так - роутер останется без доступа по LAN
++# (на устройстве так и случилось: LuCI перестал отвечать).
++#
++# Включить: uci set network.<интерфейс>.perenio_awg_wan_zone='1'
++enabled=0
++for iface in $(awg_interfaces); do
++	[ "$(uci -q get network."$iface".perenio_awg_wan_zone)" = "1" ] && enabled=1
++done
++[ "$enabled" = "1" ] || exit 0
++
+ changed=0
+ wan="$(wan_section)"
+ 
+@@ -57,7 +69,9 @@ fi
+ 
+ for iface in $(awg_interfaces); do
+ 	# Убираем интерфейс из всех прочих зон.
++	[ -n "$iface" ] || continue
+ 	for z in $(uci -q show firewall 2>/dev/null | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.network=.*/\1/p"); do
++		[ -n "$z" ] || continue
+ 		[ "$z" = "$wan" ] && continue
+ 		if uci -q get firewall."$z".network 2>/dev/null | tr " " "\n" | grep -qx "$iface"; then
+ 			uci -q del_list firewall."$z".network="$iface"
+@@ -73,9 +87,35 @@ for iface in $(awg_interfaces); do
+ done
+ 
+ if [ "$changed" = "1" ]; then
++	# Сохраняем конфиг на случай, если после reload файрвол не поднимется
++	# (устройство из зоны может отсутствовать - тогда fw4 может собрать
++	# нерабочие правила и вместе с ними уронить доступ по LAN).
++	uci export firewall > /tmp/firewall.before-awg-zone 2>/dev/null
++
+ 	uci commit firewall
+ 	logger -t pejir-awg "AWG-интерфейс переведён в зону $ZONE (masquerading, mtu_fix, lan -> wan разрешён)"
+ 	/etc/init.d/firewall reload >/dev/null 2>&1
++
++	# Проверяем, что файрвол жив и LAN на месте. Если нет - откат.
++	sleep 3
++	if ! /etc/init.d/firewall status >/dev/null 2>&1; then
++		logger -t pejir-awg "файрвол после перезагрузки не работает - откатываем изменения"
++		if [ -f /tmp/firewall.before-awg-zone ]; then
++			rm -f /etc/config/firewall
++			cp /tmp/firewall.before-awg-zone /tmp/firewall.restore
++			# восстанавливаем построчно: uci import не понимает формат export
++			while IFS= read -r line; do
++				case "$line" in
++					"package firewall"*) ;;
++					*)
++						eval "$line" 2>/dev/null
++						;;
++				esac
++			done < /tmp/firewall.before-awg-zone
++			uci commit firewall
++		fi
++		/etc/init.d/firewall restart >/dev/null 2>&1
++	fi
+ fi
+ 
+ exit 0
+diff --git a/package/pejir-lanhost/root/etc/init.d/pejir-lanhost b/package/pejir-lanhost/root/etc/init.d/pejir-lanhost
+index 17e7c353..24f1f521 100644
+--- a/package/pejir-lanhost/root/etc/init.d/pejir-lanhost
++++ b/package/pejir-lanhost/root/etc/init.d/pejir-lanhost
+@@ -17,8 +17,16 @@ start_service() {
+ 	sed -i '/[[:space:]]openwrt\.lan/d' /etc/hosts 2>/dev/null
+ 	echo "$ip openwrt.lan openwrt" >> /etc/hosts
+ 
+-	pid="$(pidof dnsmasq 2>/dev/null)"
+-	[ -n "$pid" ] && kill -HUP $pid 2>/dev/null
++	# Перечитываем hosts поддержимым способом: reload dnsmasq, а не
++	# голый SIGHUP. После reload проверяем, что процесс на месте: если
++	# dnsmasq не поднялся, поднимаем его - иначе пропадёт и DHCP.
++	if /etc/init.d/dnsmasq reload >/dev/null 2>&1; then
++		sleep 1
++	fi
++	if ! pidof dnsmasq >/dev/null 2>&1; then
++		logger -t pejir-lanhost "dnsmasq не отвечает после reload - поднимаем заново"
++		/etc/init.d/dnsmasq restart >/dev/null 2>&1
++	fi
+ 	return 0
+ }
+ 
+-- 
+2.39.5
+
