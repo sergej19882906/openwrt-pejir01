@@ -68,6 +68,8 @@ touch "$STATE"
 
 [ "$1" = "-q" ] && shift
 
+ZONE_FLAG="${ZONE_FLAG-1}"
+
 case "$1" in
 	show)
 		case "$2" in
@@ -91,6 +93,7 @@ case "$1" in
 			firewall.@zone\[0\].network) echo "lan Home" ;;
 			firewall.@zone\[1\].network) echo "wan lte" ;;
 			network.Home.proto) echo "amneziawg" ;;
+			network.Home.perenio_awg_wan_zone) echo "$ZONE_FLAG" ;;
 			*) exit 1 ;;
 		esac
 		exit 0
@@ -142,6 +145,18 @@ if grep -q "firewall.@zone\[1\].network" "$WORK/uci.actions" 2>/dev/null; then
 	ok "интерфейс добавляется в зону wan"
 else
 	fail "интерфейс не добавляется в зону wan"
+fi
+
+# --- 5. без явного флага helper не трогает файрвол ------------------------
+# Перенос интерфейса в зону wan затрагивает файрвол целиком: если что-то
+# пойдёт не так, роутер останется без доступа по LAN. Поэтому действие
+# включается только флагом network.<интерфейс>.perenio_awg_wan_zone=1.
+rm -f "$WORK/uci.actions" "$WORK/actions.log"
+out="$(PATH="$WORK/bin:$PATH" WORK="$WORK" ZONE_FLAG="" sh "$ZONE_HELPER" 2>&1)"
+if [ -s "$WORK/uci.actions" ]; then
+	fail "без флага helper всё равно меняет файрвол"
+else
+	ok "без флага helper не трогает файрвол"
 fi
 
 if [ "$FAILED" -eq 0 ]; then
