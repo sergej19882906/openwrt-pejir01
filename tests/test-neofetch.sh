@@ -62,6 +62,8 @@ grep -q "^CONFIG_PACKAGE_pejir-neofetch=y" "$BUILD_SH" && ok "в build.sh вкл
 	|| fail "в build.sh нет pejir-neofetch"
 grep -q "usr/bin/neofetch" "$BUILD_SH" && ok "build.sh проверяет наличие neofetch в образе" \
 	|| fail "build.sh не проверяет наличие neofetch"
+grep -q "bin/bash" "$BUILD_SH" && ok "build.sh проверяет наличие bash в образе (/bin/bash)" \
+	|| fail "build.sh не проверяет наличие bash"
 
 # --- 4. Функциональная проверка профиля -----------------------------------
 WORK="${PEJIR_NEOFETCH_TEST:-/tmp/pejir-neofetch-test}"

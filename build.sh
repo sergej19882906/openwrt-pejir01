@@ -945,9 +945,14 @@ if [ -n "$SU" ]; then
 
         # Neofetch в баннере SSH: сам скрипт и его подключение в профиле.
         NEOFETCH_MISSING=""
-        for f in usr/bin/neofetch etc/profile.d/neofetch.sh usr/bin/bash; do
+        for f in usr/bin/neofetch etc/profile.d/neofetch.sh; do
           echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || NEOFETCH_MISSING="$NEOFETCH_MISSING $f"
         done
+        # bash в OpenWrt ставится в /bin/bash (пакет bash из packages feed:
+        # INSTALL_BIN ... $(1)/bin/), а не в /usr/bin/bash - проверяем оба пути.
+        if ! echo "$ROOTFS_LIST" | grep -qE "squashfs-root/(usr/)?bin/bash$"; then
+          NEOFETCH_MISSING="$NEOFETCH_MISSING bash"
+        fi
         if [ -n "$NEOFETCH_MISSING" ]; then
           ann error "build.sh: neofetch" "в образе нет neofetch или bash:$NEOFETCH_MISSING"
           echo "ОШИБКА: neofetch не попал в образ ($NEOFETCH_MISSING)"
