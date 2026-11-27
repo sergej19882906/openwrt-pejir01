@@ -1,0 +1,258 @@
+From 8732abe9e73c003b05268a4ee15a64c6cad05ec9 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 20:51:09 GMT
+Subject: =?utf-8?b?b3RhOiDQstC+0YHRgdGC0LDQvdC+0LLQu9C10L3QuNC1INC90LDRgdGC0YDQvtC1?=
+ =?utf-8?b?0Log0LjQtyDRhNCw0LnQu9CwINGBINC60L7QvNC/0YzRjtGC0LXRgNCw?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Страница "Обновление прошивки (PEJIR01)" умела только создать резервную
+копию и отдать её ссылкой. Вернуть настройки можно было только через
+штатную страницу прошивки - на телефоне это неудобно.
+
+Теперь на странице есть блок "Восстановление настроек из файла":
+файл загружается на роутер (cgi-upload) в /tmp/backup.tar.gz,
+проверяется (tar -tzf), показывается список файлов, после подтверждения
+настройки восстанавливаются (sysupgrade --restore-backup) и роутер
+перезагружается.
+
+ACL расширен: cgi-io upload, запись /tmp/backup.tar.gz и запуск
+/bin/tar -tzf, /sbin/sysupgrade --restore-backup, /sbin/reboot.
+Добавлен русский перевод новых строк.
+---
+ .../luci-static/resources/view/perenio/ota.js | 113 +++++++++++++++++-
+ package/pejir-ota/po/ru/luci-app-pejir-ota.po |  40 ++++++-
+ .../share/rpcd/acl.d/luci-app-pejir-ota.json  |  12 +-
+ 3 files changed, 159 insertions(+), 6 deletions(-)
+
+diff --git a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+index b65f7553..951f0ea4 100644
+--- a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
++++ b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+@@ -3,6 +3,8 @@
+ 'require fs';
+ 'require ui';
+ 'require poll';
++'require request';
++'require rpc';
+ // ВНИМАНИЕ: базовый класс LuCI доступен как глобальный L, модуля с
+ // именем "luci" НЕ существует. Если написать 'require luci', загрузчик
+ // LuCI пойдёт грузить /luci-static/resources/luci.js как фабрику класса,
+@@ -151,6 +153,95 @@ return view.extend({
+ 		});
+ 	},
+ 
++	/* Восстановление настроек из файла с компьютера.
++	 *
++	 * Схема та же, что у штатной страницы прошивки LuCI:
++	 *   1) файл загружается на роутер (cgi-upload) в /tmp/backup.tar.gz;
++	 *   2) список файлов в архиве показывается пользователю;
++	 *   3) sysupgrade --restore-backup раскладывает настройки;
++	 *   4) роутер перезагружается.
++	 * Загрузка идёт через request.post, а не через ui.uploadFile:
++	 * в ui.uploadFile файл выбирается ещё раз в отдельном окне, а у нас
++	 * файл уже выбран в форме на странице. */
++	handleRestore: function(ev) {
++		var btn = ev.currentTarget;
++		var input = document.getElementById('pejir-ota-restore-file');
++		var file = (input && input.files) ? input.files[0] : null;
++
++		if (!file) {
++			setText('pejir-ota-restore-status', _('Choose the settings backup file first'));
++			return Promise.resolve();
++		}
++
++		btn.disabled = true;
++		setText('pejir-ota-restore-status', _('Uploading the file...'));
++
++		var data = new FormData();
++
++		data.append('sessionid', rpc.getSessionID());
++		data.append('filename', '/tmp/backup.tar.gz');
++		data.append('filedata', file);
++
++		return request.post(L.env.cgi_base + '/cgi-upload', data, { timeout: 0 })
++		.then(function(res) {
++			var reply = res.json();
++
++			if (L.isObject(reply) && reply.failure)
++				throw new Error(reply.message || reply.failure);
++
++			setText('pejir-ota-restore-status', _('Checking the archive...'));
++
++			return fs.exec('/bin/tar', [ '-tzf', '/tmp/backup.tar.gz' ]);
++		})
++		.then(function(res) {
++			if (res.code != 0)
++				throw new Error((res.stderr || '').trim() ||
++					_('The uploaded file is not a valid settings backup'));
++
++			var list = (res.stdout || '').trim().split('\n').slice(0, 40);
++
++			return new Promise(function(resolve, reject) {
++				ui.showModal(_('Restore the settings from the file?'), [
++					E('p', {}, _('The settings from the file will be restored and the router will reboot.')),
++					E('pre', { 'style': 'max-height:240px; overflow:auto; white-space:pre-wrap' },
++						list.join('\n')),
++					E('div', { 'class': 'right' }, [
++						E('button', {
++							'class': 'btn',
++							'click': function() { ui.hideModal(); reject(); }
++						}, [ _('Cancel') ]),
++						' ',
++						E('button', {
++							'class': 'btn cbi-button-action important',
++							'click': function() { ui.hideModal(); resolve(); }
++						}, [ _('Continue') ])
++					])
++				]);
++			});
++		})
++		.then(function() {
++			setText('pejir-ota-restore-status', _('Restoring the settings...'));
++
++			return fs.exec('/sbin/sysupgrade', [ '--restore-backup', '/tmp/backup.tar.gz' ]);
++		})
++		.then(function(res) {
++			if (res.code != 0)
++				throw new Error((res.stderr || '').trim() ||
++					_('Could not restore the settings'));
++
++			setText('pejir-ota-restore-status', _('Settings restored, rebooting...'));
++
++			return fs.exec('/sbin/reboot');
++		})
++		.catch(function(e) {
++			if (e)
++				setText('pejir-ota-restore-status', explain(e));
++		})
++		.finally(function() {
++			btn.disabled = false;
++		});
++	},
++
+ 	handleInstall: function(ev) {
+ 		return new Promise(function(resolve, reject) {
+ 			ui.showModal(_('Install the firmware update?'), [
+@@ -237,7 +328,7 @@ return view.extend({
+ 						_('Regular firmware update page (always available)'))),
+ 				E('h3', {}, _('Settings backup')),
+ 				E('div', { 'class': 'cbi-value-description' },
+-					_('Save the current settings (Wi-Fi, passwords, APN, LTE, extroot) to a file you can download from the browser. To restore them, use the regular firmware page and choose the backup file there.')),
++					_('Save the current settings (Wi-Fi, passwords, APN, LTE, extroot) to a file you can download from the browser.')),
+ 				E('div', { 'class': 'cbi-value' }, [
+ 					E('button', {
+ 						'class': 'cbi-button cbi-button-action',
+@@ -247,7 +338,25 @@ return view.extend({
+ 				]),
+ 				E('div', { 'class': 'cbi-value-description', 'id': 'pejir-ota-backup-status' },
+ 					''),
+-				E('div', { 'class': 'cbi-value', 'id': 'pejir-ota-backup-link' }, [])
++				E('div', { 'class': 'cbi-value', 'id': 'pejir-ota-backup-link' }, []),
++				E('h3', {}, _('Restore settings from a file')),
++				E('div', { 'class': 'cbi-value-description' },
++					_('Choose the settings backup file downloaded earlier (or made on another router) and press "Restore settings". The settings from the file will be applied and the router will reboot.')),
++				E('div', { 'class': 'cbi-value' }, [
++					E('input', {
++						'type': 'file',
++						'id': 'pejir-ota-restore-file',
++						'accept': '.tar.gz,.gz'
++					}),
++					' ',
++					E('button', {
++						'class': 'cbi-button cbi-button-action important',
++						'id': 'pejir-ota-restore',
++						'click': ui.createHandlerFn(this, 'handleRestore')
++					}, [ _('Restore settings') ])
++				]),
++				E('div', { 'class': 'cbi-value-description', 'id': 'pejir-ota-restore-status' },
++					'')
+ 			])
+ 		]);
+ 	}
+diff --git a/package/pejir-ota/po/ru/luci-app-pejir-ota.po b/package/pejir-ota/po/ru/luci-app-pejir-ota.po
+index ae0777d0..04c35e58 100644
+--- a/package/pejir-ota/po/ru/luci-app-pejir-ota.po
++++ b/package/pejir-ota/po/ru/luci-app-pejir-ota.po
+@@ -74,8 +74,8 @@ msgid "Regular firmware update page (always available)"
+ msgstr "Обычная страница обновления прошивки (работает всегда)"
+ msgid "Settings backup"
+ msgstr "Резервная копия настроек"
+-msgid "Save the current settings (Wi-Fi, passwords, APN, LTE, extroot) to a file you can download from the browser. To restore them, use the regular firmware page and choose the backup file there."
+-msgstr "Сохраните текущие настройки (Wi-Fi, пароли, APN, LTE, extroot) в файл, который можно скачать из браузера. Для восстановления используйте обычную страницу прошивки и выберите этот файл."
++msgid "Save the current settings (Wi-Fi, passwords, APN, LTE, extroot) to a file you can download from the browser."
++msgstr "Сохраните текущие настройки (Wi-Fi, пароли, APN, LTE, extroot) в файл, который можно скачать из браузера."
+ msgid "Create a settings backup"
+ msgstr "Создать резервную копию настроек"
+ msgid "Creating the backup..."
+@@ -86,3 +86,39 @@ msgid "Backup created: "
+ msgstr "Резервная копия создана: "
+ msgid "Download the backup file"
+ msgstr "Скачать файл резервной копии"
++
++msgid "Restore settings from a file"
++msgstr "Восстановление настроек из файла"
++
++msgid "Choose the settings backup file downloaded earlier (or made on another router) and press \"Restore settings\". The settings from the file will be applied and the router will reboot."
++msgstr "Выберите файл резервной копии настроек, который вы скачали раньше (или сделали на другом роутере), и нажмите \"Восстановить настройки\". Настройки из файла будут применены, а роутер перезагрузится."
++
++msgid "Restore settings"
++msgstr "Восстановить настройки"
++
++msgid "Choose the settings backup file first"
++msgstr "Сначала выберите файл резервной копии настроек"
++
++msgid "Uploading the file..."
++msgstr "Загрузка файла..."
++
++msgid "Checking the archive..."
++msgstr "Проверка архива..."
++
++msgid "Restore the settings from the file?"
++msgstr "Восстановить настройки из файла?"
++
++msgid "The settings from the file will be restored and the router will reboot."
++msgstr "Настройки из файла будут восстановлены, а роутер перезагрузится."
++
++msgid "Restoring the settings..."
++msgstr "Восстановление настроек..."
++
++msgid "Settings restored, rebooting..."
++msgstr "Настройки восстановлены, перезагрузка..."
++
++msgid "The uploaded file is not a valid settings backup"
++msgstr "Загруженный файл не является резервной копией настроек"
++
++msgid "Could not restore the settings"
++msgstr "Не удалось восстановить настройки"
+diff --git a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+index 6026d89f..dfe69b0d 100644
+--- a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
++++ b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+@@ -7,12 +7,20 @@
+ 			}
+ 		},
+ 		"write": {
++			"cgi-io": [ "upload" ],
+ 			"file": {
+ 				"/usr/bin/pejir-ota": [ "exec" ],
+-				"/usr/bin/pejir-ota backup": [ "exec" ]
++				"/usr/bin/pejir-ota backup": [ "exec" ],
++				"/usr/bin/pejir-ota check": [ "exec" ],
++				"/usr/bin/pejir-ota install": [ "exec" ],
++				"/usr/bin/pejir-ota status": [ "exec" ],
++				"/bin/tar -tzf /tmp/backup.tar.gz": [ "exec" ],
++				"/sbin/reboot": [ "exec" ],
++				"/sbin/sysupgrade --restore-backup /tmp/backup.tar.gz": [ "exec" ],
++				"/tmp/backup.tar.gz": [ "write" ]
+ 			},
+ 			"ubus": {
+-				"file": [ "exec" ]
++				"file": [ "exec", "remove", "write" ]
+ 			}
+ 		}
+ 	}
+-- 
+2.39.5
+

@@ -449,11 +449,14 @@ EOF
 {"up":true,"pending":false,"available":true,"autostart":true,"l3_device":"eth1","proto":"dhcp","device":"eth1","ipv4-address":[{"address":"10.10.10.5","mask":24}],"route":[{"target":"10.10.0.0/24","mask":24,"nexthop":"0.0.0.0"},{"target":"0.0.0.0/0","mask":0,"nexthop":"10.10.10.1"}],"data":{"dns":["8.8.4.4"]}}
 EOF
 	# Маршруты ядра (главная таблица) - их видит ip -4 route show.
+	# br-lan - локальная сеть: её подсеть обязана попасть в таблицы
+	# 100/200, иначе ответы роутера LAN-клиентам уходят в default.
 	cat > "$WORK/conf/kernel_routes" <<'EOF'
 default via 192.168.1.1 dev eth0
 192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.5
 default via 10.10.10.1 dev eth1
 10.10.0.0/24 dev eth1 proto kernel scope link src 10.10.10.5
+192.168.2.0/24 dev br-lan proto kernel scope link src 192.168.2.1
 EOF
 	rm -f "$WORK/conf/ifaces/wan.hidden" "$WORK/conf/ifaces/lte.hidden"
 	rm -f "$WORK/conf/rules" "$WORK/conf/nft.rules" "$WORK/conf/routes.log" "$WORK/state" "$WORK/applied"
@@ -501,6 +504,27 @@ if grep -q "active=both" "$WORK/state" 2>/dev/null; then
 	ok "balance: оба канала живые"
 else
 	fail "balance: в состоянии не both"
+fi
+
+# --- 4.1a локальные (LAN) подсети в таблицах --------------------------------
+# Запасное правило "pref 900 lookup <таблица>" срабатывает на ВСЁ, что не
+# попало под правила по меткам, - включая ответы роутера LAN-клиентам.
+# Без маршрута к подсети LAN в таблице lookup уходит в default, и ответ
+# улетает в WAN: веб-интерфейс и SSH перестают отвечать.
+if grep -q "192.168.2.0/24 dev br-lan scope link table 100" "$WORK/conf/routes.log" 2>/dev/null; then
+	ok "balance: подсеть LAN есть в таблице WAN (100)"
+else
+	fail "balance: подсети LAN нет в таблице WAN (100)"
+fi
+if grep -q "192.168.2.0/24 dev br-lan scope link table 200" "$WORK/conf/routes.log" 2>/dev/null; then
+	ok "balance: подсеть LAN есть в таблице LTE (200)"
+else
+	fail "balance: подсети LAN нет в таблице LTE (200)"
+fi
+if grep -q "192.168.1.0/24 dev eth0 scope link table 200" "$WORK/conf/routes.log" 2>/dev/null; then
+	fail "balance: подсеть WAN-канала попала в таблицу LTE (200)"
+else
+	ok "balance: подсеть WAN-канала не попала в таблицу LTE (200)"
 fi
 
 # --- 4.2 баланс: WAN упал -------------------------------------------------

@@ -1,0 +1,166 @@
+From a6463ec13e87f3561594ebbf65f170b056eaca8f Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 20:51:09 GMT
+Subject: =?utf-8?b?bHRlOiBESENQINC90LAgbHRlL2x0ZTYg0Lgg0LfQvtC90LAgd2FuINGBINGA0LDQ?=
+ =?utf-8?b?sdC+0YfQuNC80Lgg0L/RgNCw0LLQuNC70LDQvNC4IGZ3NA==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+* network.lte и network.lte6 приводятся к dhcp/dhcpv6 (раньше протокол
+  не выравнивался, и при proto=none или пустом интерфейс LTE не получал
+  адрес и шлюз - интернет не раздавался клиентам LAN);
+* обеспечиваются device и metric интерфейсов LTE;
+* зона wan: lte/lte6 добавляются в список сети, включается
+  маскарадинг (masq=1), при отсутствии зоны wan она создаётся;
+* после правки зоны правила fw4 перечитываются (firewall стартует
+  с START=19, LTE - с START=94, поэтому без перезагрузки правил зона
+  wan оставалась без LTE и NAT не работал).
+---
+ .../root/etc/init.d/47-pejir-lte              | 96 ++++++++++++++++++-
+ 1 file changed, 92 insertions(+), 4 deletions(-)
+
+diff --git a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+index 68cdc6c0..bb2ed8a5 100644
+--- a/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
++++ b/package/pejir-lte-base/root/etc/init.d/47-pejir-lte
+@@ -233,7 +233,7 @@ ensure_lte_section() {
+ 		# здесь был зашит "usb0", которого в системе нет (ядро называет
+ 		# интерфейс модема ethN). Если записанного интерфейса не
+ 		# существует — подставляем обнаруженный.
+-		cur="$(uci -q get network.lte.device)"
++		cur="$(uci -q get network.lte.device || true)"
+ 		if [ "$cur" != "$ifname" ] &&
+ 		   { [ -z "$cur" ] || [ ! -d "/sys/class/net/$cur" ]; }; then
+ 			uci set network.lte.device="$ifname"
+@@ -241,6 +241,38 @@ ensure_lte_section() {
+ 		fi
+ 	fi
+ 
++	# Протокол: интерфейс LTE обязан быть в DHCP - без адреса и шлюза
++	# от оператора трафик клиентов LAN в интернет не уходит. Раньше
++	# протокол вообще не выравнивался: если в секции стоял "none" или
++	# пусто, LTE поднимался без адреса, а интернет для LAN не работал
++	# (жалобы: "интернет не раздается на подключенные устройства").
++	# Явно заданный static не трогаем - это осознанный выбор владельца,
++	# но в этом случае предупреждаем в журнале.
++	cur="$(uci -q get network.lte.proto || true)"
++	case "$cur" in
++		dhcp)
++			;;
++		static)
++			log "network.lte.proto=static - DHCP не используется, проверьте адрес и шлюз"
++			;;
++		none)
++			# Интерфейс выключен владельцем руками - не включаем молча,
++			# но предупреждаем: без LTE интернета не будет.
++			log "network.lte.proto=none - LTE выключен, интернет не раздается"
++			;;
++		*)
++			# Протокол не задан или нерабочий: без DHCP у интерфейса не
++			# будет ни адреса, ни шлюза - трафик клиентов LAN в
++			# интернет не уходит.
++			uci set network.lte.proto=dhcp
++			log "network.lte.proto: '$cur' -> 'dhcp' (без DHCP у LTE нет адреса и шлюза)"
++			;;
++	esac
++
++	# metric нужен, чтобы LTE был основным маршрутом при multi-WAN
++	cur="$(uci -q get network.lte.metric || true)"
++	[ -n "$cur" ] || uci set network.lte.metric=30
++
+ 	# APN: подставляем только если пользователь его не задал.
+ 	if [ -z "$(uci -q get network.lte.apn)" ] && [ -n "$DEFAULT_APN" ]; then
+ 		uci set network.lte.apn="$DEFAULT_APN"
+@@ -256,7 +288,7 @@ ensure_lte_section() {
+ 		uci set network.lte6.norelease=1
+ 		log "создан network.lte6 (device=$ifname)"
+ 	else
+-		cur="$(uci -q get network.lte6.device)"
++		cur="$(uci -q get network.lte6.device || true)"
+ 		if [ "$cur" != "$ifname" ] &&
+ 		   { [ -z "$cur" ] || [ ! -d "/sys/class/net/$cur" ]; }; then
+ 			uci set network.lte6.device="$ifname"
+@@ -264,21 +296,77 @@ ensure_lte_section() {
+ 		fi
+ 	fi
+ 
++	# IPv6: аналогично - dhcpv6 по умолчанию
++	cur="$(uci -q get network.lte6.proto || true)"
++	case "$cur" in
++		dhcpv6|static|none)
++			;;
++		*)
++			uci set network.lte6.proto=dhcpv6
++			log "network.lte6.proto: '$cur' -> 'dhcpv6'"
++			;;
++	esac
++	cur="$(uci -q get network.lte6.metric || true)"
++	[ -n "$cur" ] || uci set network.lte6.metric=30
++
+ 	uci commit network
+ }
+ 
+ ensure_firewall() {
+-	local i n
++	local i n found=0 changed=0
+ 
+ 	for i in 0 1 2 3 4 5 6 7 8 9; do
+ 		[ "$(uci -q get firewall.@zone[$i].name)" = "wan" ] || continue
++		found=1
+ 		for n in lte lte6; do
+-			uci -q get firewall.@zone[$i].network | tr ' ' '\n' | grep -qx "$n" || \
++			uci -q get firewall.@zone[$i].network | tr ' ' '\n' | grep -qx "$n" || {
+ 				uci -q add_list firewall.@zone[$i].network "$n"
++				changed=1
++				log "firewall: интерфейс $n добавлен в зону wan"
++			}
+ 		done
++		# Маскарадинг обязателен: без него ответы из интернета
++		# не вернутся к клиентам LAN (интернет "не раздается").
++		case "$(uci -q get firewall.@zone[$i].masq)" in
++			1) ;;
++			*)
++				uci set firewall.@zone[$i].masq=1
++				changed=1
++				log "firewall: для зоны wan включен маскарадинг"
++				;;
++		esac
+ 		break
+ 	done
++
++	# Зоны wan в конфиге нет вообще - создаём её, иначе LTE останется
++	# без NAT и без правил переадресации.
++	if [ "$found" = "0" ]; then
++		uci set firewall.wan=zone
++		uci set firewall.wan.name=wan
++		uci set firewall.wan.network='lte lte6 wan'
++		uci set firewall.wan.input=REJECT
++		uci set firewall.wan.output=ACCEPT
++		uci set firewall.wan.forward=REJECT
++		uci set firewall.wan.masq=1
++		uci set firewall.wan.mtu_fix=1
++		changed=1
++		log "firewall: создана зона wan с маскарадингом"
++	fi
++
+ 	uci commit firewall
++
++	# Правила fw4 применяются при старте firewall (START=19), а мы
++	# стартуем позже (START=94) - без перезагрузки правил зона wan
++	# остаётся БЕЗ lte/lte6, и трафик клиентов LAN не уходит в
++	# интернет. Поэтому после правки конфигурации перечитываем
++	# правила, но только если что-то действительно изменилось.
++	if [ "$changed" = "1" ]; then
++		fwinit="${PEJIR_FW_INIT:-/etc/init.d/firewall}"
++		if [ -x "$fwinit" ]; then
++			"$fwinit" reload >/dev/null 2>&1
++			log "firewall: правила перезагружены"
++		fi
++	fi
+ }
+ 
+ # APN модема: без него GM510 не поднимет PDP-сессию.
+-- 
+2.39.5
+

@@ -1,0 +1,77 @@
+From 33e2fe1d14385a9d6765dc674901fef2a695a98f Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 20:51:09 GMT
+Subject: =?utf-8?b?bXdhbjog0LvQvtC60LDQu9GM0L3Ri9C1INC/0L7QtNGB0LXRgtC4IExBTiDQsiDR?=
+ =?utf-8?b?gtCw0LHQu9C40YbRiyAxMDAvMjAw?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Модуль ставит запасное правило 'pref 900 lookup <таблица>', которое
+срабатывает на весь трафик, не попавший под правила по меткам. В
+таблицах были только подсеть самого канала и default, поэтому ответ
+LAN-клиенту уходил в default (WAN) - LuCI и SSH не отвечали.
+
+Теперь link-подсети всех локальных интерфейсов (кроме устройств
+каналов) добавляются в таблицы 100 и 200, поэтому ответы LAN-клиентам
+идут напрямую, а включение multi-WAN больше не ломает веб-интерфейс
+и SSH.
+---
+ .../pejir-mwan/root/usr/libexec/pejir-mwan    | 34 +++++++++++++++++--
+ 1 file changed, 32 insertions(+), 2 deletions(-)
+
+diff --git a/package/pejir-mwan/root/usr/libexec/pejir-mwan b/package/pejir-mwan/root/usr/libexec/pejir-mwan
+index 23e34849..13a1d480 100755
+--- a/package/pejir-mwan/root/usr/libexec/pejir-mwan
++++ b/package/pejir-mwan/root/usr/libexec/pejir-mwan
+@@ -283,8 +283,37 @@ cleanup_all() {
+ 	rm -f "$APPLIED" "$NFT_FILE"
+ }
+ 
+-# Наполнить таблицу маршрутизации: подсеть интерфейса + маршрут по
+-# умолчанию через его шлюз.
++# Локальные (LAN) подсети в таблице маршрутизации.
++#
++# ЗАЧЕМ. В таблицах 100/200 были только подсеть самого канала и
++# default. Модуль ставит запасное правило "pref 900 lookup <таблица>",
++# которое срабатывает на ВСЁ, что не попало под правила по меткам.
++# Ответ роутера LAN-клиенту (например, на запрос веб-интерфейса
++# 192.168.2.157) тоже подпадал под это правило: маршрута к
++# 192.168.2.0/24 в таблице не было, lookup уходил в default, и ответ
++# улетал в WAN вместо br-lan. Веб-интерфейс и SSH переставали
++# отвечать, как только включался multi-WAN.
++#
++# Поэтому в каждую таблицу добавляются link-подсети всех локальных
++# интерфейсов (LAN), кроме устройств самих каналов: их подсети уже
++# добавлены выше, а чужие (LTE) в чужую таблицу попадать не должны.
++setup_local_routes() {
++	tbl="$1"; skip="$2"
++	ip -4 route show scope link 2>/dev/null | awk -v skip=" $skip " '
++		{
++			dev = ""
++			for (i = 1; i <= NF; i++)
++				if ($i == "dev") { dev = $(i + 1); break }
++			if (dev == "" || index(skip, " " dev " ") > 0) next
++			print $1, dev
++		}' | while read -r net ldev; do
++		[ -n "$net" ] || continue
++		ip -4 route replace "$net" dev "$ldev" scope link table "$tbl" 2>/dev/null
++	done
++}
++
++# Наполнить таблицу маршрутизации: подсеть интерфейса + локальные
++# (LAN) подсети + маршрут по умолчанию через его шлюз.
+ setup_table() {
+ 	tbl="$1"; dev="$2"; gw="$3"
+ 	ip -4 route flush table "$tbl" >/dev/null 2>&1
+@@ -292,6 +321,7 @@ setup_table() {
+ 	for s in $(ip -4 route show dev "$dev" scope link 2>/dev/null | awk '{ print $1 }'); do
+ 		ip -4 route replace "$s" dev "$dev" scope link table "$tbl" 2>/dev/null
+ 	done
++	setup_local_routes "$tbl" "$WAN_LDEV $LTE_LDEV"
+ 	[ -n "$gw" ] || return 0
+ 	ip -4 route replace default via "$gw" dev "$dev" table "$tbl" 2>/dev/null
+ }
+-- 
+2.39.5
+

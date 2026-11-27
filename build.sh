@@ -319,7 +319,19 @@ cat > .config <<'EOF'
 CONFIG_TARGET_ramips=y
 CONFIG_TARGET_ramips_mt7621=y
 CONFIG_TARGET_ramips_mt7621_DEVICE_perenio_pejir01-34-BA=y
-CONFIG_PACKAGE_luci=y
+# LuCI собираем без мета-пакета luci: он тянет luci-light, а luci-light -
+# luci-theme-bootstrap. В образе нужна только тема Argon, поэтому
+# состав LuCI перечислен явно. Тот же набор, что давал luci/luci-light,
+# но без bootstrap.
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-mod-admin-full=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-app-package-manager=y
+CONFIG_PACKAGE_luci-proto-ipv6=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_rpcd-mod-rrdns=y
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
 CONFIG_PACKAGE_uartmuxd=y
 CONFIG_PACKAGE_perenio-mcu=y
 CONFIG_PACKAGE_block-mount=y
@@ -480,12 +492,14 @@ CONFIG_PACKAGE_xmm-modem=y
 # "implicit declaration of function 'qmi_client_dms_get_software_version'".
 CONFIG_LIBQMI_COLLECTION_FULL=y
 # theme
-# Argon — основная тема LuCI, ставится по умолчанию (uci-defaults
+# Argon — единственная тема LuCI в образе (uci-defaults
 # 35-pejir-theme-argon выставляет luci.main.mediaurlbase=/luci-static/argon).
-# Cyberpunk остаётся в образе как альтернатива: он виден в списке
-# "Design" на странице "Система" наряду с Argon.
+# Bootstrap приходит только с мета-пакетом luci/luci-light, а пакет
+# luci-theme-cyberpunk удалён из дерева.
 CONFIG_PACKAGE_luci-theme-argon=y
-CONFIG_PACKAGE_luci-theme-cyberpunk=y
+# neofetch в баннере SSH: скрипт на bash, поэтому нужен bash.
+CONFIG_PACKAGE_bash=y
+CONFIG_PACKAGE_pejir-neofetch=y
 # dynamic DNS
 CONFIG_PACKAGE_ddns-scripts=y
 CONFIG_PACKAGE_ddns-scripts-services=y
@@ -558,7 +572,13 @@ if [ -n "$SU" ]; then
                  usr/lib/lua/luci/controller/lxc.lua \
                  usr/lib/lua/luci/view/lxc.htm \
                  usr/share/luci/menu.d/luci-app-lxc.json \
-                 etc/init.d/cgroup2; do
+                 etc/init.d/cgroup2 \
+                 www/luci-static/bootstrap/css/cascade.css \
+                 www/luci-static/bootstrap-dark/css/cascade.css \
+                 www/luci-static/bootstrap-light/css/cascade.css \
+                 www/luci-static/cyberpunk/css/cascade.css \
+                 usr/share/ucode/luci/template/themes/bootstrap/header.ut \
+                 usr/share/ucode/luci/template/themes/cyberpunk/header.ut; do
           if echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f"; then
             ABSENT_MISSING="$ABSENT_MISSING $f"
           fi
@@ -568,7 +588,7 @@ if [ -n "$SU" ]; then
           echo "ОШИБКА: в образе есть пакеты, которые убраны намеренно:$ABSENT_MISSING"
           exit 1
         fi
-        echo "  sing-box и LXC в образе отсутствуют - OK"
+        echo "  sing-box, LXC и лишние темы LuCI в образе отсутствуют - OK"
 
         # mkswap должен быть в образе: без него у пользователя нет
         # способа дать разделу свопа UUID/метку, и скрипт чистки после
@@ -922,6 +942,18 @@ if [ -n "$SU" ]; then
           exit 1
         fi
         echo "  тема Argon: OK"
+
+        # Neofetch в баннере SSH: сам скрипт и его подключение в профиле.
+        NEOFETCH_MISSING=""
+        for f in usr/bin/neofetch etc/profile.d/neofetch.sh usr/bin/bash; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || NEOFETCH_MISSING="$NEOFETCH_MISSING $f"
+        done
+        if [ -n "$NEOFETCH_MISSING" ]; then
+          ann error "build.sh: neofetch" "в образе нет neofetch или bash:$NEOFETCH_MISSING"
+          echo "ОШИБКА: neofetch не попал в образ ($NEOFETCH_MISSING)"
+          exit 1
+        fi
+        echo "  neofetch (с bash) в баннере SSH: OK"
 
         # Каталог русских переводов LuCI: /usr/lib/lua/luci/i18n/*.ru.lmo.
         # Проверяем, что файлы есть и что их не один, а сколько-то.

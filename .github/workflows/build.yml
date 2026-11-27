@@ -151,6 +151,11 @@ jobs:
           sh tests/test-at-io-drain.sh
           sh tests/test-awg-watchdog.sh
           sh tests/test-awg-zone.sh
+          sh tests/test-lte-wan-zone.sh
+          sh tests/test-modem-cache.sh
+          sh tests/test-ota-restore.sh
+          sh tests/test-theme-argon-only.sh
+          sh tests/test-neofetch.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый

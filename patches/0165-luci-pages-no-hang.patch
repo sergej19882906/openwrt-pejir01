@@ -1,0 +1,505 @@
+From cf1f1ed0bcc6f9a90b34d588ed498ab2ff2e80bf Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 20:51:09 GMT
+Subject: =?utf-8?b?bHVjaTog0YHRgtGA0LDQvdC40YbRiyDQvNC+0LTQtdC8LCDQodCc0KEg0Lgg0LHQ?=
+ =?utf-8?b?sNGC0LDRgNC10Y8g0LHQvtC70YzRiNC1INC90LUg0L/QvtC00LLQuNGB0LDRjtGC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+* данные модема собирает фоновый демон pejir-modem-cache (init-скрипт,
+  START=96) и кладёт их в /tmp/pejir-modem.json; браузер только читает
+  файл. Раньше страница "Модем", страница оборудования, значок модема
+  в шапке и страница состояния запускали /usr/bin/modeminfo из
+  браузера: обмен с модемом держит AT-порт до 90 секунд, страница
+  висела, а порт конфликтовал с smsd (сбивалась отправка SMS).
+* опрос модема пропускается, если в очереди исходящих SMS есть
+  неотправленное сообщение или порт занят демоном pejir-signal;
+* кнопка "Обновить данные модема" запускает обновление в фоне и не
+  блокирует страницу;
+* страница СМС кеширует разобранные сообщения по времени изменения
+  файла и читает не больше 30 файлов за каталог (было до 200 запросов
+  fs.read через rpcd каждые 20 секунд);
+* страница батареи обновляется раз в 30 с вместо 15 с, значок модема -
+  раз в 30 с вместо 10 с.
+---
+ .../luci-static/resources/modem-indicator.js  |  21 ++-
+ .../luci-static/resources/view/modem/hw.js    |   9 +-
+ .../luci-static/resources/view/modem/main.js  |  20 ++-
+ .../view/status/include/26_modeminfo.js       |  26 +--
+ package/luci-app-modeminfo/po/ru/modeminfo.po |   3 +
+ .../share/rpcd/acl.d/luci-app-modeminfo.json  |   5 +-
+ .../resources/view/perenio/battery.js         |   2 +-
+ .../luci-static/resources/view/perenio/sms.js |  34 +++-
+ package/modeminfo/Makefile                    |   7 +-
+ .../root/etc/init.d/pejir-modem-cache         | 157 ++++++++++++++++++
+ 10 files changed, 254 insertions(+), 30 deletions(-)
+ create mode 100644 package/modeminfo/root/etc/init.d/pejir-modem-cache
+
+diff --git a/package/luci-app-modeminfo/htdocs/luci-static/resources/modem-indicator.js b/package/luci-app-modeminfo/htdocs/luci-static/resources/modem-indicator.js
+index e3b5794b..67af8488 100644
+--- a/package/luci-app-modeminfo/htdocs/luci-static/resources/modem-indicator.js
++++ b/package/luci-app-modeminfo/htdocs/luci-static/resources/modem-indicator.js
+@@ -4,6 +4,12 @@
+ 'require fs';
+ 'require uci';
+ 
++/* Данные модема читаем из файла фонового демона pejir-modem-cache.
++ * Раньше значок в шапке запускал /usr/bin/modeminfo из браузера каждые
++ * 10 секунд: обмен с модемом держал AT-порт до 90 секунд и сбивал
++ * отправку SMS (порт занят smsd). */
++var MODEM_CACHE_FILE = '/tmp/pejir-modem.json';
++
+ function getSignalColor(percent) {
+     if (percent === null || percent === undefined || percent < 5) {
+         return '#000000';
+@@ -42,12 +48,21 @@ function getSignalState(percent) {
+     return 'active';
+ }
+ 
++var _uciIndexTwo = null;
++
+ function isUciIndexTwo() {
++    /* Результат не меняется - держим его, чтобы не дёргать uci при
++     * каждом обновлении индикатора. */
++    if (_uciIndexTwo !== null)
++        return Promise.resolve(_uciIndexTwo);
++
+     return L.resolveDefault(fs.exec_direct('/sbin/uci', ['get', 'modeminfo.@general[0].index']), '')
+         .then(function(value) {
+-            return value.trim() === '2';
++            _uciIndexTwo = (value.trim() === '2');
++            return _uciIndexTwo;
+         })
+         .catch(function() {
++            _uciIndexTwo = false;
+             return false;
+         });
+ }
+@@ -66,7 +81,7 @@ function updateIndicator() {
+         ui.hideIndicator('modem-status');
+         return;
+     }
+-    L.resolveDefault(fs.exec_direct('/usr/bin/modeminfo'), '{"modem":[]}')
++    L.resolveDefault(fs.read(MODEM_CACHE_FILE), '{"modem":[]}')
+     .then(function(res) {
+         var data = JSON.parse(res);
+         if (!data.modem || !data.modem.length) {
+@@ -109,7 +124,7 @@ function updateIndicator() {
+ 
+ setTimeout(function() {
+     updateIndicator();
+-    poll.add(updateIndicator, 10);
++    poll.add(updateIndicator, 30);
+ }, 500);
+ 
+ return L.Class.extend({
+diff --git a/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/hw.js b/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/hw.js
+index 7b50ba93..9558acab 100644
+--- a/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/hw.js
++++ b/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/hw.js
+@@ -17,6 +17,11 @@
+ 	Refactored: bug fixes, XSS prevention, deduplication.
+ */
+ 
++/* Данные модема берём из файла фонового демона pejir-modem-cache:
++ * запуск modeminfo из браузера держал AT-порт до 90 секунд и подвешивал
++ * страницу. */
++const MODEM_CACHE_FILE = '/tmp/pejir-modem.json';
++
+ // ─── Helpers ──────────────────────────────────────────────────────────────────
+ 
+ /**
+@@ -61,11 +66,11 @@ return view.extend({
+ 
+ 	// FIX: removed unused `data` parameter
+ 	load: function() {
+-		return L.resolveDefault(fs.exec_direct('/usr/bin/modeminfo'), '{"modem": []}');
++		return L.resolveDefault(fs.read(MODEM_CACHE_FILE), '{"modem": []}');
+ 	},
+ 
+ 	polldata: poll.add(function() {
+-		return L.resolveDefault(fs.exec_direct('/usr/bin/modeminfo'), '{"modem": []}')
++		return L.resolveDefault(fs.read(MODEM_CACHE_FILE), '{"modem": []}')
+ 			.then(function(res) {
+ 				// FIX: wrapped in try/catch — was crashing on invalid JSON
+ 				let json;
+diff --git a/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/main.js b/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/main.js
+index 5679fa2e..7597ae94 100644
+--- a/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/main.js
++++ b/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/main.js
+@@ -18,6 +18,13 @@
+ 	Modified: 5G NR support with combined band display
+ */
+ 
++/* Данные модема берём из файла, который собирает фоновый демон
++ * pejir-modem-cache. Раньше страница сама запускала /usr/bin/modeminfo
++ * из браузера: обмен с модемом занимает до 90 секунд, страница висела,
++ * а AT-порт постоянно конфликтовал с smsd (сбивалась отправка SMS). */
++const MODEM_CACHE_FILE = '/tmp/pejir-modem.json';
++const MODEM_CACHE_REFRESH = '/etc/init.d/pejir-modem-cache';
++
+ const REGISTERED_STATUSES = [1, 6, 9];
+ const ROAMING_STATUSES    = [3, 5, 7, 10];
+ 
+@@ -312,11 +319,11 @@ function updateSignalBar(elId, idx, rawVal, unit, type, boundary) {
+ return view.extend({
+ 
+ 	load: function() {
+-		return L.resolveDefault(fs.exec_direct('/usr/bin/modeminfo'), '{"modem": []}');
++		return L.resolveDefault(fs.read(MODEM_CACHE_FILE), '{"modem": []}');
+ 	},
+ 
+ 	polldata: poll.add(function() {
+-		return L.resolveDefault(fs.exec_direct('/usr/bin/modeminfo'), '{"modem": []}')
++		return L.resolveDefault(fs.read(MODEM_CACHE_FILE), '{"modem": []}')
+ 			.then(function(res) {
+ 				let json;
+ 				try {
+@@ -533,7 +540,14 @@ return view.extend({
+ 			o.rmempty   = true;
+ 		}
+ 
+-		return m.render();
++		const btn = E('button', { 'class': 'cbi-button cbi-button-action', 'id': 'modem-refresh' },
++			_('Refresh modem data'));
++		btn.addEventListener('click', function() {
++			/* Обновление идёт в фоне: страница не ждёт обмена с модемом. */
++			L.resolveDefault(fs.exec(MODEM_CACHE_REFRESH, [ 'refresh' ]), null);
++		});
++
++		return E('div', {}, [ btn, m.render() ]);
+ 	},
+ 
+ 	handleSaveApply: null,
+diff --git a/package/luci-app-modeminfo/htdocs/luci-static/resources/view/status/include/26_modeminfo.js b/package/luci-app-modeminfo/htdocs/luci-static/resources/view/status/include/26_modeminfo.js
+index 16e1296f..a423716d 100644
+--- a/package/luci-app-modeminfo/htdocs/luci-static/resources/view/status/include/26_modeminfo.js
++++ b/package/luci-app-modeminfo/htdocs/luci-static/resources/view/status/include/26_modeminfo.js
+@@ -25,24 +25,14 @@ return baseclass.extend({
+ 			return null;
+ 		};
+ 
+-		return new Promise((resolve, reject) => {
+-			const timeout = setTimeout(() => {
+-				reject(new Error('Timeout: modeminfo execution took too long'));
+-			}, 30000); // 30 sec timeout
+-
+-			fs.exec_direct('/usr/bin/modeminfo')
+-				.then(result => {
+-					clearTimeout(timeout);
+-					resolve(result);
+-				})
+-				.catch(error => {
+-					clearTimeout(timeout);
+-					reject(error);
+-				});
+-		}).catch(error => {
+-			console.error('Error loading modeminfo:', error);
+-			return '';
+-		});
++		/* Данные читаем из файла фонового демона pejir-modem-cache:
++		 * запуск modeminfo из браузера держал AT-порт до 90 секунд
++		 * (страница "Состояние системы" подвисала на это время). */
++		return L.resolveDefault(fs.read('/tmp/pejir-modem.json'), '')
++			.catch(error => {
++				console.error('Error loading modeminfo:', error);
++				return '';
++			});
+ 	},
+ 
+ 	render: function(data){
+diff --git a/package/luci-app-modeminfo/po/ru/modeminfo.po b/package/luci-app-modeminfo/po/ru/modeminfo.po
+index 88d672be..581ca4cd 100644
+--- a/package/luci-app-modeminfo/po/ru/modeminfo.po
++++ b/package/luci-app-modeminfo/po/ru/modeminfo.po
+@@ -167,3 +167,6 @@ msgstr "Ожидание ответа от устройств"
+ 
+ msgid "Error loading information"
+ msgstr "Получение данных завершилось ошибкой"
++
++msgid "Refresh modem data"
++msgstr "Обновить данные модема"
+diff --git a/package/luci-app-modeminfo/root/usr/share/rpcd/acl.d/luci-app-modeminfo.json b/package/luci-app-modeminfo/root/usr/share/rpcd/acl.d/luci-app-modeminfo.json
+index 8a2723f8..a816a013 100644
+--- a/package/luci-app-modeminfo/root/usr/share/rpcd/acl.d/luci-app-modeminfo.json
++++ b/package/luci-app-modeminfo/root/usr/share/rpcd/acl.d/luci-app-modeminfo.json
+@@ -7,7 +7,10 @@
+ 				"luci": [ "getConntrackHelpers" ]
+ 			},
+ 			"file": {
+-				"/usr/bin/modeminfo": [ "exec" ],
++				"/etc/init.d/pejir-modem-cache": [ "exec" ],
++				"/etc/init.d/pejir-modem-cache refresh": [ "exec" ],
++				"/etc/init.d/pejir-modem-cache status": [ "exec" ],
++				"/tmp/pejir-modem.json": [ "read" ],
+ 				"/usr/share/modeminfo/scripts/rmtmp": [ "exec" ],
+ 				"/sbin/uci": [ "exec" ]
+ 			},
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+index 80c74ade..83274cdb 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+@@ -229,7 +229,7 @@ return view.extend({
+ 					document.cookie = 'battery=' + status + ';path=/cgi-bin/luci/';
+ 				}
+ 			}, this));
+-		}, this), 15);
++		}, this), 30);
+ 
+ 		return body;
+ 	},
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index a50d6abb..0f053994 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -189,6 +189,17 @@ function parseMessage(txt) {
+ 	return { from: from, date: date, text: body.join('\n').trim() };
+ }
+ 
++/* Кеш разобранных сообщений: каталог -> { имя файла: { mtime, msg } }.
++ *
++ * Зачем. Раньше страница каждые 20 секунд перечитывала ВСЕ файлы во
++ * всех четырёх каталогах spool (до 50 файлов в каждом - это до 200
++ * запросов fs.read через rpcd за один цикл). На большом архиве
++ * переписки страница заметно "тупила", а rpcd был загружен.
++ * Теперь файл читается только если он изменился (mtime), поэтому
++ * каждый цикл - это несколько запросов на новые сообщения, а не
++ * две сотни на все подряд. */
++var SPOOL_CACHE = {};
++
+ /* Чтение сообщений из каталога spool smstools3. */
+ function readSpool(dir) {
+ 	return fs.list(dir).catch(function() { return []; }).then(L.bind(function(list) {
+@@ -203,9 +214,20 @@ function readSpool(dir) {
+ 		});
+ 
+ 		files.sort(function(a, b) { return b.mtime - a.mtime; });
+-		files = files.slice(0, 50);
++		files = files.slice(0, 30);
++
++		var cache = SPOOL_CACHE[dir] || (SPOOL_CACHE[dir] = {});
++		var seen = {};
+ 
+ 		return Promise.all(files.map(function(f) {
++			var hit = cache[f.name];
++
++			seen[f.name] = 1;
++
++			/* Файл не менялся - берём готовый разбор. */
++			if (hit && hit.mtime === f.mtime)
++				return Promise.resolve(hit.msg);
++
+ 			return fs.read(dir + '/' + f.name).then(function(txt) {
+ 				var m = parseMessage(txt);
+ 
+@@ -216,8 +238,18 @@ function readSpool(dir) {
+ 
+ 				return { name: f.name, mtime: f.mtime,
+ 					from: m.from, date: m.date, text: m.text };
++			}).then(function(msg) {
++				if (msg)
++					cache[f.name] = { mtime: f.mtime, msg: msg };
++				return msg;
+ 			}).catch(function() { return null; });
+ 		})).then(function(all) {
++			/* Забываем файлы, которых больше нет в каталоге. */
++			Object.keys(cache).forEach(function(n) {
++				if (!seen[n])
++					delete cache[n];
++			});
++
+ 			return all.filter(function(m) { return m != null; });
+ 		});
+ 	}, this));
+diff --git a/package/modeminfo/Makefile b/package/modeminfo/Makefile
+index 66dd5bdd..af0991da 100644
+--- a/package/modeminfo/Makefile
++++ b/package/modeminfo/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=modeminfo
+ PKG_VERSION:=0.4.8
+-PKG_RELEASE:=3
++PKG_RELEASE:=4
+ PKG_MAINTAINER:=Konstantine Shevlakov <shevlakov@132lan.ru>
+ 
+ include $(INCLUDE_DIR)/package.mk
+@@ -75,6 +75,11 @@ define Package/$(PKG_NAME)/install
+ 	$(INSTALL_DIR) $(1)/etc/uci-defaults
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/60-perenio-modeminfo \
+ 		$(1)/etc/uci-defaults/60-perenio-modeminfo
++	# Фоновый сборщик данных модема: страницы LuCI читают готовый файл
++	# вместо запуска modeminfo из браузера (тот держал AT-порт до 90 с).
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/pejir-modem-cache \
++		$(1)/etc/init.d/pejir-modem-cache
+ endef
+ 
+ define Package/$(PKG_NAME)-telegram/install
+diff --git a/package/modeminfo/root/etc/init.d/pejir-modem-cache b/package/modeminfo/root/etc/init.d/pejir-modem-cache
+new file mode 100644
+index 00000000..fc7e0d0e
+--- /dev/null
++++ b/package/modeminfo/root/etc/init.d/pejir-modem-cache
+@@ -0,0 +1,157 @@
++#!/bin/sh /etc/rc.common
++# PEJIR01: фоновый сбор данных модема для веб-интерфейса.
++#
++# Зачем. Страницы LuCI "Модем" и "Оборудование", а также значок модема
++# в шапке запрашивали данные командой /usr/bin/modeminfo прямо из
++# браузера. Эта команда держит AT-порт (обмен с модемом занимает до
++# 90 секунд), из-за чего:
++#   * страница "Модем" висела до минуты - браузер ждал ответа rpcd;
++#   * значок в шапке опрашивал модем каждые 10 секунд и постоянно
++#     конфликтовал с smsd (отправка SMS сбивалась);
++#   * страница "Состояние системы" делала то же самое.
++#
++# Теперь данные собирает этот демон в фоне и кладёт их в файл
++# /tmp/pejir-modem.json, а браузер только читает этот файл (дешёвая
++# операция). Опрос модема идёт раз в PEJIR_MODEM_CACHE_INTERVAL секунд
++# и пропускается, если в очереди исходящих SMS лежит неотправленное
++# сообщение (порт занят smsd).
++#
++# Команды:
++#   refresh - запустить обновление в фоне и сразу вернуть управление;
++#   collect - обновить файл сейчас (в текущем процессе);
++#   watch   - бесконечный цикл обновления;
++#   status  - показать время последнего обновления и признак актуальности.
++
++START=96
++STOP=0
++
++STATE_FILE="${PEJIR_MODEM_STATE:-/tmp/pejir-modem.json}"
++MODEMINFO_BIN="${PEJIR_MODEMINFO_BIN:-/usr/bin/modeminfo}"
++# Путь к самому скрипту (rc.common подменяет $0, поэтому берём из
++# переменной окружения или из initscript).
++SELF="${PEJIR_MODEM_SELF:-${initscript:-/etc/init.d/pejir-modem-cache}}"
++INTERVAL="${PEJIR_MODEM_CACHE_INTERVAL:-180}"
++TIMEOUT="${PEJIR_MODEM_CACHE_TIMEOUT:-120}"
++SMS_OUTBOX="${PEJIR_SMS_OUTBOX:-/var/spool/sms/outgoing}"
++LOCK_DIR="${PEJIR_MODEM_LOCK:-/tmp/pejir-modem-cache.lock}"
++# Замок pejir-signal: если он есть, модем сейчас опрашивает демон
++# состояния сети - в AT-порт лезть нельзя.
++SIGNAL_LOCK="${PEJIR_SIGNAL_LOCK:-/tmp/pejir-signal.lock}"
++PID_FILE="${PEJIR_MODEM_PID:-/tmp/pejir-modem-cache.pid}"
++
++extra_command "refresh" "Refresh modem data in background"
++extra_command "collect" "Refresh modem data now"
++extra_command "watch" "Run cache refresh loop"
++extra_command "status" "Show modem cache state"
++
++log() {
++	logger -t pejir-modem-cache "$*" 2>/dev/null
++}
++
++# Один опрос за раз: демон и кнопка "Обновить" не должны лезть в порт
++# одновременно. Если процесс убили - замок снимаем через 2 минуты.
++lock_stale() {
++	local t now
++
++	[ -d "$LOCK_DIR" ] || return 0
++	t="$(stat -c %Y "$LOCK_DIR" 2>/dev/null)"
++	case "$t" in
++	''|*[!0-9]*) rm -rf "$LOCK_DIR" 2>/dev/null; return 0 ;;
++	esac
++	now="$(date +%s)"
++	[ "$((now - t))" -gt 120 ] && rm -rf "$LOCK_DIR" 2>/dev/null
++	return 0
++}
++
++sms_busy() {
++	[ -n "$(ls -1 "$SMS_OUTBOX" 2>/dev/null | head -1)" ]
++}
++
++do_collect() {
++	local out
++
++	[ -x "$MODEMINFO_BIN" ] || return 1
++
++	# Порт занят демоном состояния сети - ждём следующего цикла.
++	[ -d "$SIGNAL_LOCK" ] && return 1
++
++	# В очереди исходящих SMS лежит неотправленное сообщение: порт
++	# занят smsd, опрос модема сбил бы отправку SMS.
++	sms_busy && return 1
++
++	lock_stale
++	mkdir "$LOCK_DIR" 2>/dev/null || return 1
++
++	out="$(timeout "$TIMEOUT" "$MODEMINFO_BIN" 2>/dev/null)"
++	case "$out" in
++	'{'*)
++		printf '%s\n' "$out" > "$STATE_FILE.tmp" 2>/dev/null &&
++			mv "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null
++		;;
++	*)
++		log "модем не ответил - данные не обновлены"
++		;;
++	esac
++
++	rmdir "$LOCK_DIR" 2>/dev/null
++	return 0
++}
++
++# Обновление в фоне: команда возвращает управление сразу, браузер не
++# ждёт обмена с модемом.
++do_refresh() {
++	if command -v setsid >/dev/null 2>&1; then
++		( setsid "$SELF" collect >/dev/null 2>&1 & )
++	elif command -v nohup >/dev/null 2>&1; then
++		( nohup "$SELF" collect >/dev/null 2>&1 & )
++	else
++		( "$SELF" collect >/dev/null 2>&1 & )
++	fi
++	return 0
++}
++
++do_watch() {
++	while :; do
++		sleep 5
++		if ! sms_busy; then
++			do_collect >/dev/null 2>&1
++		fi
++		sleep "$INTERVAL"
++	done
++}
++
++do_status() {
++	if [ -f "$STATE_FILE" ]; then
++		echo "ts=$(stat -c %Y "$STATE_FILE" 2>/dev/null)"
++		echo "size=$(wc -c < "$STATE_FILE" 2>/dev/null)"
++	else
++		echo "нет данных"
++	fi
++}
++
++refresh() { do_refresh; }
++collect() { do_collect; }
++watch()   { do_watch; }
++status()  { do_status; }
++
++# Без USE_PROCD=1 rc.common вызывает start()/stop() сам.
++start() {
++	if command -v setsid >/dev/null 2>&1; then
++		setsid sh -c "echo \$\$ > $PID_FILE; exec $SELF watch" >/dev/null 2>&1 &
++	else
++		sh -c "echo \$\$ > $PID_FILE; exec $SELF watch" >/dev/null 2>&1 &
++	fi
++}
++
++stop() {
++	local pid
++
++	pid="$(cat "$PID_FILE" 2>/dev/null)"
++	case "$pid" in
++	''|*[!0-9]*) ;;
++	*) kill "$pid" 2>/dev/null ;;
++	esac
++	rm -f "$PID_FILE" 2>/dev/null
++	rmdir "$LOCK_DIR" 2>/dev/null
++	return 0
++}
+-- 
+2.39.5
+
