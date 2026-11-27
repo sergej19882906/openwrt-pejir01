@@ -106,6 +106,10 @@ case "$*" in
 		echo "amneziawg"
 		exit 0
 		;;
+	*"network.Home.perenio_awg_watch_restart"*)
+		echo "${WATCH_RESTART:-1}"
+		exit 0
+		;;
 esac
 exit 1
 EOF
@@ -131,7 +135,7 @@ chmod +x "$WORK/bin"/*
 
 # первая проверка: туннель молчит - сторой перезапускает интерфейс
 echo "tunnel" > "$WORK/route-mode"
-PATH="$WORK/bin:$PATH" PEJIR_AWG_WATCH_FAILS=2 PEJIR_AWG_WATCH_COUNT_DIR="$WORK/count" sh "$WATCH" --once >/dev/null 2>&1
+PATH="$WORK/bin:$PATH" PEJIR_AWG_WATCH_FAILS=2 PEJIR_AWG_WATCH_COUNT_DIR="$WORK/count" WATCH_RESTART=1 sh "$WATCH" --once >/dev/null 2>&1
 if grep -q "ifup Home" "$WORK/actions.log" 2>/dev/null; then
 	ok "сторой перезапускает интерфейс, когда туннель молчит"
 else
@@ -144,17 +148,28 @@ else
 fi
 
 # вторая проверка: туннель всё ещё молчит - маршрут снимается
-PATH="$WORK/bin:$PATH" PEJIR_AWG_WATCH_FAILS=2 PEJIR_AWG_WATCH_COUNT_DIR="$WORK/count" sh "$WATCH" --once >/dev/null 2>&1
+PATH="$WORK/bin:$PATH" PEJIR_AWG_WATCH_FAILS=2 PEJIR_AWG_WATCH_COUNT_DIR="$WORK/count" WATCH_RESTART=1 sh "$WATCH" --once >/dev/null 2>&1
 if grep -q "route-deleted" "$WORK/actions.log" 2>/dev/null; then
 	ok "сторой снимает маршрут через туннель - трафик возвращается на LTE"
 else
 	fail "сторой не снял маршрут после серии неудачных проверок"
 fi
 
-# третья проверка: маршрута через туннель нет - сторой не вмешивается
+# третья проверка: без флага разрушительного перезапуска сторой его не делает
+rm -f "$WORK/actions.log"
+echo "tunnel" > "$WORK/route-mode"
+PATH="$WORK/bin:$PATH" PEJIR_AWG_WATCH_FAILS=2 PEJIR_AWG_WATCH_COUNT_DIR="$WORK/count" \
+	WATCH_RESTART="" sh "$WATCH" --once >/dev/null 2>&1
+if grep -q "ifdown" "$WORK/actions.log" 2>/dev/null; then
+	fail "сторой делает разрушительный перезапуск без явного флага"
+else
+	ok "сторой не перезапускает туннель без флага (перезапуск только по флагу)"
+fi
+
+# четвёртая проверка: маршрута через туннель нет - сторой не вмешивается
 rm -f "$WORK/actions.log"
 echo "lte" > "$WORK/route-mode"
-PATH="$WORK/bin:$PATH" PEJIR_AWG_WATCH_COUNT_DIR="$WORK/count" sh "$WATCH" --once >/dev/null 2>&1
+PATH="$WORK/bin:$PATH" PEJIR_AWG_WATCH_COUNT_DIR="$WORK/count" WATCH_RESTART=1 sh "$WATCH" --once >/dev/null 2>&1
 if [ -s "$WORK/actions.log" ]; then
 	fail "сторой вмешался, хотя трафик через туннель не идёт"
 else

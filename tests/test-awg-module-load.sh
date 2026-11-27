@@ -103,8 +103,16 @@ grep -q 'openwrt\.lan' "$LAN_INIT" && ok "скрипт добавляет openwr
 	|| fail "скрипт не добавляет openwrt.lan"
 grep -q 'network\.lan\.ipaddr' "$LAN_INIT" && ok "IP берётся из network.lan.ipaddr" \
 	|| fail "IP не берётся из network.lan.ipaddr"
-grep -q 'kill -HUP' "$LAN_INIT" && ok "dnsmasq перечитывает /etc/hosts" \
-	|| fail "нет перечитывания /etc/hosts для dnsmasq"
+# Перечитываем hosts поддержимым способом: reload dnsmasq (голый
+# SIGHUP на некоторых сборках приводит к падению процесса, а вместе с
+# ним - к пропаже DHCP). Плюс проверка живости dnsmasq.
+if grep -q "init.d/dnsmasq reload" "$LAN_INIT"; then
+	ok "dnsmasq перечитывает /etc/hosts через reload"
+else
+	fail "нет перечитывания /etc/hosts для dnsmasq"
+fi
+grep -q "pidof dnsmasq" "$LAN_INIT" && ok "проверяется, что dnsmasq жив" \
+	|| fail "нет проверки живости dnsmasq - при падении пропадёт и DHCP"
 
 # --- 4. новые пакеты включены в образ ------------------------------------
 BUILD_SH="$REPO_DIR/build.sh"
