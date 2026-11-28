@@ -156,6 +156,8 @@ jobs:
           sh tests/test-ota-restore.sh
           sh tests/test-theme-argon-only.sh
           sh tests/test-neofetch.sh
+          sh tests/test-lan-ip.sh
+          sh tests/test-config-guard.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый

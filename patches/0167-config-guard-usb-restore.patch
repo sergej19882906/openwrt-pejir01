@@ -1,0 +1,215 @@
+From 37f36e5bd3c7e2e75e79abf7f19575d1925e6822 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 23:59:14 GMT
+Subject: =?utf-8?b?0KHRgtGA0LDRhdC+0LLQutCwINC60L7QvdGE0LjQs9GD0YDQsNGG0LjQuCDRgdC1?=
+ =?utf-8?b?0YLQuDog0LLQvtGB0YHRgtCw0L3QvtCy0LvQtdC90LjQtSDRgSBVU0It0YTQu9C1?=
+ =?utf-8?b?0YjQutC4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Если после прошивки extroot не поднялся (потерялся fstab), система
+загрузилась со стоковым /etc/config/network: LAN 192.168.1.1, без секций
+lte/lte6 и туннеля Home. Настройки при этом целы - они лежат на
+флешке в <раздел>/upper/etc/config.
+
+Новый init-скрипт 12-pejir-config-guard (START=12, до старта сети):
+
+- если текущий /etc/config/network выглядит стоковым (LAN 192.168.1.1),
+  ищем на USB-разделах сохранённый upper с настройками владельца;
+- если в сохранённом файле есть секция lte, восстанавливаем
+  /etc/config/network и /etc/config/fstab (fstab - чтобы extroot
+  заработал со следующей загрузки);
+- пользовательские настройки не затираются "на всякий случай":
+  восстановление срабатывает только для стокового дефолта.
+---
+ package/pejir-ota/Makefile                    |   3 +-
+ .../root/etc/init.d/12-pejir-config-guard     | 155 ++++++++++++++++++
+ 2 files changed, 157 insertions(+), 1 deletion(-)
+ create mode 100644 package/pejir-ota/root/etc/init.d/12-pejir-config-guard
+
+diff --git a/package/pejir-ota/Makefile b/package/pejir-ota/Makefile
+index 3628175a..1cc6537a 100644
+--- a/package/pejir-ota/Makefile
++++ b/package/pejir-ota/Makefile
+@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=pejir-ota
+ PKG_VERSION:=1.0.0
+-PKG_RELEASE:=2
++PKG_RELEASE:=3
+ 
+ PKG_LICENSE:=Apache-2.0
+ 
+@@ -43,6 +43,7 @@ define Package/pejir-ota/install
+ 	$(INSTALL_DATA) ./files/version $(1)/usr/lib/pejir/version
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./root/etc/init.d/42-pejir-upgrade-purge $(1)/etc/init.d/42-pejir-upgrade-purge
++	$(INSTALL_BIN) ./root/etc/init.d/12-pejir-config-guard $(1)/etc/init.d/12-pejir-config-guard
+ 	$(INSTALL_DIR) $(1)/etc/config
+ 	$(INSTALL_CONF) ./root/etc/config/pejir_ota $(1)/etc/config/pejir_ota
+ 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/perenio
+diff --git a/package/pejir-ota/root/etc/init.d/12-pejir-config-guard b/package/pejir-ota/root/etc/init.d/12-pejir-config-guard
+new file mode 100644
+index 00000000..7385e9ae
+--- /dev/null
++++ b/package/pejir-ota/root/etc/init.d/12-pejir-config-guard
+@@ -0,0 +1,155 @@
++#!/bin/sh /etc/rc.common
++# pejir-config-guard - страховка конфигурации сети.
++#
++# Что случилось в релизе .73: после прошивки конфигурация сети
++# (/etc/config/network) вернулась к дефолту OpenWrt - LAN стал
++# 192.168.1.1 вместо 192.168.2.1, а секции lte/lte6 и туннеля Home
++# (AmneziaWG) в файле не оказалось. Из-за этого телефон не видел
++# роутер в своей подсети, а в зоне wan не было интерфейсов LTE -
++# интернет "пропал".
++#
++# Где лежат настройки пользователя. Если включён extroot (overlay на
++# USB-флешке), то /etc/config - это файлы на флешке:
++# <раздел ext4>/upper/etc/config/network. Если после прошивки extroot
++# не поднялся (например, fstab не восстановился), система загрузилась с
++# NAND и показала дефолтные настройки, хотя на флешке все настройки
++# целы - просто до них не дошли.
++#
++# Что делает этот скрипт (выполняется ДО старта сети, START=12):
++#   1) если /etc/config/network выглядит дефолтным (LAN 192.168.1.1),
++#      ищем на USB-разделах сохранённый upper с настройками;
++#   2) если в сохранённом файле есть секция lte (значит это настоящая
++#      конфигурация владельца, а не стоковая), восстанавливаем
++#      /etc/config/network и /etc/config/fstab (второй - чтобы extroot
++#      снова заработал со следующей загрузки);
++#   3) если всё в порядке - не делаем ничего и не тратим время.
++#
++# Скрипт выполняется ДО старта сети (S20network), поэтому восстановленный
++# конфиг сразу применяется.
++#
++# Восстановление делается только когда текущий конфиг - точно стоковый
++# дефолт. Настройки владельца никогда не затираются "на всякий случай".
++
++START=12
++STOP=0
++
++DEVDIR="${PEJIR_GUARD_DEVDIR:-/dev}"
++MNT="${PEJIR_GUARD_MNT:-/tmp/pejir-guard}"
++MOUNT_CMD="${PEJIR_GUARD_MOUNT:-mount}"
++UMOUNT_CMD="${PEJIR_GUARD_UMOUNT:-umount}"
++BLOCKINFO_CMD="${PEJIR_GUARD_BLOCKINFO:-block info}"
++WAIT="${PEJIR_GUARD_WAIT:-10}"
++NETCONF="${PEJIR_GUARD_NETCONF:-/etc/config/network}"
++FSTAB="${PEJIR_GUARD_FSTAB:-/etc/config/fstab}"
++DEFAULT_LAN="192.168.1.1"
++
++log() {
++	logger -t pejir-config-guard "$*" 2>/dev/null
++	echo "pejir-config-guard: $*"
++}
++
++# Текущий адрес LAN из конфига.
++lan_ip() {
++	uci -q get network.lan.ipaddr 2>/dev/null || true
++}
++
++# В сохранённом конфиге есть настоящая секция lte?
++saved_is_real() {
++	grep -qE "^[[:space:]]*config interface[[:space:]]+['\"]?lte" "$1" 2>/dev/null
++}
++
++# Смонтировать раздел и положить путь к сохранённому конфигу.
++# Печатает путь к файлу network, если он найден.
++try_dev() {
++	local dev info
++
++	dev="$1"
++	info="$($BLOCKINFO_CMD "$dev" 2>/dev/null)"
++	case "$info" in
++		*'TYPE="ext4"'*) : ;;
++		*) return 1 ;;
++	esac
++
++	mkdir -p "$MNT" 2>/dev/null || return 1
++	$MOUNT_CMD -t ext4 -o ro "$dev" "$MNT" >/dev/null 2>&1 || return 1
++
++	if [ -f "$MNT/upper/etc/config/network" ]; then
++		echo "$MNT/upper/etc/config/network"
++		return 0
++	fi
++
++	$UMOUNT_CMD "$MNT" >/dev/null 2>&1
++	return 1
++}
++
++# Ищем раздел с сохранённым конфигом (с ожиданием USB).
++find_saved() {
++	local waited=0 dev out
++
++	while :; do
++		for dev in "$DEVDIR"/sd*[0-9]; do
++			[ -b "$dev" ] || [ -f "$dev" ] || continue
++			out="$(try_dev "$dev" || true)"
++			if [ -n "$out" ]; then
++				echo "$out"
++				return 0
++			fi
++		done
++		[ "$waited" -ge "$WAIT" ] && break
++		waited=$((waited + 1))
++		sleep 1
++	done
++	return 1
++}
++
++restore_config() {
++	local saved="$1"
++
++	log "настройки сети выглядят как стоковые ($DEFAULT_LAN) - ищу сохранённые на USB"
++	saved="$(find_saved || true)"
++	if [ -z "$saved" ]; then
++		log "сохранённых настроек на USB не найдено - оставляю как есть"
++		return 1
++	fi
++
++	if ! saved_is_real "$saved"; then
++		log "в сохранённом файле нет секции lte - это не пользовательский конфиг, не трогаю"
++		$UMOUNT_CMD "$MNT" >/dev/null 2>&1
++		return 1
++	fi
++
++	cp "$saved" "$NETCONF.new" 2>/dev/null || {
++		log "не удалось записать восстановленный конфиг"
++		$UMOUNT_CMD "$MNT" >/dev/null 2>&1
++		return 1
++	}
++	mv "$NETCONF.new" "$NETCONF" 2>/dev/null || {
++		rm -f "$NETCONF.new" 2>/dev/null
++		$UMOUNT_CMD "$MNT" >/dev/null 2>&1
++		return 1
++	}
++
++	# fstab тоже мог потеряться: без него extroot не поднимется.
++	if [ -f "$MNT/upper/etc/config/fstab" ] && [ ! -f "$FSTAB" ]; then
++		cp "$MNT/upper/etc/config/fstab" "$FSTAB" 2>/dev/null &&
++			log "восстановлен /etc/config/fstab - extroot заработает после перезагрузки"
++	fi
++
++	$UMOUNT_CMD "$MNT" >/dev/null 2>&1
++	log "восстановлена конфигурация сети из сохранённой копии"
++	return 0
++}
++
++start() {
++	local cur
++
++	cur="$(lan_ip)"
++	[ "$cur" = "$DEFAULT_LAN" ] || return 0
++
++	restore_config
++	return 0
++}
++
++stop() {
++	return 0
++}
+-- 
+2.39.5
+

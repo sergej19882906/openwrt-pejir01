@@ -1,0 +1,182 @@
+From d8a4ff88052ee22492b651dcee58cc5a16692be7 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 23:59:14 GMT
+Subject: =?utf-8?b?0KHQtdGC0Yw6INCw0LTRgNC10YEgTEFOIDE5Mi4xNjguMi4xINCy0L7Qt9Cy0YDQ?=
+ =?utf-8?b?sNGJ0LDQtdGC0YHRjyDQv9GA0Lgg0LrQsNC20LTQvtC5INC30LDQs9GA0YPQt9C6?=
+ =?utf-8?b?0LU=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+После прошивки релиза .73 конфиг сети вернулся к дефолту OpenWrt
+(192.168.1.1), а секции lte/lte6 и туннель Home из него исчезли: телефон
+оказался в другой подсети, в зоне wan не было интерфейсов LTE.
+
+- новый init-скрипт 49-pejir-lan-ip (START=13, до старта сети): если
+  network.lan.ipaddr снова стал стоковым 192.168.1.1, возвращаем
+  192.168.2.1. Метка версии в /overlay/pejir - владельцу, который сам
+  выбрал 192.168.1.1, скрипт не мешает;
+- чистка верхнего слоя: удаляются остатки тем Bootstrap/Cyberpunk и
+  протухшие ACL-файлы наших страниц, которые перекрывали свежие файлы
+  из образа.
+---
+ package/luci-app-perenio/Makefile             |  7 ++
+ .../root/etc/init.d/49-pejir-lan-ip           | 78 +++++++++++++++++++
+ package/pejir-ota/files/pejir-ovl-purge       | 33 +++++++-
+ 3 files changed, 116 insertions(+), 2 deletions(-)
+ create mode 100644 package/luci-app-perenio/root/etc/init.d/49-pejir-lan-ip
+
+diff --git a/package/luci-app-perenio/Makefile b/package/luci-app-perenio/Makefile
+index 21cd495e..9f1bb0f2 100644
+--- a/package/luci-app-perenio/Makefile
++++ b/package/luci-app-perenio/Makefile
+@@ -57,6 +57,13 @@ define Package/luci-app-perenio/install
+ 		$(1)/etc/uci-defaults/50-perenio-fwenv
+ 	$(INSTALL_BIN) ./root/etc/uci-defaults/50-perenio-network \
+ 		$(1)/etc/uci-defaults/50-perenio-network
++	# Приводим адрес LAN к 192.168.2.1 при КАЖДОЙ загрузке, а не только
++	# при первой установке: если конфиг сети вернулся к дефолту OpenWrt
++	# (192.168.1.1), телефон остаётся в старой подсети и интернет
++	# "пропадает" (см. релиз .73).
++	$(INSTALL_DIR) $(1)/etc/init.d
++	$(INSTALL_BIN) ./root/etc/init.d/49-pejir-lan-ip \
++		$(1)/etc/init.d/49-pejir-lan-ip
+ 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+ 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-perenio.json \
+ 		$(1)/usr/share/luci/menu.d/luci-app-perenio.json
+diff --git a/package/luci-app-perenio/root/etc/init.d/49-pejir-lan-ip b/package/luci-app-perenio/root/etc/init.d/49-pejir-lan-ip
+new file mode 100644
+index 00000000..7e0aa5f3
+--- /dev/null
++++ b/package/luci-app-perenio/root/etc/init.d/49-pejir-lan-ip
+@@ -0,0 +1,78 @@
++#!/bin/sh /etc/rc.common
++# PEJIR01: адрес LAN должен быть 192.168.2.1 (как в заводской прошивке).
++#
++# Зачем отдельный init-скрипт, если есть uci-defaults 50-perenio-network.
++#
++# uci-defaults выполняются ОДИН РАЗ - при первой загрузке после установки.
++# Дальше скрипт удаляется, и если конфиг сети по какой-то причине вернулся
++# к дефолту OpenWrt (192.168.1.1), то адрес LAN больше никто не
++# возвращает: телефон и ноутбук остаются в старой подсети, LuCI на
++# 192.168.2.1 не открывается, а в зоне wan нет интерфейсов LTE - интернет
++# "пропадает". Именно это случилось при переходе на релиз .73.
++#
++# Что делает скрипт:
++#   * если network.lan.ipaddr = 192.168.1.1 (дефолт OpenWrt) - меняем на
++#     192.168.2.1;
++#   * если пользователь поставил адрес сам (любой другой) - не трогаем;
++#   * правило действует один раз на версию образа (метка в /overlay/pejir):
++#     если владелец сам захочет 192.168.1.1, скрипт не будет возвращать
++#     адрес при каждой загрузке.
++#
++# START=13 - до старта сети (S20network) и до модема/LTE (S9x), поэтому
++# сеть сразу поднимается с правильным адресом и телефон не теряет
++# связь ни на секунду. Если скрипт запустить вручную при работающей сети,
++# адрес применяется перезагрузкой network.
++
++START=13
++STOP=0
++
++VERSION_FILE="${PEJIR_LANIP_VERSION_FILE:-/usr/lib/pejir/version}"
++MARKER="${PEJIR_LANIP_MARKER:-/overlay/pejir/lan-ip-version}"
++DEFAULT_LAN="192.168.1.1"
++WANTED_LAN="192.168.2.1"
++
++log() {
++	logger -t pejir-lan-ip "$*" 2>/dev/null
++	echo "pejir-lan-ip: $*"
++}
++
++fix_lan_ip() {
++	local cur version last
++
++	cur="$(uci -q get network.lan.ipaddr 2>/dev/null || true)"
++	[ "$cur" = "$DEFAULT_LAN" ] || return 0
++
++	version="$(cat "$VERSION_FILE" 2>/dev/null | tr -d '\r\n')"
++	[ -n "$version" ] || version="unknown"
++
++	last="$(cat "$MARKER" 2>/dev/null | tr -d '\r\n')"
++	if [ "$last" = "$version" ]; then
++		# Для этой версии образа адрес уже правили - не мешаем владельцу.
++		return 0
++	fi
++
++	uci set network.lan.ipaddr="$WANTED_LAN"
++	uci commit network
++	mkdir -p "$(dirname "$MARKER")" 2>/dev/null
++	printf '%s\n' "$version" >"$MARKER" 2>/dev/null
++
++	log "адрес LAN: $DEFAULT_LAN -> $WANTED_LAN (как в заводской прошивке)"
++
++	# Сеть ещё не стартовала (мы раньше S20network) - она сама поднимется
++	# с новым адресом. Если же сеть уже работает (скрипт запустили
++	# вручную), адрес сменится только после перезагрузки network.
++	if [ -e /sys/class/net/br-lan ]; then
++		log "перезагружаю сеть - подключитесь снова к $WANTED_LAN"
++		/etc/init.d/network reload >/dev/null 2>&1
++	fi
++	return 0
++}
++
++# Без USE_PROCD=1 rc.common вызывает start() сам.
++start() {
++	fix_lan_ip
++}
++
++stop() {
++	return 0
++}
+diff --git a/package/pejir-ota/files/pejir-ovl-purge b/package/pejir-ota/files/pejir-ovl-purge
+index cf362a4d..71cb0746 100755
+--- a/package/pejir-ota/files/pejir-ovl-purge
++++ b/package/pejir-ota/files/pejir-ovl-purge
+@@ -56,7 +56,7 @@ PKG_DIR="${PEJIR_PURGE_PKG_DIR:-/lib/apk/packages}"
+ MOUNTS_FILE="${PEJIR_PURGE_MOUNTS_FILE:-/proc/mounts}"
+ 
+ # Наши пакеты: только их файлы вычищаем.
+-PKGS="${PEJIR_PURGE_PKGS:-pejir-sms luci-app-perenio luci-app-atinout pejir-lte-base pejir-ota pejir-sync}"
++PKGS="${PEJIR_PURGE_PKGS:-pejir-sms luci-app-perenio luci-app-atinout pejir-lte-base pejir-ota pejir-sync luci-app-modeminfo luci-theme-argon pejir-neofetch}"
+ 
+ # Остатки СТОКОВЫХ пакетов, которых у нас в образе нет.
+ #
+@@ -239,5 +239,34 @@ if [ "${PEJIR_PURGE_STOCK_ALL:-1}" = "1" ] && [ -d "$STOCK_INFO_DIR" ]; then
+ 	done
+ fi
+ 
+-echo "pejir-ovl-purge: удалено протухших копий из верхнего слоя: $REMOVED, защищено: $SKIPPED, остатков стоковых пакетов: $STOCK_REMOVED"
++# --- остатки ТЕМ, которых больше нет в образе ---------------------------
++#
++# В образе осталась только тема Argon. Файлы Bootstrap и Cyberpunk в
++# верхнем слое (остатки заводской прошивки или старых версий) перекрывают
++# образ и в списке тем, и в самом интерфейсе. Удаляем их копии из
++# верхнего слоя напрямую (без whiteout - см. пояснение выше).
++THEME_REMOVED=0
++for d in www/luci-static/bootstrap www/luci-static/bootstrap-dark \
++	 www/luci-static/bootstrap-light www/luci-static/cyberpunk; do
++	if [ -e "$UPPER/$d" ] || [ -L "$UPPER/$d" ]; then
++		rm -rf "$UPPER/$d" 2>/dev/null && THEME_REMOVED=$((THEME_REMOVED + 1))
++	fi
++done
++
++# ACL-файлы наших страниц менялись от версии к версии (новые гранты).
++# Старая копия в верхнем слое перекрывает новый ACL из образа - и в
++# браузере остаются старые права (например, запуск modeminfo). Убираем
++# копии напрямую, чтобы в merged лежал свежий файл из squashfs.
++ACL_REMOVED=0
++for f in usr/share/rpcd/acl.d/luci-app-modeminfo.json \
++	 usr/share/rpcd/acl.d/luci-app-perenio.json \
++	 usr/share/rpcd/acl.d/luci-app-atinout.json \
++	 usr/share/rpcd/acl.d/luci-app-pejir-ota.json \
++	 usr/share/rpcd/acl.d/luci-app-argon-config.json; do
++	if [ -e "$UPPER/$f" ] || [ -L "$UPPER/$f" ]; then
++		rm -f "$UPPER/$f" 2>/dev/null && ACL_REMOVED=$((ACL_REMOVED + 1))
++	fi
++done
++
++echo "pejir-ovl-purge: удалено протухших копий из верхнего слоя: $REMOVED, защищено: $SKIPPED, остатков стоковых пакетов: $STOCK_REMOVED, лишних тем: $THEME_REMOVED, старых ACL: $ACL_REMOVED"
+ exit 0
+-- 
+2.39.5
+

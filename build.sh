@@ -725,7 +725,9 @@ if [ -n "$SU" ]; then
         fi
         for f in etc/init.d/40-pejir-sms etc/init.d/41-pejir-modem \
                  etc/init.d/47-pejir-lte etc/init.d/41-pejir-sync \
-                 etc/init.d/pejir-sms-spool; do
+                 etc/init.d/pejir-sms-spool \
+                 etc/init.d/49-pejir-lan-ip \
+                 etc/init.d/12-pejir-config-guard; do
             echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || continue
             TMPF="$(mktemp)"
             unsquashfs -cat "$R" "$f" > "$TMPF" 2>/dev/null || true
@@ -749,6 +751,21 @@ if [ -n "$SU" ]; then
         else
             echo "  init-скрипты имеют рабочий способ запуска: OK"
         fi
+
+        # Скрипты восстановления настроек сети обязаны быть в образе.
+        # Без них после прошивки конфиг сети может остаться стоковым
+        # (LAN 192.168.1.1, без секций lte/lte6 и туннеля Home), и
+        # интернет "пропадает" (релиз .73).
+        NETFIX_MISSING=""
+        for f in etc/init.d/49-pejir-lan-ip etc/init.d/12-pejir-config-guard; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || NETFIX_MISSING="$NETFIX_MISSING $f"
+        done
+        if [ -n "$NETFIX_MISSING" ]; then
+          ann error "build.sh: сеть" "в образе нет скриптов восстановления сети:$NETFIX_MISSING"
+          echo "ОШИБКА: нет $NETFIX_MISSING"
+          exit 1
+        fi
+        echo "  скрипты восстановления настроек сети: OK"
 
         # Вендорные бинари mcu/mcud ищут libubox.so/libubus.so по обычному
         # имени, поэтому в образе обязаны быть symlink'и на версионные
