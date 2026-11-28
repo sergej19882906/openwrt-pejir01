@@ -1,0 +1,375 @@
+From 348eeca66ddc5925c730400e773b7e493395e47b Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 16:08:52 GMT
+Subject: =?utf-8?b?0KHRgtGA0LDQvdC40YbQsCBTTVM6INC/0LXRgNC10L/QuNGB0LrQsCDRh9C40YLQ?=
+ =?utf-8?b?sNC10YLRgdGPINC+0LTQvdC40Lwg0LfQsNC/0YDQvtGB0L7QvCDQstC80LXRgdGC?=
+ =?utf-8?b?0L4g0YHQvtGC0L3QuA==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Страница делала fs.list каталога очереди плюс fs.read каждого файла -
+до 120 запросов к rpcd за один цикл опроса (20 секунд). На телефоне
+страница заметно "тупила", а rpcd был загружен.
+
+- новый helper pejir-sms-ctl dump отдаёт всю переписку (все четыре
+  каталога) одним блоком; разбор остался в странице (parseSpoolDump);
+- список AT-портов берётся у helper'а (pejir-sms-ctl ports), а не
+  через fs.list('/dev') - там тысячи записей;
+- страница батареи и значок в шапке читают файлы с ограничением
+  ожидания (5 с): зависший запрос к rpcd больше не подвешивает опрос
+  LuCI на всех страницах.
+---
+ .../resources/battery-indicator.js            |  18 ++-
+ .../resources/view/perenio/battery.js         |  27 +++-
+ .../luci-static/resources/view/perenio/sms.js | 147 ++++++++----------
+ .../pejir-sms/root/usr/libexec/pejir-sms-ctl  |  47 +++++-
+ 4 files changed, 153 insertions(+), 86 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js b/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
+index f6106edd..6178bb5e 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/battery-indicator.js
+@@ -100,8 +100,24 @@ function render(el, mod, d) {
+  * тормозит интерфейс. */
+ var LAST = null;
+ 
++/* Чтение с ограничением ожидания: зависший запрос к rpcd не должен
++ * подвешивать опрос значка (он общий для всех страниц LuCI). */
++function readBatteryFile() {
++	var timer;
++
++	return Promise.race([
++		fs.read(BATTERY_FILE).catch(function() { return ''; }),
++		new Promise(function(resolve) {
++			timer = setTimeout(function() { resolve(''); }, 5000);
++		})
++	]).then(function(v) {
++		clearTimeout(timer);
++		return v || '';
++	});
++}
++
+ function update() {
+-	return fs.read(BATTERY_FILE).then(function(text) {
++	return readBatteryFile().then(function(text) {
+ 		var el = indicator();
+ 
+ 		if (!el)
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+index 83274cdb..74ba5ee4 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/battery.js
+@@ -54,6 +54,27 @@ var isOriginalPA = perenio_battery.isOriginalPA;
+ var iconStatus = perenio_battery.iconStatus;
+ var iconFile = perenio_battery.iconFile;
+ 
++/* Чтение файла с ограничением ожидания.
++ *
++ * Зачем. Если запрос к rpcd по какой-то причине не возвращается
++ * (занятый rpcd, зависший файл), страница должна показать "…" и продолжить
++ * опрос, а не висеть до бесконечности: иначе подвисает весь опрос LuCI и
++ * вместе с ним все страницы (включая значок в шапке).
++ */
++function readWithTimeout(path, ms) {
++	var timer;
++
++	return Promise.race([
++		fs.read(path).catch(function() { return ''; }),
++		new Promise(function(resolve) {
++			timer = setTimeout(function() { resolve(''); }, ms || 5000);
++		})
++	]).then(function(v) {
++		clearTimeout(timer);
++		return v || '';
++	});
++}
++
+ function chargeText(status) {
+ 	switch (status) {
+ 	case 'fast':
+@@ -138,9 +159,9 @@ return view.extend({
+ 
+ 		poll.add(L.bind(function() {
+ 			return Promise.all([
+-				fs.read(BAT_FILE).catch(function() { return ''; }),
+-				fs.read(VER_FILE).catch(function() { return ''; }),
+-				fs.read(VOLT_FILE).catch(function() { return ''; })
++				readWithTimeout(BAT_FILE),
++				readWithTimeout(VER_FILE),
++				readWithTimeout(VOLT_FILE)
+ 			]).then(L.bind(function(res) {
+ 				var out = res[0] || '';
+ 				var d = parseSys(out);
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+index 0f053994..1cd4f4ac 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/sms.js
+@@ -96,15 +96,18 @@ function readStatus() {
+ 	return Promise.all([
+ 		fs.exec('/etc/init.d/smstools3', [ 'status' ])
+ 			.catch(function() { return { code: 1, stdout: '', stderr: '' }; }),
+-		fs.list('/dev').catch(function() { return []; }),
++		fs.exec(SMSCTL, [ 'ports' ])
++			.catch(function() { return { code: 1, stdout: '', stderr: '' }; }),
+ 		fs.read(CONF).catch(function() { return ''; }),
+ 		readLog(),
+ 		fs.exec(SMSCTL, [ 'status' ])
+ 			.catch(function() { return { code: 1, stdout: '', stderr: '' }; })
+ 	]).then(function(res) {
+-		var svc = res[0], devs = res[1] || [], conf = res[2] || '', log = res[3];
++		var svc = res[0], portsOut = res[1] || {}, conf = res[2] || '', log = res[3];
+ 		var st = res[4] || {};
+-		var ports = devs.map(function(d) { return d.name; })
++		var ports = String((portsOut && portsOut.stdout) || '')
++			.split('\n')
++			.map(function(n) { return n.trim(); })
+ 			.filter(function(n) { return /^ttyUSB|^ttyACM/.test(n); });
+ 		var m = conf.match(/^[ \t]*device[ \t]*=[ \t]*(\S+)/m);
+ 		var out = (svc.stdout || '') + (svc.stderr || '');
+@@ -189,70 +192,46 @@ function parseMessage(txt) {
+ 	return { from: from, date: date, text: body.join('\n').trim() };
+ }
+ 
+-/* Кеш разобранных сообщений: каталог -> { имя файла: { mtime, msg } }.
++/* Чтение ВСЕЙ переписки одним запросом.
+  *
+- * Зачем. Раньше страница каждые 20 секунд перечитывала ВСЕ файлы во
+- * всех четырёх каталогах spool (до 50 файлов в каждом - это до 200
+- * запросов fs.read через rpcd за один цикл). На большом архиве
+- * переписки страница заметно "тупила", а rpcd был загружен.
+- * Теперь файл читается только если он изменился (mtime), поэтому
+- * каждый цикл - это несколько запросов на новые сообщения, а не
+- * две сотни на все подряд. */
+-var SPOOL_CACHE = {};
+-
+-/* Чтение сообщений из каталога spool smstools3. */
+-function readSpool(dir) {
+-	return fs.list(dir).catch(function() { return []; }).then(L.bind(function(list) {
+-		/* smstools3 кладёт рядом с сообщениями служебный файл
+-		 * "<модем>-concatenated" - это сборка многочастевых PDU, а не
+-		 * сообщение. В переписке он выглядел как мусорный элемент без
+-		 * номера и даты, поэтому такие файлы пропускаем. */
+-		var files = (list || []).filter(function(f) {
+-			if (f.type != 'file')
+-				return false;
+-			return !/-concatenated$/.test(f.name);
+-		});
++ * Зачем. Раньше страница читала файлы очереди сама: fs.list каталога плюс
++ * fs.read каждого файла. При 30 файлах в каждом из четырёх каталогов это
++ * до 120 запросов к rpcd за один цикл опроса (20 секунд) - страница
++ * заметно "тупила", а rpcd был загружен. Теперь helper pejir-sms-ctl
++ * отдаёт всю переписку за ОДИН запрос, разбор остаётся здесь.
++ *
++ * Формат ответа helper'а: строка "@@MSG<TAB>каталог<TAB>имя<TAB>mtime",
++ * после неё - содержимое файла сообщения. */
++function parseSpoolDump(text) {
++	var raw = (text || '').replace(/\r/g, '');
++	var lines = raw.split('\n');
++	var blocks = [];
++	var cur = null;
+ 
+-		files.sort(function(a, b) { return b.mtime - a.mtime; });
+-		files = files.slice(0, 30);
+-
+-		var cache = SPOOL_CACHE[dir] || (SPOOL_CACHE[dir] = {});
+-		var seen = {};
+-
+-		return Promise.all(files.map(function(f) {
+-			var hit = cache[f.name];
+-
+-			seen[f.name] = 1;
+-
+-			/* Файл не менялся - берём готовый разбор. */
+-			if (hit && hit.mtime === f.mtime)
+-				return Promise.resolve(hit.msg);
+-
+-			return fs.read(dir + '/' + f.name).then(function(txt) {
+-				var m = parseMessage(txt);
+-
+-				/* Файл без номера, без даты и без текста - не
+-				 * сообщение (служебный мусор smstools3). */
+-				if (!m.from && !m.date && !m.text)
+-					return null;
+-
+-				return { name: f.name, mtime: f.mtime,
+-					from: m.from, date: m.date, text: m.text };
+-			}).then(function(msg) {
+-				if (msg)
+-					cache[f.name] = { mtime: f.mtime, msg: msg };
+-				return msg;
+-			}).catch(function() { return null; });
+-		})).then(function(all) {
+-			/* Забываем файлы, которых больше нет в каталоге. */
+-			Object.keys(cache).forEach(function(n) {
+-				if (!seen[n])
+-					delete cache[n];
+-			});
++	lines.forEach(function(line) {
++		if (line.indexOf('@@MSG\t') === 0) {
++			var p = line.split('\t');
+ 
+-			return all.filter(function(m) { return m != null; });
+-		});
+-	}, this));
++			cur = { dir: p[1] || '', name: p[2] || '',
++				mtime: parseInt(p[3] || '0', 10) || 0, body: [] };
++			blocks.push(cur);
++			return;
++		}
++
++		if (cur)
++			cur.body.push(line);
++	});
++
++	return blocks.map(function(c) {
++		var m = parseMessage(c.body.join('\n'));
++
++		/* Файл без номера, без даты и без текста - не сообщение. */
++		if (!m.from && !m.date && !m.text)
++			return null;
++
++		return { dir: c.dir, name: c.name, mtime: c.mtime,
++			from: m.from, date: m.date, text: m.text };
++	}).filter(function(m) { return m != null; });
+ }
+ 
+ /* Поиск по номеру и тексту сообщения (регистр не важен). */
+@@ -456,11 +435,28 @@ function setTabCounts(counts) {
+ }
+ 
+ /* Приём входящих SMS из /var/spool/sms/incoming */
++/* Разложить выгрузку очереди по спискам страницы. */
++function splitSpool(all) {
++	MSGS.inbox = all.filter(function(m) { return m.dir === DIR; });
++	MSGS.out = all.filter(function(m) { return m.dir === DIR_OUT; });
++	MSGS.sent = all.filter(function(m) { return m.dir === DIR_SENT; });
++	MSGS.failed = all.filter(function(m) { return m.dir === DIR_FAILED; });
++	renderChat();
++}
++
++/* Вся переписка - одним запросом к helper'у (см. parseSpoolDump). */
++function readSpoolAll() {
++	return fs.exec(SMSCTL, [ 'dump' ])
++		.then(function(r) {
++			splitSpool(parseSpoolDump((r && r.stdout) ? r.stdout : ''));
++		})
++		.catch(function() {
++			splitSpool([]);
++		});
++}
++
+ function readInbox() {
+-	return readSpool(DIR).then(function(msgs) {
+-		MSGS.inbox = msgs;
+-		renderChat();
+-	});
++	return readSpoolAll();
+ }
+ 
+ /* USSD-запрос к модему (AT+CUSD). Ответ оператора приходит в stdout,
+@@ -482,18 +478,7 @@ function runUssd(code, restartLte) {
+ 
+ /* Исходящие: в очереди на отправку, отправленные и неотправленные */
+ function readOutbox() {
+-	return Promise.all([
+-		readSpool(DIR_OUT),
+-		readSpool(DIR_SENT),
+-		readSpool(DIR_FAILED)
+-	]).then(function(all) {
+-		var refresh = function() { return readOutbox(); };
+-
+-		MSGS.out = all[0];
+-		MSGS.sent = all[1];
+-		MSGS.failed = all[2];
+-		renderChat();
+-	});
++	return readSpoolAll();
+ }
+ 
+ return view.extend({
+@@ -859,7 +844,7 @@ return view.extend({
+ 		]);
+ 
+ 		poll.add(L.bind(function() {
+-			return Promise.all([ readStatus(), readInbox(), readOutbox() ]);
++			return Promise.all([ readStatus(), readSpoolAll() ]);
+ 		}, this), 20);
+ 
+ 		return body;
+diff --git a/package/pejir-sms/root/usr/libexec/pejir-sms-ctl b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+index f7766282..fe47c1fb 100755
+--- a/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
++++ b/package/pejir-sms/root/usr/libexec/pejir-sms-ctl
+@@ -3,6 +3,8 @@
+ #
+ # Команды:
+ #   status                 состояние SMS: smsd, журнал, очереди, порты;
++#   dump                   выгрузить всю переписку одним блоком (для веб-страницы);
++#   ports                  список AT-портов (ttyUSB*/ttyACM*);
+ #   log [строк]            хвост журнала smsd (для веб-интерфейса);
+ #   export                 выгрузить все сообщения в /www/sms-export-<время>.txt
+ #                         (файл отдаёт uhttpd, его можно скачать из браузера);
+@@ -174,15 +176,58 @@ cmd_log() {
+ 	echo "(журнал smsd не найден)"
+ }
+ 
++# Выгрузка всей переписки одним блоком.
++#
++# ЗАЧЕМ. Страница SMS раньше читала файлы очереди сама: список каталога
++# плюс fs.read каждого файла. При 30 файлах в каждом из четырёх
++# каталогов это до 120 запросов к rpcd за один цикл опроса (20 секунд) -
++# страница заметно "тупила", а rpcd был загружен. Теперь helper
++# отдаёт всю переписку за ОДИН запрос.
++#
++# ФОРМАТ. Каждое сообщение начинается со строки
++#   @@MSG<TAB>каталог<TAB>имя файла<TAB>mtime
++# после неё идёт содержимое файла (как его записал smstools3).
++cmd_dump() {
++	local d f m
++
++	for d in incoming outgoing sent failed; do
++		[ -d "$POOL/$d" ] || continue
++
++		ls -1t "$POOL/$d" 2>/dev/null | head -30 | while IFS= read -r f; do
++			case "$f" in
++			*-concatenated) continue ;;
++			esac
++			[ -f "$POOL/$d/$f" ] || continue
++
++			m="$(stat -c %Y "$POOL/$d/$f" 2>/dev/null)"
++			printf '@@MSG\t%s\t%s\t%s\n' "$d" "$f" "$m"
++			cat "$POOL/$d/$f" 2>/dev/null
++		done
++	done
++}
++
++# AT-порты модема. Раньше страница брала весь список /dev через
++# fs.list - это тысячи записей ради нескольких нужных.
++cmd_ports() {
++	local d
++
++	for d in /dev/ttyUSB* /dev/ttyACM*; do
++		[ -e "$d" ] || continue
++		echo "${d#/dev/}"
++	done
++}
++
+ case "${1:-}" in
+ 	status)       cmd_status ;;
++	dump)         cmd_dump ;;
++	ports)        cmd_ports ;;
+ 	log)          shift; cmd_log "${1:-8}" ;;
+ 	export)       cmd_export ;;
+ 	templates)    cmd_templates ;;
+ 	template-add) shift; cmd_template_add "$@" ;;
+ 	template-del) shift; cmd_template_del "$1" ;;
+ 	*)
+-		echo "Использование: pejir-sms-ctl {status|log [строк]|export|templates|template-add <текст>|template-del <N>}" >&2
++		echo "Использование: pejir-sms-ctl {status|dump|ports|log [строк]|export|templates|template-add <текст>|template-del <N>}" >&2
+ 		exit 1
+ 		;;
+ esac
+-- 
+2.39.5
+
