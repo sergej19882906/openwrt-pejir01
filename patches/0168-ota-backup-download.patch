@@ -1,0 +1,96 @@
+From c1ea8c8119441a9dd75951cec1730fa7f6ce68bd Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 00:38:05 GMT
+Subject: =?utf-8?b?0KHRgtGA0LDQvdC40YbQsCDQvtCx0L3QvtCy0LvQtdC90LjRjzog0LHRjdC60LDQ?=
+ =?utf-8?b?vyDQvdCw0YHRgtGA0L7QtdC6INGB0LrQsNGH0LjQstCw0LXRgtGB0Y8g0L/Qvi3Q?=
+ =?utf-8?b?vdCw0YHRgtC+0Y/RidC10LzRgw==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+После создания резервной копии страница показывала ссылку на файл в
+/www, но LuCI 25.12 перехватывал клик по ссылке и вместо скачивания
+выдавал ошибку ("Файлы отсутствуют").
+
+- файл бэкапа теперь читается через rpcd (fs.read_direct) и отдаётся
+  браузеру как blob - так же, как это делает файловый менеджер LuCI;
+  если rpcd файл не отдал, ссылка открывается напрямую;
+- ACL страницы разрешает читать /www/pejir-backup-*.tar.gz;
+- после прошивки страница ждёт роутер по адресу 192.168.2.1 (адрес LAN
+  в нашей прошивке), а не по стоковому 192.168.1.1.
+---
+ .../luci-static/resources/view/perenio/ota.js | 34 +++++++++++++++++--
+ .../share/rpcd/acl.d/luci-app-pejir-ota.json  |  3 ++
+ 2 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+index 951f0ea4..6a2cbf59 100644
+--- a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
++++ b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+@@ -65,7 +65,7 @@ function watchUpdate() {
+ 			if (d.state == 'rebooting' || d.state == 'done') {
+ 				stop();
+ 				setText('pejir-ota-status', _('Rebooting...'));
+-				ui.awaitReconnect(window.location.host, '192.168.1.1');
++				ui.awaitReconnect(window.location.host, '192.168.2.1');
+ 			}
+ 			else if (d.state == 'failed') {
+ 				stop();
+@@ -140,10 +140,38 @@ return view.extend({
+ 
+ 			if (box) {
+ 				box.innerHTML = '';
+-				box.appendChild(E('a', {
++
++				var link = E('a', {
+ 					'href': path,
+ 					'download': name
+-				}, [ _('Download the backup file') ]));
++				}, [ _('Download the backup file') ]);
++
++				/* Ссылка на /www в LuCI 25.12 не всегда срабатывает:
++				 * страница перехватывает клик и показывает ошибку
++				 * вместо скачивания. Поэтому файл читаем через rpcd
++				 * и отдаём браузеру как blob - ровно так, как это
++				 * делает файловый менеджер LuCI. Если rpcd файл
++				 * не отдал - открываем ссылку напрямую. */
++				link.addEventListener('click', function(ev) {
++					ev.preventDefault();
++
++					fs.read_direct(path, 'blob').then(function(blob) {
++						var url = window.URL.createObjectURL(blob);
++						var a = document.createElement('a');
++
++						a.style.display = 'none';
++						a.href = url;
++						a.download = name;
++						document.body.appendChild(a);
++						a.click();
++						document.body.removeChild(a);
++						window.URL.revokeObjectURL(url);
++					}).catch(function() {
++						window.open(path, '_blank');
++					});
++				});
++
++				box.appendChild(link);
+ 			}
+ 			setText('pejir-ota-backup-status', _('Backup created: ') + name);
+ 		}).catch(function(e) {
+diff --git a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+index dfe69b0d..3eed389c 100644
+--- a/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
++++ b/package/pejir-ota/root/usr/share/rpcd/acl.d/luci-app-pejir-ota.json
+@@ -4,6 +4,9 @@
+ 		"read": {
+ 			"ubus": {
+ 				"file": [ "list", "read" ]
++			},
++			"file": {
++				"/www/pejir-backup-*.tar.gz": [ "read" ]
+ 			}
+ 		},
+ 		"write": {
+-- 
+2.39.5
+

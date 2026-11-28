@@ -158,6 +158,7 @@ jobs:
           sh tests/test-neofetch.sh
           sh tests/test-lan-ip.sh
           sh tests/test-config-guard.sh
+          sh tests/test-ota-download.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый
