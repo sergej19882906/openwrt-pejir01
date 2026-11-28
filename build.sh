@@ -752,6 +752,20 @@ if [ -n "$SU" ]; then
             echo "  init-скрипты имеют рабочий способ запуска: OK"
         fi
 
+        # Авточистка зависших файлов сборки многочастевых SMS обязана быть
+        # в образе: без неё в журнале каждые 33 секунды появляется
+        # "not enough storage space" (сбивает с толку: память SIM свободна).
+        SPOOLCLEAN_MISSING=""
+        for f in etc/init.d/43-pejir-spool-clean; do
+          echo "$ROOTFS_LIST" | grep -q "squashfs-root/$f" || SPOOLCLEAN_MISSING="$SPOOLCLEAN_MISSING $f"
+        done
+        if [ -n "$SPOOLCLEAN_MISSING" ]; then
+          ann error "build.sh: SMS" "в образе нет:$SPOOLCLEAN_MISSING"
+          echo "ОШИБКА: нет $SPOOLCLEAN_MISSING"
+          exit 1
+        fi
+        echo "  авточистка файлов сборки SMS: OK"
+
         # Скрипты восстановления настроек сети обязаны быть в образе.
         # Без них после прошивки конфиг сети может остаться стоковым
         # (LAN 192.168.1.1, без секций lte/lte6 и туннеля Home), и

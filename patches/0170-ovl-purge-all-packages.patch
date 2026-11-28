@@ -1,0 +1,42 @@
+From ba2dfb9e66aaf88453ca89f88586aaa6f4130b05 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 04:32:34 GMT
+Subject: =?utf-8?b?0KfQuNGB0YLQutCwINCy0LXRgNGF0L3QtdCz0L4g0YHQu9C+0Y86INCyINGB0L/Q?=
+ =?utf-8?b?uNGB0L7QuiDQtNC+0LHQsNCy0LvQtdC90Ysg0LLRgdC1INC90LDRiNC4INC/0LDQ?=
+ =?utf-8?b?utC10YLRiw==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+pejir-ovl-purge вычищал из верхнего слоя файлы только части наших
+пакетов. Протухшая копия (например старый pejir-lanhost без
+перечитывания hosts через reload dnsmasq) оставалась в верхнем слое и
+перекрывала свежий файл из образа - на устройстве проверка это и
+показала.
+
+Теперь в списке все пакеты нашей прошивки.
+---
+ package/pejir-ota/files/pejir-ovl-purge | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/package/pejir-ota/files/pejir-ovl-purge b/package/pejir-ota/files/pejir-ovl-purge
+index 71cb0746..432d8349 100755
+--- a/package/pejir-ota/files/pejir-ovl-purge
++++ b/package/pejir-ota/files/pejir-ovl-purge
+@@ -56,7 +56,12 @@ PKG_DIR="${PEJIR_PURGE_PKG_DIR:-/lib/apk/packages}"
+ MOUNTS_FILE="${PEJIR_PURGE_MOUNTS_FILE:-/proc/mounts}"
+ 
+ # Наши пакеты: только их файлы вычищаем.
+-PKGS="${PEJIR_PURGE_PKGS:-pejir-sms luci-app-perenio luci-app-atinout pejir-lte-base pejir-ota pejir-sync luci-app-modeminfo luci-theme-argon pejir-neofetch}"
++#
++# Список полный - ВСЕ пакеты нашей прошивки. Если пакет забыть, его
++# протухшая копия в верхнем слое перекроет свежий файл из образа: так
++# на устройстве остался старый pejir-lanhost (без перечитывания hosts
++# через reload dnsmasq), хотя в образе лежал исправленный.
++PKGS="${PEJIR_PURGE_PKGS:-pejir-sms luci-app-perenio luci-app-atinout pejir-lte-base pejir-ota pejir-sync luci-app-modeminfo luci-theme-argon pejir-neofetch pejir-lanhost pejir-awg pejir-mwan pejir-extroot pejir-autosetup pejir-idata pejir-telegram pejir-zigbee-ncp pejir-homed-feed modeminfo modeminfo-serial-gosun luci-proto-amneziawg amneziawg-tools atinout}"
+ 
+ # Остатки СТОКОВЫХ пакетов, которых у нас в образе нет.
+ #
+-- 
+2.39.5
+

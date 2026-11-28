@@ -1,0 +1,143 @@
+From d63d90dbb8c6f8aba165b3a675e6ce9fe26ced82 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 04:32:34 GMT
+Subject: =?utf-8?b?U01TOiDQsNCy0YLQvtGH0LjRgdGC0LrQsCDQt9Cw0LLQuNGB0YjQuNGFINGE0LDQ?=
+ =?utf-8?b?udC70L7QsiDRgdCx0L7RgNC60Lgg0LzQvdC+0LPQvtGH0LDRgdGC0LXQstGL0YUg?=
+ =?utf-8?b?UERV?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+smstools3 не может разобрать служебный файл "<модем>-concatenated"
+(16-битные ID у GM510) и оставляет его навсегда: в журнале каждые 33
+секунды появляется "GM510: Message 0, not enough storage space." -
+ошибка вводит в заблуждение, память SIM при этом свободна.
+
+Новый init-скрипт 43-pejir-spool-clean (START=93) раз в 5 минут
+удаляет такие файлы, которым больше 10 минут. Свежие файлы (сообщение
+ещё собирается) и обычные сообщения не трогаются.
+---
+ package/pejir-sms/Makefile                    |  1 +
+ .../root/etc/init.d/43-pejir-spool-clean      | 98 +++++++++++++++++++
+ 2 files changed, 99 insertions(+)
+ create mode 100644 package/pejir-sms/root/etc/init.d/43-pejir-spool-clean
+
+diff --git a/package/pejir-sms/Makefile b/package/pejir-sms/Makefile
+index 6b954a54..b6450c93 100644
+--- a/package/pejir-sms/Makefile
++++ b/package/pejir-sms/Makefile
+@@ -32,6 +32,7 @@ define Package/pejir-sms/install
+ 	$(INSTALL_DIR) $(1)/etc/init.d
+ 	$(INSTALL_BIN) ./root/etc/init.d/40-pejir-sms $(1)/etc/init.d/40-pejir-sms
+ 	$(INSTALL_BIN) ./root/etc/init.d/pejir-sms-spool $(1)/etc/init.d/pejir-sms-spool
++	$(INSTALL_BIN) ./root/etc/init.d/43-pejir-spool-clean $(1)/etc/init.d/43-pejir-spool-clean
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-sms-ctl $(1)/usr/libexec/pejir-sms-ctl
+ endef
+diff --git a/package/pejir-sms/root/etc/init.d/43-pejir-spool-clean b/package/pejir-sms/root/etc/init.d/43-pejir-spool-clean
+new file mode 100644
+index 00000000..1f6ebebf
+--- /dev/null
++++ b/package/pejir-sms/root/etc/init.d/43-pejir-spool-clean
+@@ -0,0 +1,98 @@
++#!/bin/sh /etc/rc.common
++# Чистка зависших служебных файлов "*-concatenated" в очереди smstools3.
++#
++# ЗАЧЕМ. smstools3 собирает многочастевые PDU в служебный файл
++# "<модем>-concatenated". При 16-битных ID (так работает GM510) smsd
++# не может такой файл разобрать и оставляет его навсегда: в журнале
++# каждые 33 секунды появляется
++#
++#     GM510: Message 0, not enough storage space.
++#
++# Ошибка вводит в заблуждение: память SIM при этом свободна (проверка
++# AT+CPMS показывает 0 из 20), и входящие SMS приходят нормально.
++#
++# Служебный файл нужен только пока собираются части сообщения - это
++# несколько секунд. Поэтому удаляем такие файлы, которым больше
++# PEJIR_SPOOL_MAX_AGE секунд (по умолчанию 10 минут).
++#
++# START=93 - после smsd (92) и до фонового демона модема (96).
++
++START=93
++STOP=0
++
++POOL="${PEJIR_SPOOL_POOL:-/var/spool/sms}"
++MAX_AGE="${PEJIR_SPOOL_MAX_AGE:-600}"
++INTERVAL="${PEJIR_SPOOL_CLEAN_INTERVAL:-300}"
++PID_FILE="${PEJIR_SPOOL_CLEAN_PID:-/tmp/pejir-spool-clean.pid}"
++SELF="${PEJIR_SPOOL_SELF:-${initscript:-/etc/init.d/43-pejir-spool-clean}}"
++
++extra_command "watch" "Run the spool cleanup loop"
++
++log() {
++	logger -t pejir-spool "$*" 2>/dev/null
++}
++
++cleanup() {
++	local d f now t
++
++	now="$(date +%s)"
++
++	for d in incoming checked sent failed outgoing; do
++		[ -d "$POOL/$d" ] || continue
++
++		for f in "$POOL/$d"/*-concatenated; do
++			[ -f "$f" ] || continue
++
++			t="$(stat -c %Y "$f" 2>/dev/null)"
++			case "$t" in
++			''|*[!0-9]*) continue ;;
++			esac
++
++			[ "$((now - t))" -gt "$MAX_AGE" ] || continue
++
++			rm -f "$f" 2>/dev/null && log "удалён зависший файл сборки SMS: $f"
++		done
++	done
++}
++
++watch_loop() {
++	while :; do
++		sleep "$INTERVAL"
++		cleanup
++	done
++}
++
++watch() {
++	watch_loop
++}
++
++# Без USE_PROCD=1 rc.common вызывает start() сам.
++start() {
++	local pid
++
++	# Уже работает - второй раз не запускаем.
++	pid="$(cat "$PID_FILE" 2>/dev/null)"
++	if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
++		return 0
++	fi
++
++	cleanup
++
++	if command -v setsid >/dev/null 2>&1; then
++		setsid sh -c "echo \$\$ > $PID_FILE; exec $SELF watch" >/dev/null 2>&1 &
++	else
++		( echo $$ > "$PID_FILE"; exec "$SELF" watch ) >/dev/null 2>&1 &
++	fi
++	return 0
++}
++
++stop() {
++	local pid
++
++	pid="$(cat "$PID_FILE" 2>/dev/null)"
++	if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
++		kill "$pid" 2>/dev/null
++	fi
++	rm -f "$PID_FILE" 2>/dev/null
++	return 0
++}
+-- 
+2.39.5
+

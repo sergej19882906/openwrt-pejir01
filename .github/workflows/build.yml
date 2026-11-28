@@ -159,6 +159,9 @@ jobs:
           sh tests/test-lan-ip.sh
           sh tests/test-config-guard.sh
           sh tests/test-ota-download.sh
+          sh tests/test-modem-page-promise.sh
+          sh tests/test-ovl-purge-list.sh
+          sh tests/test-spool-clean.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый

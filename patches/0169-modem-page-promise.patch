@@ -1,0 +1,45 @@
+From e4a096aa714c20b51f790a9f0370a82480bb5177 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 04:32:34 GMT
+Subject: =?utf-8?b?0KHRgtGA0LDQvdC40YbQsCDCq9Cc0L7QtNC10LzCuzog0LLQvNC10YHRgtC+INGC?=
+ =?utf-8?b?0LDQsdC70LjRhtGLINCx0L7Qu9GM0YjQtSDQvdC1ICJbb2JqZWN0IFByb21pc2Vd?=
+ =?utf-8?b?Ig==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+В LuCI 25.12 form.Map.render() возвращает PROMISE, а не готовый узел
+DOM. Патч 0165 обернул вызов в E('div', {}, [btn, m.render()]) - промис
+попал в DOM как узел, и вкладка «Сеть» показывала "[object Promise]"
+вместо данных модема.
+
+Теперь карта подставляется в контейнер после разрешения промиса.
+---
+ .../htdocs/luci-static/resources/view/modem/main.js   | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/main.js b/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/main.js
+index 7597ae94..ff6a6178 100644
+--- a/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/main.js
++++ b/package/luci-app-modeminfo/htdocs/luci-static/resources/view/modem/main.js
+@@ -547,7 +547,16 @@ return view.extend({
+ 			L.resolveDefault(fs.exec(MODEM_CACHE_REFRESH, [ 'refresh' ]), null);
+ 		});
+ 
+-		return E('div', {}, [ btn, m.render() ]);
++		/* В LuCI 25.12 form.Map.render() возвращает PROMISE, а не готовый
++		 * узел. Если положить промис в E() как узел, страница показывает
++		 * "[object Promise]" вместо таблицы. Поэтому собираем контейнер
++		 * и подставляем карту после её отрисовки. */
++		const node = E('div', {}, [ btn ]);
++
++		return Promise.resolve(m.render()).then(function(mapNode) {
++			node.appendChild(mapNode);
++			return node;
++		});
+ 	},
+ 
+ 	handleSaveApply: null,
+-- 
+2.39.5
+
