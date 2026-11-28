@@ -1,0 +1,133 @@
+From 4b7c9e49555a00bfde2077b2735d5821f9a6ebbe Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 04:56:51 GMT
+Subject: =?utf-8?b?THVDSTog0YPQsdGA0LDRgtGMINCx0LXRgdC/0L7Qu9C10LfQvdGL0Lkg0L/QvtC0?=
+ =?utf-8?b?0LLQsNC7INGBINC90LDRiNC40YUg0YHRgtGA0LDQvdC40YY=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Стандартный подвал LuCI («Сохранить и применить», «Сохранить»,
+«Сбросить») рисуется на любой странице, если обработчики не отключены.
+Наши страницы собраны вручную, а не на form.Map, поэтому подвал ничего
+не делает - а на странице multi-WAN «Сохранить» показывался дважды
+(своя кнопка и кнопка подвала).
+
+- свои обработчики сохранения переименованы в saveSettings (иначе
+  подвал вызывал бы их ещё раз);
+- на страницах multi-WAN, LTE, диагностики и обновления подвал
+  отключён: handleSaveApply/handleSave/handleReset = null.
+---
+ .../luci-static/resources/view/perenio/diag.js      |  8 +++++++-
+ .../luci-static/resources/view/perenio/lte.js       | 11 ++++++++---
+ .../luci-static/resources/view/perenio/mwan.js      | 13 ++++++++++---
+ .../luci-static/resources/view/perenio/ota.js       |  8 +++++++-
+ 4 files changed, 32 insertions(+), 8 deletions(-)
+
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+index a624da5b..4797d51b 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/diag.js
+@@ -159,5 +159,11 @@ return view.extend({
+ 				'click': ui.createHandlerFn(this, function() { window.location.reload(); })
+ 			}, _('Refresh'))
+ 		]);
+-	}
++	},
++	/* Подвал LuCI («Сохранить», «Сбросить») на странице не нужен: она
++	 * собрана вручную, а не на form.Map, и своих кнопок подвал не
++	 * заменяет. */
++	handleSaveApply: null,
++	handleSave: null,
++	handleReset: null
+ });
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+index 3cdad70e..3568276a 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/lte.js
+@@ -262,7 +262,7 @@ function rowSaved(title, field, key) {
+ }
+ 
+ return view.extend({
+-	handleSave: function(ev) {
++	saveSettings: function(ev) {
+ 		var btn = ev.currentTarget;
+ 
+ 		btn.disabled = true;
+@@ -448,7 +448,7 @@ return view.extend({
+ 
+ 		var saveBtn = E('button', { 'class': 'cbi-button cbi-button-save', 'type': 'button' },
+ 				_('Save'));
+-		saveBtn.addEventListener('click', L.bind(this.handleSave, this));
++		saveBtn.addEventListener('click', L.bind(this.saveSettings, this));
+ 
+ 		var applyBtn = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button' },
+ 				_('Apply now'));
+@@ -602,5 +602,10 @@ return view.extend({
+ 						'style': 'white-space:pre-wrap; font-family:monospace; font-size:12px; max-height:40vh; overflow:auto; border:1px solid #ccc; padding:8px;' }, ''))
+ 			])
+ 		]);
+-	}
++	},
++	/* Подвал LuCI («Сохранить», «Сбросить») на странице не нужен: кнопки
++	 * свои, а форма собрана вручную, а не на form.Map. */
++	handleSaveApply: null,
++	handleSave: null,
++	handleReset: null
+ });
+diff --git a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js
+index 4a9aec52..64fc4879 100644
+--- a/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js
++++ b/package/luci-app-perenio/htdocs/luci-static/resources/view/perenio/mwan.js
+@@ -233,7 +233,7 @@ return view.extend({
+ 
+ 		var self = this;
+ 
+-		saveBtn.addEventListener('click', L.bind(self.handleSave, self));
++		saveBtn.addEventListener('click', L.bind(self.saveSettings, self));
+ 		applyBtn.addEventListener('click', L.bind(self.handleApply, self));
+ 		enableBtn.addEventListener('click', L.bind(self.handleEnable, self));
+ 		disableBtn.addEventListener('click', L.bind(self.handleDisable, self));
+@@ -250,7 +250,7 @@ return view.extend({
+ 		return body;
+ 	},
+ 
+-	handleSave: function(ev) {
++	saveSettings: function(ev) {
+ 		var btn = ev.currentTarget;
+ 
+ 		btn.disabled = true;
+@@ -317,5 +317,12 @@ return view.extend({
+ 		});
+ 	},
+ 
+-	handleSaveApply: null
++	/* Стандартный подвал LuCI («Сохранить», «Сбросить») на этой странице
++	 * ничего не делает: страница собрана вручную, а не на form.Map.
++	 * Свои кнопки («Сохранить», «Применить», «Включить», «Выключить»)
++	 * есть, поэтому подвал убираем - иначе «Сохранить» показывается
++	 * дважды. */
++	handleSaveApply: null,
++	handleSave: null,
++	handleReset: null
+ });
+diff --git a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+index 6a2cbf59..c9564640 100644
+--- a/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
++++ b/package/pejir-ota/htdocs/luci-static/resources/view/perenio/ota.js
+@@ -387,5 +387,11 @@ return view.extend({
+ 					'')
+ 			])
+ 		]);
+-	}
++	},
++	/* Подвал LuCI («Сохранить», «Сбросить») на странице не нужен: она
++	 * собрана вручную, а не на form.Map, и своих кнопок подвал не
++	 * заменяет. */
++	handleSaveApply: null,
++	handleSave: null,
++	handleReset: null
+ });
+-- 
+2.39.5
+

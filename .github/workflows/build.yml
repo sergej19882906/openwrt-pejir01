@@ -162,6 +162,7 @@ jobs:
           sh tests/test-modem-page-promise.sh
           sh tests/test-ovl-purge-list.sh
           sh tests/test-spool-clean.sh
+          sh tests/test-page-footer.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый
