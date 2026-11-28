@@ -144,6 +144,8 @@ jobs:
           sh tests/test-improvements.sh
           sh tests/test-at-watch.sh
           sh tests/test-telegram.sh
+          sh tests/test-telegram-sys.sh
+          sh tests/test-telegram-bridge.sh
           sh tests/test-header-indicators.sh
           sh tests/test-lte-saved-values.sh
           sh tests/test-mwan.sh
@@ -286,6 +288,10 @@ jobs:
           # LuCI-приложения PEJIR01
           check_file "www/luci-static/resources/view/perenio/battery.js"
           check_file "www/luci-static/resources/view/perenio/sms.js"
+          # Telegram-мост: три helper'а (релиз .77)
+          check_file "usr/libexec/pejir-tg"
+          check_file "usr/libexec/pejir-tg-send"
+          check_file "usr/libexec/pejir-sys"
           # разбор MAC из idata: кавычки должны сниматься со всей строки
           if unsquashfs -cat "$ROOTFS" etc/board.d/02_network 2>/dev/null \
                | grep -q 'tr -d' ; then
@@ -303,6 +309,7 @@ jobs:
           check_pkg "pejir-lte-base"
           check_pkg "perenio-mcu"
           check_pkg "pejir-mwan"
+          check_pkg "pejir-telegram"
 
           # sing-box убран из образа намеренно (релиз .26): пакет весит
           # 50 МБ, из-за чего rootfs не помещался в UBI-том устройства

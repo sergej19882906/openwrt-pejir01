@@ -1,0 +1,794 @@
+From 2bbb59d33460030e9249ec2e0408222cefcb029f Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 17:02:32 GMT
+Subject: =?utf-8?b?VGVsZWdyYW0t0LzQvtGB0YI6INGD0L/RgNCw0LLQu9C10L3QuNC1IFdpLUZpINC4?=
+ =?utf-8?b?IExURSwg0YHQstC10YLQvtC00LjQvtC00YssINC00LjQsNCz0L3QvtGB0YLQuNC6?=
+ =?utf-8?b?0LAsINGE0LDQudC70Ysg0Lgg0LLQtdCx?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Мост разделён на три маленьких helper'а, чтобы правка одного не ломала
+остальные:
+
+- pejir-tg     - точка входа: разбор команды, проверка чата и возраста
+                 команды, защитный код, вызовы остальных;
+- pejir-tg-send - Telegram: обычные сообщения и документы. Multipart
+                 собирается вручную (curl в образе нет), тело готовится
+                 на диске - файл не читается в память целиком;
+- pejir-sys    - система: сигнал, uptime, батарея, индикаторы, Wi-Fi,
+                 LTE и веб-страницы.
+
+Новые команды:
+  /signal, /uptime, /battery      - диагностика (без кода);
+  /led <имя> <цвет> [режим]       - индикаторы (без кода);
+  /wifi status|radio|ssid|reload  - Wi-Fi (с кодом);
+  /lte status|apn|restart         - LTE (с кодом);
+  /file <путь>                    - файл из /tmp или /www, до 20 МБ (с кодом);
+  /web <url>                      - текст страницы, внешние и локальные (с кодом).
+
+Безопасность:
+- защитный код (pejir_telegram.main.protect) обязателен для опасных
+  команд (/wifi, /lte, /file, /web, /sms, /reboot) и передаётся
+  последним словом команды: /wifi radio0 off 1234. Если код не задан,
+  опасные команды не выполняются вовсе;
+- /sms теперь тоже требует кода (раньше достаточно было флага
+  "разрешить команды");
+- опасные операции идут под flock - два запроса не накладываются;
+- команды из чужого чата и старше 10 минут не выполняются, как и раньше.
+
+Ограничения: длина текста - 4000 символов (предел Telegram), файлы -
+только из /tmp и /www, не больше 20 МБ.
+
+Светодиоды - через готовый /usr/libexec/pejir-led, Wi-Fi и LTE - через
+uci и существующие init-скрипты: чужая логика не дублируется.
+---
+ package/pejir-telegram/Makefile               |   2 +
+ .../pejir-telegram/root/usr/libexec/pejir-sys | 312 ++++++++++++++++++
+ .../pejir-telegram/root/usr/libexec/pejir-tg  | 166 +++++++++-
+ .../root/usr/libexec/pejir-tg-send            | 172 ++++++++++
+ 4 files changed, 637 insertions(+), 15 deletions(-)
+ create mode 100755 package/pejir-telegram/root/usr/libexec/pejir-sys
+ create mode 100755 package/pejir-telegram/root/usr/libexec/pejir-tg-send
+
+diff --git a/package/pejir-telegram/Makefile b/package/pejir-telegram/Makefile
+index dae9f570..984905bc 100644
+--- a/package/pejir-telegram/Makefile
++++ b/package/pejir-telegram/Makefile
+@@ -34,6 +34,8 @@ define Package/pejir-telegram/install
+ 	$(INSTALL_BIN) ./root/etc/init.d/49-pejir-tg $(1)/etc/init.d/49-pejir-tg
+ 	$(INSTALL_DIR) $(1)/usr/libexec
+ 	$(INSTALL_BIN) ./root/usr/libexec/pejir-tg $(1)/usr/libexec/pejir-tg
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-sys $(1)/usr/libexec/pejir-sys
++	$(INSTALL_BIN) ./root/usr/libexec/pejir-tg-send $(1)/usr/libexec/pejir-tg-send
+ 	$(INSTALL_DIR) $(1)/etc/config
+ 	$(INSTALL_CONF) ./root/etc/config/pejir_telegram $(1)/etc/config/pejir_telegram
+ endef
+diff --git a/package/pejir-telegram/root/usr/libexec/pejir-sys b/package/pejir-telegram/root/usr/libexec/pejir-sys
+new file mode 100755
+index 00000000..44db0e23
+--- /dev/null
++++ b/package/pejir-telegram/root/usr/libexec/pejir-sys
+@@ -0,0 +1,312 @@
++#!/bin/sh
++# Системные команды для Telegram-моста PEJIR01.
++#
++# Helper ничего не знает про Telegram: он только исполняет команду и
++# печатает результат. Разбор команды и проверка безопасности - в
++# pejir-tg.
++#
++# Подкоманды:
++#   signal               уровень сигнала, оператор, тип сети;
++#   uptime               время работы, load average, память;
++#   battery              заряд батареи (STM32);
++#   led <аргументы...>   индикаторы (см. /usr/libexec/pejir-led);
++#   wifi status|radio <имя> on|off|ssid <имя> on|off|reload
++#   lte status|apn <apn>|restart
++#   web <url>            текст веб-страницы без HTML-тегов.
++#
++# Пути переопределяются переменными окружения - только для тестов.
++
++set -u
++
++MODEM_JSON="${PEJIR_SYS_MODEM_JSON:-/tmp/pejir-modem.json}"
++BATTERY_FILE="${PEJIR_SYS_BATTERY:-/tmp/pejir-battery}"
++LED_BIN="${PEJIR_SYS_LED:-/usr/libexec/pejir-led}"
++WIRELESS_CONF="${PEJIR_SYS_WIRELESS:-/etc/config/wireless}"
++LTE_INIT="${PEJIR_SYS_LTE_INIT:-/etc/init.d/47-pejir-lte}"
++UCI_BIN="${PEJIR_SYS_UCI:-uci}"
++WIFI_BIN="${PEJIR_SYS_WIFI:-wifi}"
++WGET="${PEJIR_SYS_WGET:-wget}"
++WEB_MAX="${PEJIR_SYS_WEB_MAX:-4000}"
++WEB_TIMEOUT="${PEJIR_SYS_WEB_TIMEOUT:-20}"
++
++# Значение одного строкового поля JSON-кеша модема.
++# Ключи в кеше уникальны, поэтому достаточно одного совпадения.
++json_str() {
++	[ -f "$1" ] || return 1
++	sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" 2>/dev/null | head -1
++}
++
++# Значение поля из ответа STM32 вида "OK ChrgConn=1 ... BatLev=95% ...".
++# Перед именем поля обязательно пробел: иначе " VBat=" совпадёт и с
++# " TBat=" (класс символов в регулярном выражении).
++stm_fld() {
++	printf '%s' "$1" | sed -n "s/.* $2=\([^ ]*\).*/\1/p"
++}
++
++cmd_signal() {
++	[ -f "$MODEM_JSON" ] || { echo "нет данных модема ($MODEM_JSON)"; return 1; }
++
++	_rssi="$(json_str "$MODEM_JSON" rssi)"
++	_csq="$(json_str "$MODEM_JSON" csq_per)"
++	_cops="$(json_str "$MODEM_JSON" cops)"
++	_mode="$(json_str "$MODEM_JSON" mode)"
++
++	[ -n "$_rssi" ] || { echo "в кеше модема нет данных"; return 1; }
++
++	echo "сигнал: ${_rssi} dBm"
++	[ -n "$_csq" ] && echo "CSQ: ${_csq}/99"
++	[ -n "$_cops" ] && echo "оператор: ${_cops}"
++	[ -n "$_mode" ] && echo "сеть: ${_mode}"
++	return 0
++}
++
++cmd_uptime() {
++	_up="$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
++	case "$_up" in
++	''|*[!0-9.]*) echo "нет данных о времени работы"; return 1 ;;
++	esac
++
++	_sec="${_up%%.*}"
++	_d=$((_sec / 86400))
++	_h=$(((_sec % 86400) / 3600))
++	_m=$(((_sec % 3600) / 60))
++
++	echo "время работы: ${_d} д ${_h} ч ${_m} мин"
++
++	if [ -r /proc/loadavg ]; then
++		echo "загрузка: $(cut -d' ' -f1-3 /proc/loadavg)"
++	fi
++
++	if [ -r /proc/meminfo ]; then
++		_total="$(sed -n 's/^MemTotal:[[:space:]]*\([0-9]*\).*/\1/p' /proc/meminfo 2>/dev/null)"
++		_avail="$(sed -n 's/^MemAvailable:[[:space:]]*\([0-9]*\).*/\1/p' /proc/meminfo 2>/dev/null)"
++		[ -n "$_total" ] && echo "память: свободно $((_avail / 1024)) из $((_total / 1024)) МБ"
++	fi
++
++	return 0
++}
++
++cmd_battery() {
++	[ -f "$BATTERY_FILE" ] || { echo "нет данных батареи ($BATTERY_FILE)"; return 1; }
++
++	_raw="$(cat "$BATTERY_FILE" 2>/dev/null)"
++	case "$_raw" in
++	*OK*) ;;
++	*) echo "STM32 не ответил"; return 1 ;;
++	esac
++
++	_level="$(stm_fld "$_raw" BatLev)"
++	_vbat="$(stm_fld "$_raw" VBat)"
++	_vbus="$(stm_fld "$_raw" VBus)"
++	_vsys="$(stm_fld "$_raw" VSys)"
++	_stat="$(stm_fld "$_raw" ChrgStat)"
++
++	echo "уровень: ${_level:-n/a}"
++	[ -n "$_vbat" ] && echo "напряжение батареи: ${_vbat} мВ"
++	[ -n "$_vbus" ] && echo "напряжение шины: ${_vbus} мВ"
++	[ -n "$_vsys" ] && echo "напряжение системы: ${_vsys} мВ"
++
++	case "$_stat" in
++	1|2) echo "зарядка: идёт" ;;
++	3) echo "зарядка: завершена" ;;
++	*) echo "зарядка: не идёт" ;;
++	esac
++
++	return 0
++}
++
++cmd_led() {
++	[ -x "$LED_BIN" ] || { echo "нет помощника индикаторов ($LED_BIN)"; return 1; }
++	[ -n "$1" ] || {
++		echo "usage: pejir-sys led {status|off|set <имя> <цвет> [режим]|auto <имя> on|off|brightness <0-7>}"
++		return 2
++	}
++	"$LED_BIN" "$@"
++}
++
++# Имя секции wifi-iface по SSID.
++wifi_iface_by_ssid() {
++	"$UCI_BIN" -q show wireless 2>/dev/null | awk -v want="$1" '
++		/^wireless\.[^.]+=wifi-iface/ {
++			section = $0; sub(/^wireless\./, "", section); sub(/=wifi-iface.*$/, "", section)
++			next
++		}
++		/^wireless\.[^.]+\.ssid=/ {
++			value = $0; sub(/^[^=]*=/, "", value); q = sprintf("%c", 39); gsub(q, "", value); gsub(/"/, "", value)
++			if (value == want) { print section; exit }
++		}'
++}
++
++cmd_wifi_status() {
++	[ -f "$WIRELESS_CONF" ] || { echo "Wi-Fi не настроен ($WIRELESS_CONF отсутствует)"; return 1; }
++
++	_out="$("$UCI_BIN" -q show wireless 2>/dev/null)"
++	[ -n "$_out" ] || { echo "Wi-Fi не настроен"; return 1; }
++
++	printf '%s\n' "$_out" | awk '
++		/^wireless\.[^.]+=wifi-device/ {
++			section = $0; sub(/^wireless\./, "", section); sub(/=wifi-device.*$/, "", section)
++			radio = section; next
++		}
++		/^wireless\.[^.]+\.disabled=/ && radio != "" {
++			value = $0; sub(/^[^=]*=/, "", value); q = sprintf("%c", 39); gsub(q, "", value); gsub(/"/, "", value)
++			printf "радио %s: %s\n", radio, (value == "1" ? "выключен" : "включён")
++			radio = ""; next
++		}
++		/^wireless\.[^.]+=wifi-iface/ {
++			section = $0; sub(/^wireless\./, "", section); sub(/=wifi-iface.*$/, "", section)
++			iface = section; next
++		}
++		/^wireless\.[^.]+\.ssid=/ {
++			value = $0; sub(/^[^=]*=/, "", value); q = sprintf("%c", 39); gsub(q, "", value); gsub(/"/, "", value)
++			ssid = value; next
++		}
++		/^wireless\.[^.]+\.disabled=/ && iface != "" {
++			value = $0; sub(/^[^=]*=/, "", value); q = sprintf("%c", 39); gsub(q, "", value); gsub(/"/, "", value)
++			printf "сеть %s (%s): %s\n", ssid, iface, (value == "1" ? "выключена" : "включена")
++			iface = ""; next
++		}'
++}
++
++cmd_wifi() {
++	_mode="${1:-status}"
++	shift 2>/dev/null || true
++
++	case "$_mode" in
++	status)
++		cmd_wifi_status
++		;;
++	radio)
++		_name="${1:-}"
++		_state="${2:-}"
++		[ -n "$_name" ] && [ -n "$_state" ] || {
++			echo "usage: pejir-sys wifi radio <radio0|radio1> on|off"; return 2; }
++		[ -f "$WIRELESS_CONF" ] || { echo "Wi-Fi не настроен"; return 1; }
++		case "$_state" in
++		on)  _dis="0" ;;
++		off) _dis="1" ;;
++		*) echo "состояние должно быть on или off"; return 2 ;;
++		esac
++		"$UCI_BIN" set "wireless.$_name.disabled=$_dis" || {
++			echo "не удалось записать wireless.$_name.disabled"; return 1; }
++		"$UCI_BIN" commit wireless || { echo "не удалось сохранить конфиг"; return 1; }
++		"$WIFI_BIN" reload >/dev/null 2>&1
++		if [ "$_dis" = "1" ]; then
++			echo "радио $_name: выключен"
++		else
++			echo "радио $_name: включён"
++		fi
++		;;
++	ssid)
++		_ssid="${1:-}"
++		_state="${2:-}"
++		[ -n "$_ssid" ] && [ -n "$_state" ] || {
++			echo "usage: pejir-sys wifi ssid <имя> on|off"; return 2; }
++		[ -f "$WIRELESS_CONF" ] || { echo "Wi-Fi не настроен"; return 1; }
++		_iface="$(wifi_iface_by_ssid "$_ssid")"
++		[ -n "$_iface" ] || { echo "сеть \"$_ssid\" не найдена"; return 1; }
++		case "$_state" in
++		on)  _dis="0" ;;
++		off) _dis="1" ;;
++		*) echo "состояние должно быть on или off"; return 2 ;;
++		esac
++		"$UCI_BIN" set "wireless.$_iface.disabled=$_dis" || {
++			echo "не удалось записать wireless.$_iface.disabled"; return 1; }
++		"$UCI_BIN" commit wireless || { echo "не удалось сохранить конфиг"; return 1; }
++		"$WIFI_BIN" reload >/dev/null 2>&1
++		if [ "$_dis" = "1" ]; then
++			echo "сеть $_ssid: выключена"
++		else
++			echo "сеть $_ssid: включена"
++		fi
++		;;
++	reload)
++		"$WIFI_BIN" reload >/dev/null 2>&1 && echo "конфиг беспроводной связи перезагружен" || {
++			echo "не удалось перезагрузить Wi-Fi"; return 1; }
++		;;
++	*)
++		echo "usage: pejir-sys wifi {status|radio <имя> on|off|ssid <имя> on|off|reload}"
++		return 2
++		;;
++	esac
++}
++
++cmd_lte() {
++	_mode="${1:-status}"
++	shift 2>/dev/null || true
++
++	case "$_mode" in
++	status)
++		_apn="$("$UCI_BIN" -q get network.lte.apn 2>/dev/null)"
++		_dev="$("$UCI_BIN" -q get network.lte.device 2>/dev/null)"
++		_if="$("$UCI_BIN" -q get network.lte.ifname 2>/dev/null)"
++		echo "APN: ${_apn:-не задан}"
++		echo "интерфейс: ${_if:-не задан}"
++		echo "устройство: ${_dev:-не задано}"
++		if [ -n "$_if" ] && [ -d "/sys/class/net/$_if" ]; then
++			echo "состояние: поднят"
++		else
++			echo "состояние: не поднят"
++		fi
++		;;
++	apn)
++		_apn="${1:-}"
++		[ -n "$_apn" ] || { echo "usage: pejir-sys lte apn <apn>"; return 2; }
++		"$UCI_BIN" set "network.lte.apn=$_apn" || {
++			echo "не удалось записать network.lte.apn"; return 1; }
++		"$UCI_BIN" commit network || { echo "не удалось сохранить конфиг"; return 1; }
++		[ -x "$LTE_INIT" ] || { echo "APN записан: $_apn (перезапуск LTE недоступен)"; return 0; }
++		"$LTE_INIT" restart >/dev/null 2>&1
++		echo "APN записан: $_apn, LTE перезапускается (статус - через минуту)"
++		;;
++	restart)
++		[ -x "$LTE_INIT" ] || { echo "нет init-скрипта LTE ($LTE_INIT)"; return 1; }
++		"$LTE_INIT" restart >/dev/null 2>&1
++		echo "LTE перезапускается (статус - через минуту)"
++		;;
++	*)
++		echo "usage: pejir-sys lte {status|apn <apn>|restart}"
++		return 2
++		;;
++	esac
++}
++
++cmd_web() {
++	_url="${1:-}"
++	[ -n "$_url" ] || { echo "usage: pejir-sys web <url>"; return 2; }
++
++	case "$_url" in
++	http://*|https://*) ;;
++	*) echo "поддерживаются только http и https"; return 2 ;;
++	esac
++
++	_body="$("$WGET" -qO- -T "$WEB_TIMEOUT" --max-redirect=3 "$_url" 2>/dev/null)"
++	if [ -z "$_body" ]; then
++		echo "не удалось получить страницу"
++		return 1
++	fi
++
++	printf '%s' "$_body" \
++		| sed -e 's/<[sS][cC][rR][iI][pP][tT][^>]*>.*<\/[sS][cC][rR][iI][pP][tT]>//g' \
++		      -e 's/<[^>]*>/ /g' \
++		| tr '\n\t' '  ' \
++		| sed -e 's/[[:space:]]\{2,\}/ /g' -e 's/^ //' -e 's/ $//' \
++		| cut -c1-"$WEB_MAX"
++
++	echo
++	return 0
++}
++
++case "${1:-}" in
++signal) cmd_signal ;;
++uptime) cmd_uptime ;;
++battery) cmd_battery ;;
++led) shift; cmd_led "$@" ;;
++wifi) shift; cmd_wifi "$@" ;;
++lte) shift; cmd_lte "$@" ;;
++web) shift; cmd_web "$@" ;;
++*)
++	echo "usage: pejir-sys {signal|uptime|battery|led …|wifi …|lte …|web <url>}" >&2
++	exit 2
++	;;
++esac
+diff --git a/package/pejir-telegram/root/usr/libexec/pejir-tg b/package/pejir-telegram/root/usr/libexec/pejir-tg
+index 38f2184f..09d36e50 100755
+--- a/package/pejir-telegram/root/usr/libexec/pejir-tg
++++ b/package/pejir-telegram/root/usr/libexec/pejir-tg
+@@ -38,6 +38,11 @@ CONF_FILE="${PEJIR_TG_CONF:-}"
+ # В образе /usr/bin/wget - это wget-ssl (с TLS). Путь берём из переменной,
+ # чтобы тест мог подставить своего wget.
+ WGET="${PEJIR_TG_WGET:-wget}"
++# Системные команды и отправка - отдельными helper'ами: pejir-tg только
++# разбирает команду и проверяет безопасность.
++SYS_BIN="${PEJIR_TG_SYS:-/usr/libexec/pejir-sys}"
++SEND_BIN="${PEJIR_TG_SEND:-/usr/libexec/pejir-tg-send}"
++LOCK_FILE="${PEJIR_TG_LOCK:-/tmp/pejir-tg.lock}"
+ 
+ cfg() {
+ 	if [ -n "$CONF_FILE" ]; then
+@@ -146,15 +151,33 @@ function unesc(s,   out, i, c, n) {
+ # --- отправка в чат --------------------------------------------------------
+ 
+ # Отправить текст в чат. $1 - текст. Возвращает 0 при успехе.
++#
++# Отправкой занимается отдельный helper pejir-tg-send: там же живёт
++# отправка файлов (multipart). Здесь - только маршрутизация.
+ tg_send() {
+ 	_text="$1"
++	[ -n "$_text" ] || return 1
++
+ 	_chat="$(cfg chat)"
+ 	_token="$(cfg token)"
+ 
+ 	[ -n "$_chat" ] || { log "не задан chat ID"; return 1; }
+ 	[ -n "$_token" ] || { log "не задан токен бота"; return 1; }
+ 
+-	# Telegram не принимает больше 4096 символов в одном сообщении.
++	# Основной путь - отдельный helper (там же отправка файлов).
++	if [ -x "$SEND_BIN" ]; then
++		PEJIR_TG_SEND_TOKEN="$_token" \
++		PEJIR_TG_SEND_CHAT="$_chat" \
++		PEJIR_TG_SEND_API="$API" \
++		PEJIR_TG_SEND_WGET="$WGET" \
++			"$SEND_BIN" text "$_text" >/dev/null 2>&1
++		return $?
++	fi
++
++	# Запасной вариант: helper не установлен (частичное обновление
++	# пакета). Пересылка SMS не должна от этого встать.
++	log "нет помощника отправки ($SEND_BIN) - отправляю сам"
++
+ 	_len="${#_text}"
+ 	if [ "$_len" -gt 4000 ]; then
+ 		_text="$(printf '%s' "$_text" | cut -c1-4000)..."
+@@ -171,6 +194,54 @@ tg_send() {
+ 	return 1
+ }
+ 
++# --- безопасность -----------------------------------------------------------
++
++# Защитный код - последнее слово команды. Если оно совпало с кодом,
++# команда разрешена, а сам код из аргументов убирается.
++#
++# Опасные команды (/wifi, /lte, /file, /web, /sms, /reboot) требуют
++# кода: без него они не выполняются вовсе. Если код в настройках не
++# задан - опасные команды недоступны (это осознанно: лучше не настроено,
++# чем открыто).
++protect_ok() {
++	_prot="$(cfg protect)"
++	[ -n "$_prot" ] || return 1
++	_last="${1##* }"
++	[ "$_last" = "$_prot" ] || return 1
++	return 0
++}
++
++# Убрать защитный код с конца команды.
++strip_protect() {
++	_prot="$(cfg protect)"
++	[ -n "$_prot" ] || { printf '%s' "$1"; return 0; }
++	case "$1" in
++	*" $_prot") printf '%s' "${1% $_prot}" ;;
++	*) printf '%s' "$1" ;;
++	esac
++}
++
++# Опасная операция под замком: два запроса не должны наложиться.
++run_locked() {
++	exec 9>"$LOCK_FILE" || return 1
++	flock -w 60 9 || return 1
++	"$@"
++}
++
++# Ответ на команду: результат системного helper'а уходит в чат.
++reply_sys() {
++	_out="$("$@" 2>&1 | head -40)"
++	[ -n "$_out" ] || _out="готово"
++	tg_send "$_out"
++}
++
++# Опасная операция: выполняется ОДИН раз под замком, результат - в чат.
++reply_sys_locked() {
++	_out="$(run_locked "$@" 2>&1 | head -40)"
++	[ -n "$_out" ] || _out="готово"
++	tg_send "$_out"
++}
++
+ # --- пересылка входящих SMS ------------------------------------------------
+ 
+ # Уже пересланные сообщения (по имени файла в спуле).
+@@ -260,7 +331,7 @@ status_text() {
+ }
+ 
+ help_text() {
+-	printf 'Команды:\n/sms <номер> <текст> - отправить SMS\n/status - состояние модема\n/reboot - перезагрузить роутер (нужен защитный код)\n/chatid - показать ID этого чата\n/help - эта справка'
++	printf 'Команды:\n/status - состояние модема\n/signal - уровень сигнала\n/uptime - время работы и память\n/battery - заряд батареи\n/led <имя> <цвет> - индикаторы (например /led 2 g)\n/led off - погасить все\n/sms <номер> <текст> <код> - отправить SMS\n/wifi status - состояние Wi-Fi\n/wifi radio <radio0> on|off <код> - выключить радио\n/wifi ssid <имя> on|off <код> - выключить сеть\n/lte status - состояние LTE\n/lte apn <apn> <код> - сменить APN и перезапустить LTE\n/lte restart <код> - перезапустить LTE\n/file <путь> <код> - прислать файл (из /tmp и /www)\n/web <url> <код> - прислать страницу\n/reboot <код> - перезагрузить роутер\n/chatid - показать ID этого чата\n/help - эта справка\n\nОпасные команды требуют защитный код последним словом.'
+ }
+ 
+ # Выполнить команду из чата. $1 - текст команды, $2 - chat id.
+@@ -278,6 +349,67 @@ exec_command() {
+ 	/status*)
+ 		tg_send "$(status_text)"
+ 		;;
++	/signal*|/uptime*|/battery*)
++		reply_sys "$SYS_BIN" "${_cmd#/}"
++		;;
++	/led*)
++		_cmd="$(strip_protect "$_cmd")"
++		_args="${_cmd#/led}"
++		_args="${_args# }"
++		reply_sys "$SYS_BIN" led $_args
++		;;
++	/wifi*)
++		if [ "$(cfg commands)" != "1" ]; then
++			tg_send "Команды выключены - включите их на странице SMS."
++			return 0
++		fi
++		protect_ok "$_cmd" || { tg_send "Нужен защитный код (последнее слово команды)."; return 0; }
++		_cmd="$(strip_protect "$_cmd")"
++		_args="${_cmd#/wifi}"
++		_args="${_args# }"
++		set -f
++		reply_sys_locked "$SYS_BIN" wifi $_args
++		set +f
++		;;
++	/lte*)
++		if [ "$(cfg commands)" != "1" ]; then
++			tg_send "Команды выключены - включите их на странице SMS."
++			return 0
++		fi
++		protect_ok "$_cmd" || { tg_send "Нужен защитный код (последнее слово команды)."; return 0; }
++		_cmd="$(strip_protect "$_cmd")"
++		_args="${_cmd#/lte}"
++		_args="${_args# }"
++		set -f
++		reply_sys_locked "$SYS_BIN" lte $_args
++		set +f
++		;;
++	/file*)
++		if [ "$(cfg commands)" != "1" ]; then
++			tg_send "Команды выключены - включите их на странице SMS."
++			return 0
++		fi
++		protect_ok "$_cmd" || { tg_send "Нужен защитный код (последнее слово команды)."; return 0; }
++		_cmd="$(strip_protect "$_cmd")"
++		_path="${_cmd#/file}"
++		_path="${_path# }"
++		_path="${_path%% *}"
++		# Файл уходит сам (pejir-tg-send отправляет документ), поэтому
++		# в чат уходит только сообщение об ошибке, если она была.
++		_out="$(run_locked "$SEND_BIN" file "$_path" 2>&1)"
++		[ -n "$_out" ] && tg_send "$_out"
++		;;
++	/web*)
++		if [ "$(cfg commands)" != "1" ]; then
++			tg_send "Команды выключены - включите их на странице SMS."
++			return 0
++		fi
++		protect_ok "$_cmd" || { tg_send "Нужен защитный код (последнее слово команды)."; return 0; }
++		_cmd="$(strip_protect "$_cmd")"
++		_url="${_cmd#/web}"
++		_url="${_url# }"
++		reply_sys_locked "$SYS_BIN" web "$_url"
++		;;
+ 	/sms\ *|/sms@*)
+ 		_rest="${_cmd#* }"
+ 		_to="${_rest%% *}"
+@@ -290,6 +422,18 @@ exec_command() {
+ 			tg_send "Команды выключены - включите их на странице SMS."
+ 			return 0
+ 		fi
++		if ! protect_ok "$_cmd"; then
++			tg_send "Нужен защитный код (последнее слово команды)."
++			return 0
++		fi
++		_cmd="$(strip_protect "$_cmd")"
++		_rest="${_cmd#* }"
++		_to="${_rest%% *}"
++		_body="${_rest#* }"
++		if [ -z "$_to" ] || [ "$_body" = "$_rest" ] || [ -z "$_body" ]; then
++			tg_send "Формат: /sms <номер> <текст> <код>"
++			return 0
++		fi
+ 		if [ -x "$SENDSMS" ]; then
+ 			_out="$("$SENDSMS" "$_to" "$_body" 2>&1)"
+ 			case "$_out" in
+@@ -307,21 +451,13 @@ exec_command() {
+ 			tg_send "Команды выключены - включите их на странице SMS."
+ 			return 0
+ 		fi
+-		_prot="$(cfg protect)"
+-		if [ -z "$_prot" ]; then
+-			tg_send "Для перезагрузки задан защитный код."
++		if ! protect_ok "$_cmd"; then
++			tg_send "Нужен защитный код (последнее слово команды)."
+ 			return 0
+ 		fi
+-		case "$_cmd" in
+-		*"$_prot"*)
+-			tg_send "Перезагружаюсь."
+-			sleep 2
+-			reboot
+-			;;
+-		*)
+-			tg_send "Неверный защитный код."
+-			;;
+-		esac
++		tg_send "Перезагружаюсь."
++		sleep 2
++		reboot
+ 		;;
+ 	*)
+ 		tg_send "Не понимаю команду. /help - список команд."
+diff --git a/package/pejir-telegram/root/usr/libexec/pejir-tg-send b/package/pejir-telegram/root/usr/libexec/pejir-tg-send
+new file mode 100755
+index 00000000..f47d07a2
+--- /dev/null
++++ b/package/pejir-telegram/root/usr/libexec/pejir-tg-send
+@@ -0,0 +1,172 @@
++#!/bin/sh
++# Отправка сообщений и файлов в Telegram.
++#
++# Helper знает только про Telegram: разбор команды и проверка
++# безопасности - в pejir-tg.
++#
++# Команды:
++#   text <строка>            обычное сообщение;
++#   file <путь> [подпись]    документ (multipart/form-data).
++#
++# В образе нет curl, есть wget-ssl (GNU wget) - multipart собираем
++# вручную и отправляем через --post-file: тело готовится на диске,
++# поэтому файл не читается в память целиком.
++#
++# Пути и параметры переопределяются переменными окружения - для тестов.
++
++set -u
++
++API="${PEJIR_TG_SEND_API:-https://api.telegram.org}"
++TOKEN="${PEJIR_TG_SEND_TOKEN:-}"
++CHAT="${PEJIR_TG_SEND_CHAT:-}"
++WGET="${PEJIR_TG_SEND_WGET:-${PEJIR_TG_WGET:-wget}}"
++TMPDIR_SEND="${PEJIR_TG_SEND_TMP:-/tmp}"
++ROOTS="${PEJIR_TG_SEND_ROOTS:-/tmp /www}"
++MAXSIZE="${PEJIR_TG_SEND_MAXSIZE:-20971520}"
++TEXT_MAX="${PEJIR_TG_SEND_TEXT_MAX:-4000}"
++TIMEOUT="${PEJIR_TG_SEND_TIMEOUT:-20}"
++
++# Токен и чат: из окружения (тест), иначе из конфига моста.
++[ -n "$TOKEN" ] || TOKEN="$(uci -q get pejir_telegram.main.token 2>/dev/null)"
++[ -n "$CHAT" ] || CHAT="$(uci -q get pejir_telegram.main.chat 2>/dev/null)"
++
++log() {
++	logger -t pejir-tg-send "$*" 2>/dev/null
++	echo "pejir-tg-send: $*" >&2
++}
++
++urlencode() {
++	printf '%s' "$1" | tr '\n' '\001' | LC_ALL=C awk '
++BEGIN {
++	for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i
++	nl = sprintf("%c", 1)
++}
++{
++	for (i = 1; i <= length($0); i++) {
++		c = substr($0, i, 1)
++		if (c == nl) { printf "%%0A"; continue }
++		if (c ~ /[A-Za-z0-9]/) { printf "%s", c; continue }
++		if (c == " ") { printf "+"; continue }
++		if (c == "-") { printf "%%2D"; continue }
++		if (c == "_") { printf "%%5F"; continue }
++		if (c == ".") { printf "%%2E"; continue }
++		printf "%%%02X", ord[c]
++	}
++}'
++}
++
++http_post() {
++	"$WGET" -qO- -T "$TIMEOUT" --post-data "$2" "$1" 2>/dev/null
++}
++
++# Ответ Telegram: успех - 0, иначе печатает описание ошибки.
++check_reply() {
++	case "$1" in
++	*'"ok":true'*) return 0 ;;
++	esac
++	printf '%s' "$1" | sed -e 's/.*"description":"\([^"]*\)".*/\1/' | cut -c1-200
++	return 1
++}
++
++cmd_text() {
++	_text="${1:-}"
++	[ -n "$_text" ] || { echo "пустое сообщение"; return 2; }
++	[ -n "$TOKEN" ] || { echo "не задан токен бота"; return 1; }
++	[ -n "$CHAT" ] || { echo "не задан chat ID"; return 1; }
++
++	_len="${#_text}"
++	[ "$_len" -gt "$TEXT_MAX" ] && _text="$(printf '%s' "$_text" | cut -c1-"$TEXT_MAX")..."
++
++	_reply="$(http_post "$API/bot$TOKEN/sendMessage" \
++		"chat_id=$(urlencode "$CHAT")&text=$(urlencode "$_text")")"
++
++	if check_reply "$_reply" >/dev/null; then
++		return 0
++	fi
++
++	log "отправка не удалась: $_reply"
++	check_reply "$_reply"
++	return 1
++}
++
++# Путь разрешён, если он внутри одного из корней (/tmp и /www).
++path_allowed() {
++	_p="${1:-}"
++	[ -n "$_p" ] || return 1
++	case "$_p" in
++	/*) ;;
++	*) return 1 ;;
++	esac
++	for _root in $ROOTS; do
++		case "$_p" in
++		"$_root"/*) return 0 ;;
++		esac
++	done
++	return 1
++}
++
++cmd_file() {
++	_path="${1:-}"
++	_caption="${2:-}"
++	[ -n "$_path" ] || { echo "не указан файл"; return 2; }
++	[ -f "$_path" ] || { echo "файл не найден: $_path"; return 1; }
++	[ -n "$TOKEN" ] || { echo "не задан токен бота"; return 1; }
++	[ -n "$CHAT" ] || { echo "не задан chat ID"; return 1; }
++
++	path_allowed "$_path" || {
++		echo "файл отправляется только из: $ROOTS"
++		return 1
++	}
++
++	_size="$(stat -c %s "$_path" 2>/dev/null)"
++	case "$_size" in
++	''|*[!0-9]*) echo "не удалось узнать размер файла"; return 1 ;;
++	esac
++	[ "$_size" -le "$MAXSIZE" ] || {
++		echo "файл больше лимита ($MAXSIZE байт): $_size"
++		return 1
++	}
++
++	_name="${_path##*/}"
++	_boundary="----PejirBoundary$$"
++	_body="$TMPDIR_SEND/pejir-tg-body.$$"
++
++	{
++		printf -- '--%s\r\n' "$_boundary"
++		printf 'Content-Disposition: form-data; name="chat_id"\r\n\r\n'
++		printf '%s\r\n' "$CHAT"
++		printf -- '--%s\r\n' "$_boundary"
++		printf 'Content-Disposition: form-data; name="caption"\r\n\r\n'
++		printf '%s\r\n' "$_caption"
++		printf -- '--%s\r\n' "$_boundary"
++		printf 'Content-Disposition: form-data; name="document"; filename="%s"\r\n' "$_name"
++		printf 'Content-Type: application/octet-stream\r\n\r\n'
++	} > "$_body"
++
++	cat "$_path" >> "$_body"
++	printf -- '\r\n--%s--\r\n' "$_boundary" >> "$_body"
++
++	_reply="$("$WGET" -qO- -T "$TIMEOUT" \
++		--header="Content-Type: multipart/form-data; boundary=$_boundary" \
++		--post-file="$_body" \
++		"$API/bot$TOKEN/sendDocument" 2>/dev/null)"
++
++	rm -f "$_body" 2>/dev/null
++
++	if check_reply "$_reply" >/dev/null; then
++		return 0
++	fi
++
++	log "отправка файла не удалась: $_reply"
++	check_reply "$_reply"
++	return 1
++}
++
++case "${1:-}" in
++text) shift; cmd_text "$@" ;;
++file) shift; cmd_file "$@" ;;
++*)
++	echo "usage: pejir-tg-send {text <строка>|file <путь> [подпись]}" >&2
++	exit 2
++	;;
++esac
+-- 
+2.39.5
+

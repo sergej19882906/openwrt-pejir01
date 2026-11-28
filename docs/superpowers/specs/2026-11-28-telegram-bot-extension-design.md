@@ -93,6 +93,7 @@ boundary=BOUNDARY" -qO- https://api.telegram.org/bot<token>/sendDocument`.
 | `led ...` | `/usr/libexec/pejir-led` |
 | `wifi ...` | `uci show wireless`, `uci set/commit`, `wifi reload` |
 | `lte ...` | `uci get network.lte.apn`, `/etc/init.d/47-pejir-lte restart` |
+| `web <url>` | `wget -qO-` + вырезание HTML-тегов (внешние и локальные адреса) |
 
 Все команды возвращают текст и код 0/1 — вызывающий (`pejir-tg`) сам
 решает, что отправить в чат.

@@ -216,7 +216,7 @@ OLD=$((NOW - 3600))
 cat > "$WORK/updates.json" <<JSONEOF
 {"ok":true,"result":[
 {"update_id":500,"message":{"message_id":1,"chat":{"id":12345,"type":"private"},"date":$NOW,"text":"/status"}},
-{"update_id":501,"message":{"message_id":2,"chat":{"id":12345,"type":"private"},"date":$NOW,"text":"/sms 79161234567 привет из чата"}},
+{"update_id":501,"message":{"message_id":2,"chat":{"id":12345,"type":"private"},"date":$NOW,"text":"/sms 79161234567 привет из чата secret"}},
 {"update_id":502,"message":{"message_id":3,"chat":{"id":99999,"type":"private"},"date":$NOW,"text":"/sms 7000000000 из чужого чата"}},
 {"update_id":503,"message":{"message_id":4,"chat":{"id":12345,"type":"private"},"date":$OLD,"text":"/sms 7000000000 старая команда"}}]}
 JSONEOF
@@ -249,6 +249,16 @@ else
 		fail "команды: смещение update не передаётся"
 	fi
 fi
+
+# 5c-bis) /sms без защитного кода - не выполняется
+: > "$TG_FAKE_SMS"
+cat > "$WORK/updates.json" <<JSONEOF
+{"ok":true,"result":[
+{"update_id":610,"message":{"message_id":9,"chat":{"id":12345,"type":"private"},"date":$NOW,"text":"/sms 79161234567 без кода"}}]}
+JSONEOF
+"$HELPER" commands >/dev/null 2>&1
+[ -s "$TG_FAKE_SMS" ] && fail "команды: /sms выполнен без защитного кода" \
+	|| ok "команды: /sms без защитного кода не выполняется"
 
 # 5d) /reboot без защитного кода - не выполняется
 : > "$TG_FAKE_REBOOT"
