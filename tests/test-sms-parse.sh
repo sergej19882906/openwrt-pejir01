@@ -182,11 +182,13 @@ fi
 
 # Служебный файл smstools3 "<модем>-concatenated" (сборка многочастевых
 # PDU) не должен попадать в переписку: на устройстве он выглядел как
-# мусорный элемент без номера и даты.
-if grep -q "concatenated" "$JS"; then
-	ok "страница отсекает служебный файл *-concatenated"
+# мусорный элемент без номера и даты. С 0173 переписку отдаёт helper
+# одним блоком, поэтому отсекать служебные файлы должен именно он.
+SMSCTL="${OW_TEST:-/workspace/ow-test}/package/pejir-sms/root/usr/libexec/pejir-sms-ctl"
+if [ -f "$SMSCTL" ] && grep -q "concatenated" "$SMSCTL"; then
+	ok "helper отсекает служебный файл *-concatenated"
 else
-	fail "страница не отсекает служебный файл *-concatenated (в переписке будет мусор)"
+	fail "helper не отсекает служебный файл *-concatenated (в переписке будет мусор)"
 fi
 
 if [ "$FAILED" -gt 0 ]; then

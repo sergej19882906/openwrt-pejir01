@@ -1,0 +1,226 @@
+From 04e22a27489a917984982de046723d6bd2b4ead2 Mon Sep 17 00:00:00 2001
+From: sergej19882906 <sergej19882906@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 16:22:25 GMT
+Subject: =?utf-8?b?dWFydG11eGQ6INGA0L7Rg9GC0LXRgCDQsdC+0LvRjNGI0LUg0L3QtSDQs9GA0YPQ?=
+ =?utf-8?b?t9C40YLRgdGPINC90LAgNjYgJSAtIEx1Q0kg0L7RgtCy0LXRh9Cw0LXRgiDQsdGL?=
+ =?utf-8?b?0YHRgtGA0L4=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+На устройстве top показывал 24 % usr и 40 % sys, из них 27 % - uartmuxd
+(/usr/sbin/uartmuxd -d /dev/ttyS1). Роутер был загружен на 66 %, и все
+страницы LuCI отвечали медленно: "SMS" и "Батарея" открывались по
+несколько секунд, хотя чтение файлов на устройстве мгновенное (0,01 с).
+
+Причины в коде uartmuxd:
+
+  1) в slave-канал pty байты писали ПО ОДНОМУ (один write() на байт) -
+     тысячи системных вызовов и 40 % sys в профайлере;
+  2) при EAGAIN повтор был бесконечным (usleep(1000) и снова write) -
+     если slave не читают, деман крутился в горячем цикле и вдобавок
+     терял данные;
+  3) poll отрабатывал мгновенно при плотном потоке, и демен крутился без
+     единой паузы.
+
+Исправления:
+
+  - вывод в канал копится в буфер и пишется одним вызовом (chan_flush);
+  - повтор при EAGAIN ограничен по времени (write_all_timeout), потерянные
+    байты считаются в g_dropped;
+  - при плотном потоке цикл опроса делает паузу 2 мс (задержка для
+    STM32/Zigbee незаметна);
+  - демон стартует с минимальным приоритетом (setpriority), чтобы не
+    конкурировать с LuCI, rpcd и uhttpd.
+
+Замер на псевдо-терминале (плотный поток, slave не читает): CPU 7 % ->
+1 %, пропускная способность 43 КБ/с -> 282 КБ/с (старая версия ещё и
+теряла данные).
+---
+ package/uartmuxd/src/uartmuxd.c | 89 ++++++++++++++++++++++++++++++---
+ 1 file changed, 81 insertions(+), 8 deletions(-)
+
+diff --git a/package/uartmuxd/src/uartmuxd.c b/package/uartmuxd/src/uartmuxd.c
+index 954bb799..87e99025 100644
+--- a/package/uartmuxd/src/uartmuxd.c
++++ b/package/uartmuxd/src/uartmuxd.c
+@@ -9,6 +9,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <sys/resource.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <termios.h>
+@@ -22,6 +23,11 @@ struct chan {
+     int mfd;
+     char pts[128];
+     char linkpath[256];
++    /* Буфер вывода: раньше в slave-канал писали ПО БАЙТУ (один
++     * write() на байт) - это тонна системных вызовов и 40 % sys в
++     * профайлере. Теперь копим и пишем одним куском. */
++    uint8_t out[1024];
++    size_t outlen;
+ };
+ 
+ struct cfg {
+@@ -52,14 +58,36 @@ struct hashmux_state {
+ 
+ static volatile sig_atomic_t g_stop = 0;
+ 
+-static int write_all(int fd, const uint8_t *buf, size_t len) {
++/* Сколько байтов не удалось передать в slave-конец pty (буфер переполнен
++ * и slave не читает). Раньше в этом месте деман крутился в горячем
++ * цикле - 25-30 % CPU и подтормаживание LuCI. */
++static uint64_t g_dropped = 0;
++
++/* Запись с ограничением ожидания.
++ *
++ * ЗАЧЕМ. Раньше повтор при EAGAIN был бесконечным: если slave-конец pty
++ * не читают (буфер переполнен), write() возвращал EAGAIN, демон ждал по
++ * 1 мс и повторял - до бесконечности. В этом режиме uartmuxd занимал
++ * 25-30 % CPU (роутер был загружен на 66 %), и все страницы LuCI
++ * отвечали медленно.
++ *
++ * Теперь ждём не больше timeout_ms, дальше байты теряются (их считаем
++ * в g_dropped), но демен не крутится в горячем цикле. */
++static int write_all_timeout(int fd, const uint8_t *buf, size_t len, int timeout_ms) {
+     size_t off = 0;
++    int waited = 0;
++
+     while (off < len) {
+         ssize_t n = write(fd, buf + off, len - off);
+         if (n < 0) {
+             if (errno == EINTR) continue;
+             if (errno == EAGAIN || errno == EWOULDBLOCK) {
+-                usleep(1000);
++                if (waited >= timeout_ms) {
++                    g_dropped += (uint64_t)(len - off);
++                    return -1;
++                }
++                usleep(2000);
++                waited += 2;
+                 continue;
+             }
+             return -1;
+@@ -69,6 +97,11 @@ static int write_all(int fd, const uint8_t *buf, size_t len) {
+     return 0;
+ }
+ 
++/* Обычная запись (в UART) - терпит дольше. */
++static int write_all(int fd, const uint8_t *buf, size_t len) {
++    return write_all_timeout(fd, buf, len, 200);
++}
++
+ static int find_chan_by_dlci(struct chan *chans, int n, int dlci) {
+     for (int i = 0; i < n; i++) {
+         if (chans[i].enabled && chans[i].dlci == dlci) return i;
+@@ -208,15 +241,29 @@ static int hashmux_write_crlf_escaped(int fd, const uint8_t *buf, size_t len) {
+     return 0;
+ }
+ 
++/* Сброс буфера канала в slave-конец pty. */
++static void chan_flush(struct chan *c, int addr, int tap_fd) {
++    if (c->outlen == 0) return;
++
++    (void)write_all_timeout(c->mfd, c->out, c->outlen, 20);
++    if (addr == 1 && tap_fd >= 0)
++        (void)write_all_timeout(tap_fd, c->out, c->outlen, 20);
++
++    c->outlen = 0;
++}
++
+ static void hashmux_write_to_addr(const struct cfg *cfg, struct chan *chans,
+                                   int addr, uint8_t b, int tap_fd) {
+     if (addr < 0 || addr >= MAX_DLCI) return;
+     int ci = find_chan_by_dlci(chans, cfg->channels, addr);
+     if (ci < 0) return;
+-    (void)write_all(chans[ci].mfd, &b, 1);
+-    if (addr == 1 && tap_fd >= 0) {
+-        (void)write_all(tap_fd, &b, 1);
+-    }
++
++    struct chan *c = &chans[ci];
++
++    if (c->outlen >= sizeof(c->out))
++        chan_flush(c, addr, tap_fd);
++
++    c->out[c->outlen++] = b;
+ }
+ 
+ static void hashmux_feed_rx(const struct cfg *cfg, struct chan *chans,
+@@ -259,6 +306,10 @@ static void hashmux_feed_rx(const struct cfg *cfg, struct chan *chans,
+             st->rx_to_addr[st->rx_addr]++;
+         }
+     }
++
++    /* Сливаем накопленное в каналы одним вызовом на канал. */
++    for (int i = 0; i < cfg->channels; i++)
++        chan_flush(&chans[i], chans[i].dlci, tap_fd);
+ }
+ 
+ static int send_startup_cmd(int sfd, const char *cmd, const char *on_eol,
+@@ -405,6 +456,10 @@ int main(int argc, char **argv) {
+         return 1;
+     }
+ 
++    /* Минимальный приоритет: демен не должен конкурировать с LuCI,
++     * rpcd и uhttpd - они отвечают телефону, а не маршрутизатор. */
++    (void)setpriority(PRIO_PROCESS, 0, 19);
++
+     int sfd = open(cfg.dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
+     if (sfd < 0) {
+         perror("open serial");
+@@ -465,6 +520,7 @@ int main(int argc, char **argv) {
+ 
+     struct pollfd pfds[1 + MAX_DLCI];
+     uint8_t rbuf[4096];
++    int hot = 0;
+ 
+     while (!g_stop) {
+         int pcount = 0;
+@@ -485,6 +541,22 @@ int main(int argc, char **argv) {
+             break;
+         }
+ 
++        /* Ограничиваем частоту опроса.
++         *
++         * ЗАЧЕМ. Если данные идут непрерывно, poll отрабатывает мгновенно
++         * и демен крутится в горячем цикле: на устройстве это давало 25-30
++         * % CPU только на uartmuxd, а LuCI отвечала медленно. Теперь при
++         * плотном потоке ждём 2 мс - задержка для STM32/Zigbee
++         * незаметна, а CPU роутера остаётся свободным. */
++        if (rc > 0) {
++            if (++hot >= 16) {
++                hot = 0;
++                usleep(2000);
++            }
++        } else {
++            hot = 0;
++        }
++
+         if (pfds[0].revents & POLLIN) {
+             ssize_t n = read(sfd, rbuf, sizeof(rbuf));
+             if (n > 0) {
+@@ -521,7 +593,7 @@ int main(int argc, char **argv) {
+             last_ticks++;
+             if ((last_ticks % 20U) == 0U) {
+                 fprintf(stderr,
+-                        "HASHMUX stats total=%llu a0=%llu a1=%llu a2=%llu esc=%llu sel=%llu drop=%llu cur=%d\n",
++                        "HASHMUX stats total=%llu a0=%llu a1=%llu a2=%llu esc=%llu sel=%llu drop=%llu cur=%d lost=%llu\n",
+                         (unsigned long long)hm.rx_bytes_total,
+                         (unsigned long long)hm.rx_to_addr[0],
+                         (unsigned long long)hm.rx_to_addr[1],
+@@ -529,7 +601,8 @@ int main(int argc, char **argv) {
+                         (unsigned long long)hm.rx_hash_esc,
+                         (unsigned long long)hm.rx_hash_sel,
+                         (unsigned long long)hm.rx_hash_drop,
+-                        hm.rx_addr);
++                        hm.rx_addr,
++                        (unsigned long long)g_dropped);
+             }
+         }
+     }
+-- 
+2.39.5
+

@@ -164,6 +164,7 @@ jobs:
           sh tests/test-spool-clean.sh
           sh tests/test-page-footer.sh
           sh tests/test-sms-page-dump.sh
+          sh tests/test-uartmuxd-cpu.sh
 
       # Порядок шагов важен: сначала отдаём образ артефактом, потом
       # проверяем его содержимое. Иначе при неудачной проверке готовый
